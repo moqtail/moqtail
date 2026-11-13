@@ -66,6 +66,12 @@ const ENDPOINTS: &[Endpoint] = &[
   },
   Endpoint {
     method: "GET",
+    path: "/api/v1/meta",
+    feature: Feature::Health,
+    route: |_| get(meta),
+  },
+  Endpoint {
+    method: "GET",
     path: "/api/v1/config",
     feature: Feature::State,
     route: |_| get(config),
@@ -310,6 +316,14 @@ async fn health() -> Json<serde_json::Value> {
 
 /// Readiness: whether the relay takes new sessions. Load balancers stop sending
 /// clients while this is 503.
+/// `api.meta` from the relay's configuration, as written: whatever the operator
+/// wants apps to know, such as the relay's public host name.
+async fn meta(
+  State(state): State<Arc<ApiState>>,
+) -> Json<serde_json::Map<String, serde_json::Value>> {
+  Json(state.config.meta.clone())
+}
+
 async fn ready(State(state): State<Arc<ApiState>>) -> Response {
   let status = state.inspect.status();
   let reason = if status.draining {

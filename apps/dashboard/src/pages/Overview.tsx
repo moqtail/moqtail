@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import { useRef } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type { LatencyReport, Overview as OverviewData } from '../api/types';
 import { Chart } from '../components/Chart';
-import { Badge, Card, ErrorNote, Loading, Stat, Table } from '../components/ui';
+import { Badge, Card, ErrorNote, Facts, Loading, Stat, Table } from '../components/ui';
 import { hasFeature, useDashboard } from '../context';
 import { bytes, count, duration, ms, rate } from '../lib/format';
 import { requestError } from '../lib/codes';
@@ -225,6 +225,33 @@ export function Overview() {
           objects dropped.
         </p>
       )}
+      <Meta />
     </div>
+  );
+}
+
+/** What the operator publishes about the relay in `api.meta`; hidden when empty. */
+function Meta() {
+  const { api } = useDashboard();
+  const [meta, setMeta] = useState<Record<string, unknown>>({});
+  useEffect(() => {
+    const controller = new AbortController();
+    api.get<Record<string, unknown>>('/meta', undefined, controller.signal).then(setMeta, () => {});
+    return () => controller.abort();
+  }, [api]);
+  const rows = Object.entries(meta);
+  if (rows.length === 0) return null;
+  return (
+    <Card title="Relay metadata">
+      <Facts
+        rows={rows.map(
+          ([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)] as [string, string],
+        )}
+      />
+      <p class="mt-2 text-xs text-neutral-500">
+        From <code>api.meta</code> in the relay's configuration, also served at{' '}
+        <code>/api/v1/meta</code>.
+      </p>
+    </Card>
   );
 }

@@ -114,6 +114,11 @@ api:
   # How the relay introduces itself to MCP clients, so an agent connected to
   # several relays can tell them apart (unset = the host name).
   # mcp_name: interop-paris
+  # Anything apps should read from GET /api/v1/meta, served as written and
+  # without a token, so put nothing secret here. For example:
+  # meta:
+  #   fqdn: relay.example.com
+  #   region: eu-west
   # Closed connections kept in a summary (a few hundred bytes each).
   closed_connection_history: 10000
   # How finely object processing time is kept: relay, track or subscription.

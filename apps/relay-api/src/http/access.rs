@@ -24,8 +24,9 @@ use axum::response::{IntoResponse, Response};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-/// Paths a load balancer probes without credentials. The address check still applies.
-const TOKEN_EXEMPT: [&str; 2] = ["/api/v1/health", "/api/v1/ready"];
+/// Paths read without credentials: the two a load balancer probes, and the
+/// metadata the operator publishes for apps. The address check still applies.
+const TOKEN_EXEMPT: [&str; 3] = ["/api/v1/health", "/api/v1/ready", "/api/v1/meta"];
 const METRICS_PATH: &str = "/api/v1/metrics";
 pub(crate) const MCP_PATH: &str = "/api/v1/mcp";
 

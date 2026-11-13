@@ -187,6 +187,8 @@ pub struct ApiConfig {
   /// How the relay introduces itself to agents, so one agent with several relays
   /// can tell them apart.
   pub mcp_name: String,
+  /// Served as written at `/api/v1/meta`.
+  pub meta: serde_json::Map<String, serde_json::Value>,
   pub cors_origins: Vec<String>,
   /// How many closed connections to keep for `/connections?closed=true`.
   pub closed_connection_history: usize,
@@ -365,6 +367,7 @@ impl ApiConfig {
         metrics_token,
         mcp_token,
         mcp_write,
+        meta: settings.meta,
         mcp_name: settings
           .mcp_name
           .filter(|n| !n.trim().is_empty())

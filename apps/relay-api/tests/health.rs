@@ -68,3 +68,29 @@ async fn health_stays_up_while_ready_follows_the_lifecycle() {
   client.relay.accepting.store(false, Ordering::Relaxed);
   assert_eq!(client.get("/api/v1/ready").await.1["reason"], "starting");
 }
+
+#[tokio::test]
+async fn meta_serves_the_configured_values_without_a_token() {
+  let client = Client::new(ApiSettings::default());
+  let (status, body) = client.get("/api/v1/meta").await;
+  assert_eq!(
+    (status, body),
+    (StatusCode::OK, json!({})),
+    "empty by default"
+  );
+
+  let meta = json!({ "fqdn": "relay.example.com", "region": "eu-west", "ports": [4433] });
+  let client = Client::new(ApiSettings {
+    read_token: Some("r3ad".into()),
+    meta: meta.as_object().unwrap().clone(),
+    ..Default::default()
+  });
+  // No token, though reads need one: apps read this before they know any token.
+  let (status, body) = client.get("/api/v1/meta").await;
+  assert_eq!((status, body), (StatusCode::OK, meta));
+  assert_eq!(
+    client.get("/api/v1/config").await.0,
+    StatusCode::UNAUTHORIZED,
+    "the rest of the API still needs the token"
+  );
+}

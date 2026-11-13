@@ -38,7 +38,8 @@ pub struct ApiSettings {
   /// Client address ranges allowed on a network `bind`. Unset means loopback only;
   /// ignored on a loopback `bind`.
   pub allow: Option<Vec<String>>,
-  /// When set, API reads need it as a bearer token, except health and readiness.
+  /// When set, API reads need it as a bearer token, except health, readiness and
+  /// `/api/v1/meta`.
   #[serde(skip_serializing)]
   pub read_token: Option<String>,
   /// Needed for the API's write endpoints; also allows reads.
@@ -63,6 +64,10 @@ pub struct ApiSettings {
   /// agent connected to several relays can tell them apart. Unset means the host
   /// name.
   pub mcp_name: Option<String>,
+  /// Anything the operator wants apps to read from `/api/v1/meta`, such as the
+  /// relay's public host name or region. Served as written, without a token, so
+  /// put nothing secret here.
+  pub meta: serde_json::Map<String, serde_json::Value>,
   /// Closed connections the API keeps a summary of, oldest dropped first.
   #[default(10_000)]
   pub closed_connection_history: usize,

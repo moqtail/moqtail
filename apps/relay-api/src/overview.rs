@@ -19,7 +19,7 @@ use crate::ApiState;
 use crate::control::{ResultCounts, UpstreamCounts};
 use axum::Json;
 use axum::extract::State;
-use moqtail_probe::{ConnectionState, NamespaceSubscriptionInfo, RelayStatus, Role};
+use moqtail_probe::{ClusterInfo, ConnectionState, NamespaceSubscriptionInfo, RelayStatus, Role};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -141,4 +141,9 @@ pub async fn upstreams(State(state): State<Arc<ApiState>>) -> Json<Vec<Upstream>
     })
     .collect();
   Json(list)
+}
+
+/// This relay's cluster identity, its peer links and what it advertises over them.
+pub async fn cluster(State(state): State<Arc<ApiState>>) -> Json<ClusterInfo> {
+  Json(state.inspect.cluster().await)
 }

@@ -169,6 +169,8 @@ pub struct ApiSettings {
   pub slowlog_first_object_threshold: std::time::Duration,
   /// Slowlog entries kept.
   pub slowlog_size: usize,
+  /// Namespace prefixes whose traffic is counted separately.
+  pub accounting_zones: Vec<String>,
 }
 
 /// The API's settings after parsing and the startup checks.
@@ -198,6 +200,7 @@ pub struct ApiConfig {
   pub latency_detail: LatencyDetail,
   pub latency_sample: u64,
   pub slowlog: SlowlogConfig,
+  pub accounting_zones: Vec<String>,
 }
 
 pub const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4480);
@@ -339,6 +342,7 @@ impl ApiConfig {
           first_object_threshold: settings.slowlog_first_object_threshold,
           size: settings.slowlog_size,
         },
+        accounting_zones: settings.accounting_zones,
       },
       warnings,
     ))

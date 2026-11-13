@@ -100,6 +100,8 @@ pub struct Subscription {
   pub track_alias: u64,
   /// Where this subscription records its processing time; `None` when unmeasured.
   stats: Option<Arc<moqtail_probe::stats::SubscriptionStats>>,
+  /// The traffic counters of its track's accounting zone, if any.
+  zone: Option<Arc<moqtail_probe::stats::ZoneCounters>>,
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
@@ -167,12 +169,14 @@ impl Subscription {
       client_connection_id as u64,
       request_id,
     );
+    let zone = crate::server::inspect::zone_for(&full_track_name);
     Self {
       ssts_gate: Arc::new(ForwardGate::new(full_track_name.clone(), relay_track_id)),
       relay_track_id,
       track_alias,
       full_track_name,
       stats,
+      zone,
       request_id,
       subscription_state: Arc::new(RwLock::new(origin_message.into())),
       subscriber,

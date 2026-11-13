@@ -56,6 +56,20 @@ pub(crate) fn count_cache_removal(cause: moka::notification::RemovalCause) {
   }
 }
 
+/// The counters of the accounting zone a track falls in; `None` when no zones are
+/// configured, and always in builds without the observability layer.
+pub(crate) fn zone_for(
+  name: &FullTrackName,
+) -> Option<std::sync::Arc<moqtail_probe::stats::ZoneCounters>> {
+  #[cfg(feature = "observability")]
+  return moqtail_probe::probe().zone(&namespace_text(&name.namespace));
+  #[cfg(not(feature = "observability"))]
+  {
+    let _ = name;
+    None
+  }
+}
+
 /// When an object arrived from its publisher, for measuring its processing time.
 /// Builds without the observability layer read no clock.
 pub(crate) fn arrival_time() -> Option<std::time::Instant> {
@@ -75,8 +89,9 @@ mod relay {
   use crate::server::track::track_manager::{SubscribeKind, TrackManager};
   use crate::server::track::{Track, TrackOrigin, TrackStatus};
   use moqtail_probe::{
-    BoxFuture, ConnectionInfo, Inspect, NamespaceSubscriptionInfo, RelayStatus, TrackDetail,
-    TrackInfo, TrackPublisher, TrackSubscription,
+    AdvertInfo, BoxFuture, ClusterInfo, ClusterPeerInfo, ConnectionInfo, Inspect,
+    NamespaceSubscriptionInfo, RelayStatus, TrackDetail, TrackInfo, TrackPublisher,
+    TrackSubscription,
   };
   use std::sync::atomic::Ordering;
 
@@ -141,6 +156,54 @@ mod relay {
 
     fn namespace_subscriptions(&self) -> BoxFuture<'_, Vec<NamespaceSubscriptionInfo>> {
       Box::pin(namespace_subscriptions(&self.0.track_manager))
+    }
+
+    fn cluster(&self) -> BoxFuture<'_, ClusterInfo> {
+      Box::pin(async move {
+        let clients: Vec<_> = self
+          .0
+          .client_manager
+          .clients
+          .read()
+          .await
+          .values()
+          .filter(|c| c.peer_hop_id.is_some())
+          .cloned()
+          .collect();
+        let mut peers = Vec::new();
+        for client in clients {
+          let mut adverts: Vec<AdvertInfo> = client
+            .cluster_adverts
+            .lock()
+            .await
+            .iter()
+            .map(|(namespace, advert)| {
+              let (source, hops, cost, generation) = advert.describe();
+              AdvertInfo {
+                namespace: namespace_text(namespace),
+                source_conn_id: source as u64,
+                hop_path: hops.to_vec(),
+                cost,
+                generation,
+              }
+            })
+            .collect();
+          adverts.sort_by(|a, b| a.namespace.cmp(&b.namespace));
+          peers.push(ClusterPeerInfo {
+            conn_id: client.connection_id as u64,
+            remote: client.connection.remote_address().to_string(),
+            hop_id: client.peer_hop_id,
+            relay_cost: client.peer_relay_cost,
+            adverts,
+          });
+        }
+        peers.sort_by_key(|p| p.conn_id);
+        ClusterInfo {
+          hop_id: self.0.app_config.hop_id,
+          configured_peers: self.0.app_config.peers.clone(),
+          peers,
+        }
+      })
     }
   }
 

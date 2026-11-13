@@ -46,6 +46,7 @@ pub fn start(server: &Server) -> Result<()> {
     slowlog_threshold: c.slowlog_threshold,
     slowlog_first_object_threshold: c.slowlog_first_object_threshold,
     slowlog_size: c.slowlog_size,
+    accounting_zones: c.accounting_zones.clone(),
   })?;
   for warning in warnings {
     warn!("{warning}");

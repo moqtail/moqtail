@@ -19,11 +19,13 @@
 //! A request the relay sent goes upstream, to a publisher or a cluster peer; a
 //! request the relay received comes from downstream.
 
+use crate::zones::Zones;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::transport::observe::ControlObserver;
 use moqtail_probe::stats::{BUCKETS, Histogram};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -90,6 +92,8 @@ pub struct Percentiles {
 
 struct Pending {
   kind: &'static str,
+  /// The namespace the request is about, as `a/b`; kept only when zones are counted.
+  namespace: Option<String>,
   /// True when the relay sent the request, so it went upstream.
   upstream: bool,
   started: Instant,
@@ -132,13 +136,15 @@ pub(crate) struct ControlTracker {
   inner: Mutex<Inner>,
   /// An upstream request unanswered for this long counts as timed out.
   upstream_timeout: Duration,
+  zones: Arc<Zones>,
 }
 
 impl ControlTracker {
-  pub fn new(upstream_timeout: Duration) -> Self {
+  pub fn new(upstream_timeout: Duration, zones: Arc<Zones>) -> Self {
     ControlTracker {
       inner: Mutex::new(Inner::default()),
       upstream_timeout,
+      zones,
     }
   }
 
@@ -264,10 +270,14 @@ impl ControlObserver for ControlTracker {
       .or_default() += 1;
 
     if let Some(kind) = request_kind(message) {
+      let namespace = (!self.zones.is_empty())
+        .then(|| request_namespace(message))
+        .flatten();
       inner.pending.insert(
         (conn, stream_id),
         Pending {
           kind,
+          namespace,
           upstream: sent,
           started: Instant::now(),
         },
@@ -300,6 +310,11 @@ impl ControlObserver for ControlTracker {
     match &outcome {
       Outcome::Ok => result.ok += 1,
       Outcome::Error { code, .. } => *result.error.entry(*code).or_default() += 1,
+    }
+    if let Some(namespace) = &pending.namespace {
+      self
+        .zones
+        .request_answered(namespace, matches!(outcome, Outcome::Ok));
     }
     let requests = &mut inner.connections.entry(conn).or_default().requests;
     match outcome {
@@ -390,6 +405,22 @@ fn request_kind(message: &ControlMessage) -> Option<&'static str> {
   })
 }
 
+/// The namespace a request is about, as `a/b`.
+fn request_namespace(message: &ControlMessage) -> Option<String> {
+  let tuple = match message {
+    ControlMessage::Subscribe(m) => &m.track_namespace,
+    ControlMessage::Fetch(m) => &m.track_namespace,
+    ControlMessage::TrackStatus(m) => &m.track_namespace,
+    ControlMessage::Publish(m) => &m.track_namespace,
+    ControlMessage::PublishNamespace(m) => &m.track_namespace,
+    ControlMessage::SubscribeNamespace(m) => &m.track_namespace_prefix,
+    ControlMessage::SubscribeTracks(m) => &m.track_namespace_prefix,
+    _ => return None,
+  };
+  let fields: Vec<String> = tuple.fields.iter().map(|f| f.to_string()).collect();
+  Some(fields.join("/"))
+}
+
 /// How a message answers a request, or `None` when it answers none.
 fn response_outcome(message: &ControlMessage) -> Option<Outcome> {
   Some(match message {
@@ -446,7 +477,7 @@ mod tests {
 
   #[test]
   fn matches_answers_to_requests_by_stream_and_direction() {
-    let tracker = ControlTracker::new(Duration::from_secs(5));
+    let tracker = ControlTracker::new(Duration::from_secs(5), Arc::new(Zones::new(&[])));
     // Downstream: a subscriber asks, the relay refuses.
     tracker.control_message(1, 4, false, &subscribe());
     assert_eq!(tracker.connection(1).requests.in_flight, 1);
@@ -475,7 +506,7 @@ mod tests {
 
   #[test]
   fn an_upstream_request_overdue_counts_as_timed_out() {
-    let tracker = ControlTracker::new(Duration::ZERO);
+    let tracker = ControlTracker::new(Duration::ZERO, Arc::new(Zones::new(&[])));
     tracker.control_message(3, 4, true, &subscribe());
     std::thread::sleep(Duration::from_millis(2));
     tracker.control_message(3, 8, false, &ok()); // answers nothing; creates the source
@@ -485,7 +516,7 @@ mod tests {
 
   #[test]
   fn a_refusal_from_upstream_is_the_last_error() {
-    let tracker = ControlTracker::new(Duration::from_secs(5));
+    let tracker = ControlTracker::new(Duration::from_secs(5), Arc::new(Zones::new(&[])));
     tracker.control_message(5, 4, true, &subscribe());
     tracker.control_message(5, 4, false, &refused());
     let upstream = tracker.upstream(5).unwrap();

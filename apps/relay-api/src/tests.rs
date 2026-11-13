@@ -79,6 +79,16 @@ impl Inspect for FakeRelay {
     })
   }
 
+  fn cluster(&self) -> BoxFuture<'_, moqtail_probe::ClusterInfo> {
+    Box::pin(async {
+      moqtail_probe::ClusterInfo {
+        hop_id: None,
+        configured_peers: vec![],
+        peers: vec![],
+      }
+    })
+  }
+
   fn namespace_subscriptions(&self) -> BoxFuture<'_, Vec<NamespaceSubscriptionInfo>> {
     Box::pin(async {
       vec![NamespaceSubscriptionInfo {

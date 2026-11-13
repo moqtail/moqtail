@@ -22,7 +22,7 @@
 pub mod stats;
 
 use serde::Serialize;
-use stats::{RelayCounters, SubscriptionStats};
+use stats::{RelayCounters, SubscriptionStats, ZoneCounters};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
@@ -53,6 +53,9 @@ pub trait Inspect: Send + Sync {
 
   /// Every SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS the relay holds.
   fn namespace_subscriptions(&self) -> BoxFuture<'_, Vec<NamespaceSubscriptionInfo>>;
+
+  /// This relay's cluster identity and its links to other relays.
+  fn cluster(&self) -> BoxFuture<'_, ClusterInfo>;
 }
 
 /// What the relay core reports as things happen. Every method has an empty default,
@@ -77,6 +80,12 @@ pub trait Probe: Send + Sync {
     _conn_id: u64,
     _request_id: u64,
   ) -> Option<Arc<SubscriptionStats>> {
+    None
+  }
+
+  /// The counters of the accounting zone a track's namespace (`a/b/c`) falls in;
+  /// `None` when no zones are configured.
+  fn zone(&self, _namespace: &str) -> Option<Arc<ZoneCounters>> {
     None
   }
 
@@ -311,4 +320,37 @@ pub struct NamespaceSubscriptionInfo {
   pub conn_id: u64,
   /// `namespace` or `tracks`.
   pub kind: String,
+}
+
+/// The relay's place in a cluster.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClusterInfo {
+  /// This relay's Hop ID; `None` when it is not part of a cluster.
+  pub hop_id: Option<u64>,
+  /// The relays it is configured to dial.
+  pub configured_peers: Vec<String>,
+  pub peers: Vec<ClusterPeerInfo>,
+}
+
+/// An open link to another relay.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClusterPeerInfo {
+  pub conn_id: u64,
+  pub remote: String,
+  pub hop_id: Option<u64>,
+  /// What the peer charges for its egress (RELAY_COST).
+  pub relay_cost: u64,
+  /// The namespaces this relay advertises to the peer.
+  pub adverts: Vec<AdvertInfo>,
+}
+
+/// A namespace advertised to a peer, and the route it came by.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdvertInfo {
+  pub namespace: String,
+  /// The connection the route came from.
+  pub source_conn_id: u64,
+  pub hop_path: Vec<u64>,
+  pub cost: u64,
+  pub generation: u64,
 }

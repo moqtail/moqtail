@@ -166,6 +166,27 @@ impl RelayCounters {
   }
 }
 
+/// Traffic of one accounting zone: the tracks under a namespace prefix.
+#[derive(Debug, Default)]
+pub struct ZoneCounters {
+  pub objects_in: ShardedCounter,
+  pub bytes_in: ShardedCounter,
+  pub objects_out: ShardedCounter,
+  pub bytes_out: ShardedCounter,
+}
+
+impl ZoneCounters {
+  pub fn object_in(&self, payload_bytes: usize) {
+    self.objects_in.add(1);
+    self.bytes_in.add(payload_bytes as u64);
+  }
+
+  pub fn object_out(&self, payload_bytes: usize) {
+    self.objects_out.add(1);
+    self.bytes_out.add(payload_bytes as u64);
+  }
+}
+
 /// When an object passed each point of the relay on its way to one subscriber.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectTimes {

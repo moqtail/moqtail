@@ -91,6 +91,15 @@ pub(crate) struct Advert {
   generation: u64,
 }
 
+impl Advert {
+  /// The session the route came from, the hops it took, its cost and generation,
+  /// for reporting.
+  #[cfg(feature = "observability")]
+  pub(crate) fn describe(&self) -> (usize, &[u64], u64, u64) {
+    (self.source, &self.hops, self.cost, self.generation)
+  }
+}
+
 #[derive(Clone)]
 struct Route {
   client: Arc<MOQTClient>,

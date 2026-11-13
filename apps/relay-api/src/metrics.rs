@@ -450,6 +450,56 @@ async fn render(state: &ApiState, out: &mut Exposition) {
     );
   }
 
+  let zones = crate::zones::reports(&state.zones, &tracks);
+  let traffic = |pick: fn(&crate::zones::ZoneReport) -> (u64, u64)| -> Vec<(String, f64)> {
+    zones
+      .iter()
+      .flat_map(|z| {
+        let (inbound, outbound) = pick(z);
+        [
+          (
+            label(&[("zone", z.zone()), ("direction", "in")]),
+            inbound as f64,
+          ),
+          (
+            label(&[("zone", z.zone()), ("direction", "out")]),
+            outbound as f64,
+          ),
+        ]
+      })
+      .collect()
+  };
+  out.family(
+    "moqtail_zone_objects_total",
+    "counter",
+    "Objects of each accounting zone, received and sent.",
+    &traffic(|z| z.objects()),
+  );
+  out.family(
+    "moqtail_zone_bytes_total",
+    "counter",
+    "Payload bytes of each accounting zone, received and sent.",
+    &traffic(|z| z.bytes()),
+  );
+  out.family(
+    "moqtail_zone_requests_total",
+    "counter",
+    "Answered requests about each accounting zone, by result.",
+    &zones
+      .iter()
+      .flat_map(|z| {
+        let (ok, error) = z.requests();
+        [
+          (label(&[("zone", z.zone()), ("result", "ok")]), ok as f64),
+          (
+            label(&[("zone", z.zone()), ("result", "error")]),
+            error as f64,
+          ),
+        ]
+      })
+      .collect::<Vec<_>>(),
+  );
+
   out.one(
     "moqtail_qlog_events_dropped_total",
     "counter",

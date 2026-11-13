@@ -302,6 +302,9 @@ pub struct AppConfig {
   /// Slowlog entries kept.
   #[default(1000)]
   pub slowlog_size: usize,
+  /// Namespace prefixes (`a/b`) whose traffic and requests the API counts
+  /// separately; a namespace belongs to the longest prefix it falls under.
+  pub accounting_zones: Vec<String>,
 }
 
 impl AppConfig {

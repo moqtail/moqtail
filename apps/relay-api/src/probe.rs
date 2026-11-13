@@ -17,7 +17,8 @@
 
 use crate::control::{ConnectionCounts, ControlTracker};
 use crate::latency::Latency;
-use moqtail_probe::stats::SubscriptionStats;
+use crate::zones::Zones;
+use moqtail_probe::stats::{SubscriptionStats, ZoneCounters};
 use moqtail_probe::{ConnectionInfo, Probe};
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
@@ -46,6 +47,7 @@ pub(crate) struct ApiProbe {
   pub failures: Mutex<BTreeMap<&'static str, u64>>,
   pub limit_rejections: Mutex<BTreeMap<&'static str, u64>>,
   pub closes: Mutex<BTreeMap<(String, String), u64>>,
+  zones: Arc<Zones>,
 }
 
 impl ApiProbe {
@@ -54,6 +56,7 @@ impl ApiProbe {
     closed_capacity: usize,
     control: Arc<ControlTracker>,
     latency: Option<Arc<Latency>>,
+    zones: Arc<Zones>,
   ) -> Self {
     ApiProbe {
       keep_state,
@@ -64,6 +67,7 @@ impl ApiProbe {
       failures: Mutex::default(),
       limit_rejections: Mutex::default(),
       closes: Mutex::default(),
+      zones,
     }
   }
 
@@ -111,6 +115,10 @@ impl Probe for ApiProbe {
   ) -> Option<Arc<SubscriptionStats>> {
     let latency = self.latency.as_ref()?;
     Some(latency.subscription_stats(track_id, conn_id, request_id))
+  }
+
+  fn zone(&self, namespace: &str) -> Option<Arc<ZoneCounters>> {
+    (!self.zones.is_empty()).then(|| self.zones.traffic_for(namespace))
   }
 
   fn connection_failed(&self, reason: &'static str) {

@@ -118,6 +118,24 @@ const ENDPOINTS: &[Endpoint] = &[
   },
   Endpoint {
     method: "GET",
+    path: "/api/v1/zones",
+    feature: Feature::State,
+    route: || get(crate::zones::list),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/cluster",
+    feature: Feature::State,
+    route: || get(crate::overview::cluster),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/events",
+    feature: Feature::Events,
+    route: || get(crate::events::events),
+  },
+  Endpoint {
+    method: "GET",
     path: "/api/v1/metrics",
     feature: Feature::Metrics,
     route: || get(crate::metrics::metrics),

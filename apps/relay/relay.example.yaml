@@ -113,3 +113,6 @@ latency_sample: 1
 slowlog_threshold: 20ms
 slowlog_first_object_threshold: 1s
 slowlog_size: 1000
+# Namespace prefixes counted separately in /api/v1/zones and the metrics, such as
+# one per tenant; a namespace belongs to the longest prefix it falls under.
+accounting_zones: []

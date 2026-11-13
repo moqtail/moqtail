@@ -77,6 +77,9 @@ impl Subscription {
     if let Some(c) = crate::server::inspect::counters() {
       c.object_sent(payload_bytes);
     }
+    if let Some(zone) = &self.zone {
+      zone.object_out(payload_bytes);
+    }
     if let (Some(stats), Some(picked)) = (&self.stats, picked) {
       stats.object_written(
         times.arrived,

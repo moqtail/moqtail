@@ -23,6 +23,7 @@ pub mod config;
 mod connections;
 mod control;
 mod error;
+mod events;
 mod latency;
 mod list;
 mod metrics;
@@ -32,6 +33,7 @@ mod qlog;
 mod routes;
 mod snapshot;
 mod tracks;
+mod zones;
 
 use anyhow::{Context, Result};
 use config::{ApiConfig, Feature};
@@ -49,6 +51,7 @@ pub(crate) struct ApiState {
   pub inspect: Arc<dyn Inspect>,
   pub probe: Arc<ApiProbe>,
   pub control: Arc<ControlTracker>,
+  pub zones: Arc<zones::Zones>,
   /// The data path's counters; `None` unless the `metrics` feature is on.
   pub counters: Option<Arc<moqtail_probe::stats::RelayCounters>>,
   connections: Cached<Vec<ConnectionInfo>>,
@@ -57,7 +60,8 @@ pub(crate) struct ApiState {
 
 impl ApiState {
   pub(crate) fn new(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Self {
-    let control = Arc::new(ControlTracker::new(config.upstream_timeout));
+    let zones = Arc::new(zones::Zones::new(&config.accounting_zones));
+    let control = Arc::new(ControlTracker::new(config.upstream_timeout, zones.clone()));
     let latency = config.has(Feature::Latency).then(|| {
       Arc::new(latency::Latency::new(
         config.latency_detail,
@@ -71,12 +75,14 @@ impl ApiState {
       config.closed_connection_history,
       control.clone(),
       latency,
+      zones.clone(),
     ));
     ApiState {
       config,
       inspect,
       probe,
       control,
+      zones,
       counters,
       connections: Cached::new(),
       tracks: Cached::new(),
@@ -141,6 +147,11 @@ pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Pro
   }
   if let Some(counters) = &state.counters {
     moqtail_probe::install_counters(counters.clone());
+  }
+  if state.config.has(Feature::Events) {
+    // Builds events for listeners when no qlog files are written; does nothing
+    // when they are.
+    moqtail::transport::qlog::init_live();
   }
 
   std::thread::Builder::new()

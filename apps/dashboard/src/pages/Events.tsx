@@ -40,9 +40,17 @@ interface Filter {
   name: string;
 }
 
-/** Data stream headers: one per stream, so they far outnumber control messages. */
-export function isStreamHeader(name: string): boolean {
-  return name.startsWith('moqt:subgroup_header') || name.startsWith('moqt:fetch_header');
+/**
+ * Routine data stream events: each stream's header and its FIN, one of each per
+ * stream, so they far outnumber control messages. A stream cut short with
+ * RESET_STREAM or STOP_SENDING is not routine, and always shows.
+ */
+export function isRoutineStreamEvent(event: QlogEvent): boolean {
+  const { name } = event;
+  if (name.startsWith('moqt:subgroup_header') || name.startsWith('moqt:fetch_header')) {
+    return true;
+  }
+  return name.startsWith('moqtail:stream_end') && event.data.end === 'fin';
 }
 
 /** `connId` comes from the address, as `#/events/42`, when opened from a connection. */
@@ -65,7 +73,7 @@ export function Events(props: { connId?: string }) {
   const [streams, setStreams] = useState(false);
   const [paused, setPaused] = useState(false);
   const [lines, setLines] = useState<Line[]>([]);
-  // Data stream headers left out while the box is unticked, so the page shows it
+  // Data stream events left out while the box is unticked, so the page shows it
   // is receiving even when nothing else happens.
   const [hidden, setHidden] = useState(0);
   const [error, setError] = useState<ApiError>();
@@ -105,7 +113,7 @@ export function Events(props: { connId?: string }) {
                 pending.push({ key: key++, kind: m.event, text: m.data });
                 continue;
               }
-              if (!streamsRef.current && isStreamHeader(event.name)) {
+              if (!streamsRef.current && isRoutineStreamEvent(event)) {
                 pendingHidden += 1;
                 continue;
               }
@@ -186,7 +194,7 @@ export function Events(props: { connId?: string }) {
               checked={streams}
               onChange={e => setStreams(e.currentTarget.checked)}
             />
-            Data stream headers
+            Data stream events
           </label>
           <button type="button" class="btn" onClick={() => setPaused(!paused)}>
             {paused ? 'Resume' : 'Pause'}
@@ -209,7 +217,7 @@ export function Events(props: { connId?: string }) {
         Newest first, the last {MAX_LINES} kept, updated twice a second.{' '}
         {paused ? 'Paused: nothing is received.' : 'Receiving.'}
         {!streams &&
-          ` ${hidden.toLocaleString('en-US')} data stream headers hidden; tick the box to show them.`}
+          ` ${hidden.toLocaleString('en-US')} data stream headers and FINs hidden; tick the box to show them. Resets always show.`}
       </p>
       {lines.length === 0 && !paused && (
         <p class="py-6 text-center text-xs text-neutral-500">

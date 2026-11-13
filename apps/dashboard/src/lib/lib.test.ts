@@ -20,6 +20,7 @@ import type { QlogEvent } from '../api/types';
 import { bytes, duration, ms } from './format';
 import { JsonSeqParser, SseParser } from './stream';
 import { buildTimeline } from './timeline';
+import { isRoutineStreamEvent } from '../pages/Events';
 import { namespaceRows, underPrefix } from '../pages/Namespaces';
 
 describe('JsonSeqParser', () => {
@@ -153,5 +154,18 @@ describe('namespaces', () => {
       ['live/a', [], 1, [9]],
       ['live/b', [7], 0, [9]],
     ]);
+  });
+});
+
+describe('live events', () => {
+  it('treats stream headers and FINs as routine, but not resets', () => {
+    const ev = (name: string, data: Record<string, unknown> = {}) => ({ time: 0, name, data });
+    expect(isRoutineStreamEvent(ev('moqt:subgroup_header_created'))).toBe(true);
+    expect(isRoutineStreamEvent(ev('moqtail:stream_end_created', { end: 'fin' }))).toBe(true);
+    expect(isRoutineStreamEvent(ev('moqtail:stream_end_parsed', { end: 'reset' }))).toBe(false);
+    expect(isRoutineStreamEvent(ev('moqtail:stream_end_parsed', { end: 'stop_sending' }))).toBe(
+      false,
+    );
+    expect(isRoutineStreamEvent(ev('moqt:control_message_parsed'))).toBe(false);
   });
 });

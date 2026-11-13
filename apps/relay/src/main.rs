@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use tracing::Instrument;
+#[cfg(feature = "observability")]
 mod observability;
 mod server;
 use server::Server;
@@ -20,6 +21,7 @@ use server::Server;
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
   let mut server = Server::new();
+  #[cfg(feature = "observability")]
   observability::start(&server)?;
   let _ = server
     .start()

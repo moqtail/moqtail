@@ -92,6 +92,8 @@ pub struct Content {
   /// Signal the gaps that the ID steps leave with Prior Group and Object ID Gap
   /// properties.
   pub gap_properties: bool,
+  /// Stamp each Object with its send time in the LOC Timestamp property.
+  pub timestamp: bool,
 }
 
 pub struct PublishNamespaceConfig {
@@ -441,6 +443,12 @@ impl DataConfig {
       properties.push(ObjectProperty::PriorObjectIdGap {
         gap: self.object_id_step - 1,
       });
+    }
+    // Built just before the Object is written, so the stamp is its send time.
+    if self.content.timestamp
+      && let Some(stamp) = crate::perf::send_timestamp()
+    {
+      properties.push(stamp);
     }
     for spec in &self.content.object_properties {
       let value = spec.source.value(group_id, object_id, self.subgroup_of(i));

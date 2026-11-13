@@ -14,6 +14,7 @@
 
 mod cluster;
 mod config;
+#[cfg(feature = "observability")]
 pub(crate) mod inspect;
 mod logging;
 mod message_handlers;
@@ -59,7 +60,8 @@ pub(crate) struct Server {
   pub draining: Arc<AtomicBool>,
   /// Set once the QUIC listeners accept connections.
   pub accepting: Arc<AtomicBool>,
-  /// When the relay started.
+  /// When the relay started; reported by the observability layer.
+  #[cfg_attr(not(feature = "observability"), allow(dead_code))]
   pub started_at: std::time::SystemTime,
   pub cluster: Arc<cluster::ClusterState>,
   /// GOAWAY redirect URI clients should migrate to. Seeded from config; a future

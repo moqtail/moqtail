@@ -13,3 +13,4 @@ bytes.workspace = true
 moqtail.workspace = true
 clap.workspace = true
 rand.workspace = true
+serde_json.workspace = true

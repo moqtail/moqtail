@@ -1,5 +1,15 @@
 # client
 
+## 0.19.0
+
+### Minor Changes
+
+- [#473](https://github.com/moqtail/moqtail/pull/473) [`94eb2d5`](https://github.com/moqtail/moqtail/commit/94eb2d59c8b25510af430d9ef103db235f83eb2a) Thanks [@zafergurel](https://github.com/zafergurel)! - qlog traces of control messages. Set `qlog_folder` in the relay config, or pass `--qlog-folder` to the client, to write one JSON-SEQ `.sqlog` file per connection with a `moqt:control_message_created`/`_parsed` event (decoded message plus raw bytes) for every control message, in the MoQT qlog event format. Unset, nothing is recorded. The per-message hex dumps at INFO level are removed. The relay logs to stdout only; it no longer writes a rolling `relay.log` into `log_folder`.
+
+  In debug builds the relay also writes a QUIC packet-level qlog per connection (`*_quic.sqlog`: packets sent, received and lost, RTT and congestion window) into the same folder.
+
+- [#474](https://github.com/moqtail/moqtail/pull/474) [`1409d03`](https://github.com/moqtail/moqtail/commit/1409d03bbe14090174d99f60a02ceec3aab92609) Thanks [@zafergurel](https://github.com/zafergurel)! - qlog traces now also record a `moqt:subgroup_header_*`/`moqt:fetch_header_*` event for every data stream opened or accepted (one per stream, not per object). `scripts/qlog-summary.py <folder>` prints each connection's peer SETUP, requests with their responses, data streams per track and parse errors.
+
 ## 0.18.0
 
 ### Patch Changes

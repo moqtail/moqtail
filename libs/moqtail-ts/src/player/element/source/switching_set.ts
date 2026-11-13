@@ -83,9 +83,9 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
     plan: SourcePlan = { spans: [] },
   ) {
     super(context)
-    const start = context.tracks[0]!
     this.#tracks = context.tracks
     this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
+    const start = this.#start()
     this.pad = this.createPad('src', this.padCapabilities(start.role ?? 'video'))
     this.#delivery = new Delivery(this.pad, context, options.requests, this)
     this.#delivery.duration = plan.duration
@@ -200,6 +200,23 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
     this.#switcher.upgrade()
   }
 
+  /**
+   * A live set starts at its middle bitrate, so ABR can move either way before it knows the link;
+   * VOD, which gets no ABR controller, at its first track.
+   */
+  #start(): CatalogTrack {
+    const first = this.#tracks[0]!
+    if (!first.isLive) return first
+    const heads = this.#tracks.filter((t) => this.#head(t) === t).sort((a, b) => bitrateOf(a) - bitrateOf(b))
+    if (!heads.every((t) => bitrateOf(t) > 0)) return first // no middle without bitrates
+    const middle = heads[(heads.length - 1) >> 1]!
+    // Join its ladder on the shortest GoP, as the catalog's first track does
+    return ladderOf(middle, this.#tracks).reduce(
+      (a, b) => ((b.keyframeSpacing ?? Infinity) < (a.keyframeSpacing ?? Infinity) ? b : a),
+      middle,
+    )
+  }
+
   /** The track `track`'s rendition stands for: the longest GoP of its ladder, which switches climb to. */
   #head(track: CatalogTrack): CatalogTrack {
     return ladderOf(track, this.#tracks).reduce(
@@ -302,5 +319,37 @@ if (import.meta.vitest) {
     await flush()
     // The active rendition was deselected: into the other ladder, at its earliest switch point
     expect(c.requests().at(-2)).toMatch(/^subscribe b15 /)
+  })
+
+  test('a live set starts at its middle bitrate, VOD at its first track', async () => {
+    const tracks = (isLive: boolean) => [
+      { ...cmafTrack('hi', { bitrate: 3000 }), isLive },
+      { ...cmafTrack('lo', { bitrate: 500 }), isLive },
+      { ...cmafTrack('mid', { bitrate: 1500 }), isLive },
+    ]
+    const live = await cmafChain(tracks(true))
+    await flush()
+    expect(live.requests()[0]).toMatch(/^subscribe mid /)
+    expect(live.source.getRenditions().find((r) => r.active)?.id).toBe('mid')
+    const vod = await cmafChain(tracks(false))
+    await flush()
+    expect(vod.requests()[0]).toMatch(/ hi /)
+  })
+
+  test('a live fast switching set joins its middle quality on the shortest GoP', async () => {
+    const track = (name: string, height: number, keyframeSpacing: number, bitrate: number) => ({
+      ...cmafTrack(name, { height, keyframeSpacing, bitrate }),
+      isLive: true,
+    })
+    const c = await cmafChain([
+      track('a60', 540, 60, 500),
+      track('a15', 540, 15, 500),
+      track('b60', 1080, 60, 3000),
+      track('b15', 1080, 15, 3000),
+      track('c60', 720, 60, 1500),
+      track('c15', 720, 15, 1500),
+    ])
+    await flush()
+    expect(c.requests()[0]).toMatch(/^subscribe c15 /)
   })
 }

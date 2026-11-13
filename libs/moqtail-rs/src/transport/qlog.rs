@@ -241,12 +241,34 @@ fn write_loop(rx: Receiver<Record>, dir: &Path, vantage: &str) {
 }
 
 fn open(dir: &Path, vantage: &str, conn: usize) -> std::io::Result<BufWriter<File>> {
-  let started = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .map(|d| d.as_millis())
-    .unwrap_or(0);
-  let group_id = format!("{vantage}_{started}_conn{conn}");
-  let mut w = BufWriter::new(File::create(dir.join(format!("{group_id}.sqlog")))?);
+  // A relay's connection ids are unique per run, so its files are named by id alone.
+  // A client is always connection 0, so its files carry the start time.
+  let base = if vantage == "server" {
+    format!("{vantage}_conn{conn}")
+  } else {
+    let started = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .map(|d| d.as_millis())
+      .unwrap_or(0);
+    format!("{vantage}_{started}_conn{conn}")
+  };
+  // Never overwrite an earlier trace: an id repeated across restarts gets a suffix.
+  let mut group_id = base.clone();
+  let mut n = 1;
+  let file = loop {
+    match std::fs::OpenOptions::new()
+      .write(true)
+      .create_new(true)
+      .open(dir.join(format!("{group_id}.sqlog")))
+    {
+      Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+        n += 1;
+        group_id = format!("{base}_{n}");
+      }
+      other => break other?,
+    }
+  };
+  let mut w = BufWriter::new(file);
   let header = json!({
     "file_schema": "urn:ietf:params:qlog:file:sequential",
     "serialization_format": "application/qlog+json-seq",
@@ -694,6 +716,19 @@ mod tests {
     assert_eq!(records[1]["data"]["stream_id"], 3);
     assert_eq!(records[1]["data"]["message"]["type"], "namespace_done");
     assert_eq!(records[1]["data"]["raw"]["data"], "0102");
+
+    // The same id again (as after a restart) gets its own file.
+    control_message(7, 3, true, &msg, &[0x01, 0x02]);
+    close(7);
+    let second = dir.join("server_conn7_2.sqlog");
+    while !second.exists() {
+      assert!(
+        std::time::Instant::now() < deadline,
+        "second qlog file not written"
+      );
+      std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(dir.join("server_conn7.sqlog").exists());
     let _ = std::fs::remove_dir_all(&dir);
   }
 }

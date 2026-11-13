@@ -25,6 +25,15 @@ import { href } from '../lib/route';
 
 const LIMIT = 50;
 
+/** A track's status. A track kept only in the cache has no publisher to confirm
+ *  it, so it stays pending for good; it is shown as cached only. */
+export function trackStatus(t: TrackInfo): { text: string; tone: 'ok' | 'bad' | 'warn' | 'plain' } {
+  if (t.origin === 'cache_only' && t.status === 'pending')
+    return { text: 'cached only', tone: 'plain' };
+  const tone = t.status === 'confirmed' ? 'ok' : t.status === 'rejected' ? 'bad' : 'warn';
+  return { text: t.status, tone };
+}
+
 export function Tracks() {
   const { api, refreshMs } = useDashboard();
   const [sort, setSort] = useState('-subscribers');
@@ -95,13 +104,7 @@ export function Tracks() {
                   </td>
                   <td>{t.origin}</td>
                   <td>
-                    <Badge
-                      tone={
-                        t.status === 'confirmed' ? 'ok' : t.status === 'rejected' ? 'bad' : 'warn'
-                      }
-                    >
-                      {t.status}
-                    </Badge>
+                    <Badge tone={trackStatus(t).tone}>{trackStatus(t).text}</Badge>
                   </td>
                   <td>{t.publishers.length}</td>
                   <td>{t.subscribers}</td>
@@ -189,7 +192,7 @@ export function Track(props: { id: string }) {
           rows={[
             ['Track id', String(t.track_id)],
             ['Origin', t.origin],
-            ['Status', t.status],
+            ['Status', trackStatus(t).text],
             ['Largest location', t.largest_location ?? '–'],
             ['Upstream forward', t.upstream_forward ? 'yes' : 'no'],
             [

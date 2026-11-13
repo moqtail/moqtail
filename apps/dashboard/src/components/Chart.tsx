@@ -28,6 +28,16 @@ export interface Series {
   color: string;
 }
 
+const TIME_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+
+const clockLabel = (seconds: number) =>
+  new Date(seconds * 1000).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
 /**
  * A time-series line chart. `times` are seconds since the epoch; each entry of
  * `values` is one series, aligned with `times`. The numbers behind the chart are
@@ -51,7 +61,17 @@ export function Chart(props: {
       height: props.height ?? 160,
       legend: { show: true },
       axes: [
-        { stroke: AXIS, grid: { stroke: GRID }, ticks: { stroke: GRID } },
+        {
+          stroke: AXIS,
+          grid: { stroke: GRID },
+          ticks: { stroke: GRID },
+          // Whole seconds and up, labelled with the time of day only: uPlot's own
+          // labels step by half seconds on a short span and put a date under the
+          // first tick, where the chart's edge cuts it off.
+          incrs: TIME_STEPS,
+          space: 70,
+          values: (_u, ticks) => ticks.map(clockLabel),
+        },
         {
           stroke: AXIS,
           grid: { stroke: GRID },

@@ -16,7 +16,16 @@
 
 import { useState } from 'preact/hooks';
 import type { ConnectionSummary, Page } from '../api/types';
-import { Badge, Card, ErrorNote, Loading, Pager, SortHeader, Table } from '../components/ui';
+import {
+  Badge,
+  Card,
+  ErrorNote,
+  Loading,
+  Pager,
+  SortHeader,
+  Table,
+  Remote,
+} from '../components/ui';
 import { useDashboard } from '../context';
 import { ago, bytes, count, ms } from '../lib/format';
 import { usePoll } from '../lib/poll';
@@ -126,10 +135,14 @@ export function Connections() {
                     </a>
                   </td>
                   <td>
-                    <Badge tone={stateTone(c.state)}>{c.state}</Badge>
-                    {c.role === 'cluster_peer' && <Badge>peer</Badge>}
+                    <span class="inline-flex gap-1">
+                      <Badge tone={stateTone(c.state)}>{c.state}</Badge>
+                      {c.role === 'cluster_peer' && <Badge>peer</Badge>}
+                    </span>
                   </td>
-                  <td>{c.remote}</td>
+                  <td>
+                    <Remote remote={c.remote} />
+                  </td>
                   <td>{c.implementation ?? '–'}</td>
                   <td>{c.transport}</td>
                   <td>{ago(c.connected_at_ms)}</td>

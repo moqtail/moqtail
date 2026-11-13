@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import { parseJson } from './json';
+
 // Incremental parsers for the API's two streaming formats. Both take text as it
 // arrives, in pieces of any size, and hand out each complete record once.
 
@@ -33,7 +35,7 @@ export class JsonSeqParser {
       this.buffer = this.buffer.slice(end + 1);
       if (record) {
         try {
-          records.push(JSON.parse(record));
+          records.push(parseJson(record));
         } catch {
           // A record that does not parse is skipped; the next one starts fresh.
         }

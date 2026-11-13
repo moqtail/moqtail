@@ -21,6 +21,7 @@ import { Card, ErrorNote } from '../components/ui';
 import { useDashboard } from '../context';
 import { href } from '../lib/route';
 import { SseParser } from '../lib/stream';
+import { parseJson } from '../lib/json';
 
 /** Lines kept on screen; older ones are dropped so a busy relay cannot fill memory. */
 const MAX_LINES = 1000;
@@ -108,7 +109,7 @@ export function Events(props: { connId?: string }) {
             if (m.event === 'qlog') {
               let event: QlogEvent;
               try {
-                event = JSON.parse(m.data) as QlogEvent;
+                event = parseJson(m.data) as QlogEvent;
               } catch {
                 pending.push({ key: key++, kind: m.event, text: m.data });
                 continue;

@@ -18,7 +18,7 @@ import type { ConnectionDetail, Namespaces } from '../api/types';
 import { Actions } from '../components/Actions';
 import { Subscriptions } from '../components/Subscriptions';
 import { Timeline } from '../components/Timeline';
-import { Badge, Card, ErrorNote, Facts, Loading, Table } from '../components/ui';
+import { Badge, Card, ErrorNote, Facts, Loading, Table, Remote } from '../components/ui';
 import { hasFeature, useDashboard } from '../context';
 import { ago, bytes, clock, count, ms } from '../lib/format';
 import { usePoll } from '../lib/poll';
@@ -65,7 +65,7 @@ export function Connection(props: { id: string }) {
         <Card title="Connection">
           <Facts
             rows={[
-              ['Remote', c.remote],
+              ['Remote', <Remote remote={c.remote} />],
               ['Transport', c.transport],
               ['Implementation', c.implementation ?? '–'],
               ['Connected', `${clock(c.connected_at_ms)} (${ago(c.connected_at_ms)})`],

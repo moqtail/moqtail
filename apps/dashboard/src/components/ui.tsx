@@ -192,3 +192,22 @@ export function Facts(props: { rows: [string, ComponentChildren][] }) {
     </dl>
   );
 }
+
+/** The IP of `host:port` or `[v6]:port`. */
+export function remoteIp(remote: string): string {
+  const v6 = /^\[([^\]]+)\]/.exec(remote);
+  if (v6) return v6[1];
+  const colons = remote.split(':').length - 1;
+  return colons === 1 ? remote.slice(0, remote.indexOf(':')) : remote;
+}
+
+/** A remote address, its IP linked to its ipinfo.io page. */
+export function Remote(props: { remote?: string | null }) {
+  if (!props.remote) return <>–</>;
+  const ip = remoteIp(props.remote);
+  return (
+    <a class="link" href={`https://ipinfo.io/${ip}`} target="_blank" rel="noreferrer">
+      {props.remote}
+    </a>
+  );
+}

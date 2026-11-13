@@ -15,6 +15,7 @@
  */
 
 import type { ApiErrorBody } from './types';
+import { parseJson } from '../lib/json';
 
 /** An error answer from the API, or a failure to reach it. */
 export class ApiError extends Error {
@@ -90,7 +91,7 @@ export class ApiClient {
 
   async get<T>(path: string, query?: Query, signal?: AbortSignal): Promise<T> {
     const response = await this.send(path, query, signal);
-    return (await response.json()) as T;
+    return parseJson(await response.text()) as T;
   }
 
   /** A change: POST, PUT or DELETE, with an optional JSON body. Returns the JSON
@@ -107,7 +108,7 @@ export class ApiClient {
         : { method, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } };
     const response = await this.send(path, query, undefined, init);
     const text = await response.text();
-    return text ? (JSON.parse(text) as T) : undefined;
+    return text ? (parseJson(text) as T) : undefined;
   }
 
   async text(path: string, query?: Query, signal?: AbortSignal): Promise<string> {

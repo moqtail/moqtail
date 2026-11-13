@@ -15,7 +15,7 @@
  */
 
 import type { ClusterInfo } from '../api/types';
-import { Badge, Card, ErrorNote, Facts, Loading, Table } from '../components/ui';
+import { Badge, Card, ErrorNote, Facts, Loading, Table, Remote } from '../components/ui';
 import { useDashboard } from '../context';
 import { ago } from '../lib/format';
 import { usePoll } from '../lib/poll';
@@ -120,7 +120,9 @@ peers:
                     <Badge tone={l.up ? 'ok' : 'bad'}>{l.up ? 'up' : 'down'}</Badge>
                   </td>
                   <td>{l.since_ms === null ? 'dialing' : ago(l.since_ms)}</td>
-                  <td>{l.remote ?? '–'}</td>
+                  <td>
+                    <Remote remote={l.remote} />
+                  </td>
                   <td>
                     <ConnLink id={l.conn_id} />
                   </td>

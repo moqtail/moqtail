@@ -15,7 +15,7 @@
  */
 
 import type { Upstream, ZoneReport } from '../api/types';
-import { Badge, Card, ErrorNote, Loading, Table } from '../components/ui';
+import { Badge, Card, ErrorNote, Loading, Table, Remote } from '../components/ui';
 import { useDashboard } from '../context';
 import { ago, bytes, count, ms } from '../lib/format';
 import { requestError } from '../lib/codes';
@@ -74,7 +74,9 @@ export function Upstreams() {
                 <td>
                   <Badge tone={u.up ? 'ok' : 'bad'}>{u.up ? 'up' : 'down'}</Badge>
                 </td>
-                <td>{u.remote}</td>
+                <td>
+                  <Remote remote={u.remote} />
+                </td>
                 <td>{u.tracks}</td>
                 <td>{ms(u.rtt_ms)}</td>
                 <td>

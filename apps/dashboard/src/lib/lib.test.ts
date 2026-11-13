@@ -21,6 +21,9 @@ import { bytes, duration, ms } from './format';
 import { JsonSeqParser, SseParser } from './stream';
 import { buildTimeline } from './timeline';
 import { loadRelays, pinnedRelay } from './relays';
+import { parseJson } from './json';
+import { remoteIp } from '../components/ui';
+import { trackStatus } from '../pages/Tracks';
 import { isRoutineStreamEvent } from '../pages/Events';
 import { namespaceRows, underPrefix } from '../pages/Namespaces';
 
@@ -210,5 +213,29 @@ describe('relays from appsettings.js', () => {
     for (const config of [{}, { relay: 'nope' } as never, { relays: 'nope' } as never]) {
       expect(loadRelays(config)[0].baseUrl).toBe('http://127.0.0.1:4480');
     }
+  });
+});
+
+describe('parseJson', () => {
+  it('keeps integers past 2^53 exact and leaves the rest alone', () => {
+    expect(
+      parseJson('{"alias":1030161482956096647,"n":42,"x":1.5,"s":"1030161482956096647"}'),
+    ).toEqual({ alias: '1030161482956096647', n: 42, x: 1.5, s: '1030161482956096647' });
+  });
+});
+
+describe('remoteIp', () => {
+  it('takes the IP from v4, bracketed v6 and bare addresses', () => {
+    expect(remoteIp('176.234.93.187:14544')).toBe('176.234.93.187');
+    expect(remoteIp('[2001:db8::1]:443')).toBe('2001:db8::1');
+    expect(remoteIp('2001:db8::1')).toBe('2001:db8::1');
+  });
+});
+
+describe('trackStatus', () => {
+  it('shows a cache-only track as cached only, not pending', () => {
+    const t = { origin: 'cache_only', status: 'pending' } as Parameters<typeof trackStatus>[0];
+    expect(trackStatus(t).text).toBe('cached only');
+    expect(trackStatus({ ...t, origin: 'subscribe' }).text).toBe('pending');
   });
 });

@@ -74,8 +74,12 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     // The draft has no selection rule (SSTS 3): our preference order decides
     this.algorithms = sstsAlgorithms(context.client.serverSetup, preferred)
     this.#algorithm = this.algorithms[0] ?? 0n
+    // What the child emits, which isn't always the catalog's packaging: a LOCMAF child emits CMAF
+    const packaging = options.child.capabilities
+      .flat()
+      .find((c) => c.direction === 'out' && c.code === CapabilityCode.PACKAGING)?.value
     this.pad = this.createPad('src', [
-      { direction: 'out', code: CapabilityCode.PACKAGING, value: first.packaging },
+      { direction: 'out', code: CapabilityCode.PACKAGING, value: packaging ?? first.packaging },
       { direction: 'out', code: CapabilityCode.ROLE, value: first.role ?? 'video' },
     ])
     this.#forward = new Forwarder({
@@ -660,6 +664,11 @@ if (import.meta.vitest) {
     const c = await sstsChain([[cmafTrack('l1', { packaging: 'loc' })]], { child: loc as unknown as typeof Cmaf })
     expect(c.source.pad.capabilities.map((cap) => cap.value)).toEqual(['loc', 'video'])
     expect(c.sink.items().filter((i) => i.type === 'packet')).toHaveLength(1)
+    // The pad carries what the child emits: LOCMAF tracks rebuilt into CMAF
+    const { Locmaf } = await import('@/player/elements/locmaf')
+    const locmaf = cmafTrack('m1', { packaging: 'locmaf', locmafVersion: '0.3' })
+    const rebuilt = await sstsChain([[locmaf]], { child: Locmaf as unknown as typeof Cmaf })
+    expect(rebuilt.source.pad.capabilities.map((cap) => cap.value)).toEqual(['cmaf', 'video'])
     await expect(sstsChain([[v('v1')]], { child: testSource() as unknown as typeof Cmaf })).rejects.toMatchObject({
       code: 'UNSUPPORTED_SOURCE',
     })

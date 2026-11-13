@@ -92,6 +92,14 @@ function tupleText(fields: unknown): string {
   return Array.isArray(fields) ? fields.map(f => fieldText(f as Field)).join('/') : '';
 }
 
+/** A parameter or setup option: its name, or its type when qlog has no name for
+ *  it, and its value, which is hex in `value_bytes.data` for a byte value. */
+function kvpText(p: Record<string, unknown>): string {
+  const name = p.name === 'unknown' ? `0x${Number(p.type).toString(16)}` : String(p.name);
+  const value = p.value ?? (p.value_bytes as Record<string, unknown> | undefined)?.data;
+  return value === undefined ? name : `${name}=${valueText(value)}`;
+}
+
 function valueText(value: unknown): string {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const v = value as Record<string, unknown>;
@@ -126,17 +134,10 @@ export function describe(m: Message): string {
   if (typeof m.reason_phrase === 'string' && m.reason_phrase) parts.push(`'${m.reason_phrase}'`);
   const params = m.parameters as Record<string, unknown>[] | undefined;
   if (params?.length) {
-    const text = params.map(p => {
-      const name = p.name === 'unknown' ? `0x${Number(p.type).toString(16)}` : String(p.name);
-      return `${name}=${valueText(p.value)}`;
-    });
-    parts.push(`params[${text.join(', ')}]`);
+    parts.push(`params[${params.map(kvpText).join(', ')}]`);
   }
   if (m.type === 'setup' && Array.isArray(m.setup_options)) {
-    const text = (m.setup_options as Record<string, unknown>[]).map(o => {
-      const name = o.name === 'unknown' ? `0x${Number(o.type).toString(16)}` : String(o.name);
-      return `${name}=${valueText(o.value ?? (o.value_bytes as Record<string, unknown>)?.data)}`;
-    });
+    const text = (m.setup_options as Record<string, unknown>[]).map(kvpText);
     parts.push(text.join(', ') || '(no options)');
   }
   return parts.join(' ');

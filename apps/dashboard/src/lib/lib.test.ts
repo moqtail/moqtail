@@ -70,6 +70,25 @@ describe('buildTimeline', () => {
     data: { stream_id: streamId, message },
   });
 
+  it('prints unnamed parameters with byte values as hex', () => {
+    const timeline = buildTimeline([
+      control(1000, 'moqt:control_message_created', 2, {
+        type: 'publish_namespace',
+        request_id: 1,
+        track_namespace: [{ value: 'cam' }],
+        parameters: [
+          { name: 'unknown', type: 0x40b57, length: 2, value_bytes: { length: 2, data: 'beef' } },
+          { name: 'unknown', type: 0x40b58, value: 4 },
+          { name: 'unknown', type: 0x21 },
+        ],
+      }),
+    ]);
+    const entry = timeline.entries[0];
+    expect(entry.kind === 'request' && entry.request.text).toBe(
+      'PUBLISH_NAMESPACE cam request_id=1 params[0x40b57=beef, 0x40b58=4, 0x21]',
+    );
+  });
+
   it('groups responses under their request and counts data streams', () => {
     const timeline = buildTimeline([
       control(1000, 'moqt:control_message_parsed', 0, { type: 'setup', setup_options: [] }),

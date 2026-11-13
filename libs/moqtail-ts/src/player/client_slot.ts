@@ -168,7 +168,14 @@ async function open(s: Slot, origin: string, options: ClientOptions): Promise<MO
       transportOptions: { ...transport, ...(transport.protocols && { protocols: [...transport.protocols] }) },
     }),
   })
-  client.on('sessionterminated', () => reconnect(s, client, origin, options))
+  // On GOAWAY, leave before the peer's timeout; the lost-session path below reopens the
+  // session at the new URI, or at this one when none is given.
+  let next = origin
+  client.on('goaway', (goaway) => {
+    next = goaway.newSessionUri ?? origin
+    void client.disconnect('GOAWAY')
+  })
+  client.on('sessionterminated', () => reconnect(s, client, next, options))
   await client.init()
   s.client = client
   return client
@@ -245,6 +252,7 @@ if (import.meta.vitest) {
   const { fakeClients } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
   const { SetupOptions } = await import('@/model/parameter/setup_option')
+  const { GoAway } = await import('@/model/control/goaway')
 
   const ORIGIN = 'moqt://relay.example.com/app'
   const member = () => {
@@ -342,6 +350,21 @@ if (import.meta.vitest) {
       expect(currentClient()).toBe(fakes.clients[1])
       expect(a.log).toEqual(['reconnecting 1', 'reconnected'])
       expect(b.log).toEqual(a.log)
+    })
+
+    test('GOAWAY moves every player to the new session URI, or back to this one without it', async () => {
+      const a = member()
+      await acquire(a, ORIGIN, {})
+      fakes.clients[0]!.emit('goaway', new GoAway('moqt://next.example.com/app', 5000n))
+      await flush()
+      expect(fakes.clients[0]!.disconnected).toBe(true)
+      expect(currentClient()).toBe(fakes.clients[1])
+      expect(fakes.clients[1]!.options.url).toBe('moqt://next.example.com/app')
+      expect(a.log).toEqual(['reconnecting 1', 'reconnected'])
+
+      fakes.clients[1]!.emit('goaway', new GoAway(undefined, 5000n))
+      await flush()
+      expect(fakes.clients[2]!.options.url).toBe('moqt://next.example.com/app')
     })
 
     test('after the last attempt every player fails with SESSION_LOST', async () => {

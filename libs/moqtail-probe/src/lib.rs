@@ -58,6 +58,34 @@ pub trait Inspect: Send + Sync {
   fn cluster(&self) -> BoxFuture<'_, ClusterInfo>;
 }
 
+/// What an operator can change in the running relay, through the API's `actions`
+/// feature. Each call returns once the relay has acted.
+pub trait Actions: Send + Sync {
+  /// Sends GOAWAY to one connection, asking it to move to another session within
+  /// `timeout_ms`. `false` when no open connection has that id.
+  fn goaway(&self, conn_id: u64, timeout_ms: u64) -> BoxFuture<'_, bool>;
+
+  /// Closes one connection at once. `false` when no open connection has that id.
+  fn close(&self, conn_id: u64) -> BoxFuture<'_, bool>;
+
+  /// Refuses new requests from now on and sends GOAWAY to every connection. The
+  /// relay keeps running until it is stopped. Returns how many connections were
+  /// told.
+  fn drain(&self, timeout_ms: u64) -> BoxFuture<'_, usize>;
+
+  /// The URI that GOAWAY sends clients to; `None` when GOAWAY carries none.
+  fn redirect_uri(&self) -> BoxFuture<'_, Option<String>>;
+
+  fn set_redirect_uri(&self, uri: Option<String>) -> BoxFuture<'_, ()>;
+
+  /// The log filter in effect, such as `info,relay=debug`; `None` when the relay
+  /// was started without a filter that can be changed.
+  fn log_filter(&self) -> Option<String>;
+
+  /// Replaces the log filter. The error says why a filter was not taken.
+  fn set_log_filter(&self, filter: &str) -> Result<(), String>;
+}
+
 /// What the relay core reports as things happen. Every method has an empty default,
 /// so the core can always call them, and [`NoProbe`] is the probe when nothing
 /// observes the relay.

@@ -22,13 +22,14 @@ use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use moqtail_probe::{
-  BoxFuture, CloseInfo, ConnectionInfo, ConnectionState, Inspect, NamespaceSubscriptionInfo, Probe,
-  PublishedTrackInfo, QuicStats, RelayStatus, Role, TrackDetail, TrackInfo,
+  Actions, BoxFuture, CloseInfo, ConnectionInfo, ConnectionState, Inspect,
+  NamespaceSubscriptionInfo, Probe, PublishedTrackInfo, QuicStats, RelayStatus, Role, TrackDetail,
+  TrackInfo,
 };
 use serde_json::{Value, json};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
 /// A relay stand-in with settable lifecycle flags.
@@ -36,6 +37,55 @@ use tower::ServiceExt;
 pub(crate) struct FakeRelay {
   pub accepting: AtomicBool,
   pub draining: AtomicBool,
+  /// What the actions asked for, in order, such as `goaway 7 10000`.
+  pub actions: Mutex<Vec<String>>,
+  pub redirect_uri: Mutex<Option<String>>,
+}
+
+impl FakeRelay {
+  fn record(&self, action: String) {
+    self.actions.lock().unwrap().push(action);
+  }
+}
+
+/// Connection 7 is the only open one.
+impl Actions for FakeRelay {
+  fn goaway(&self, conn_id: u64, timeout_ms: u64) -> BoxFuture<'_, bool> {
+    self.record(format!("goaway {conn_id} {timeout_ms}"));
+    Box::pin(async move { conn_id == 7 })
+  }
+
+  fn close(&self, conn_id: u64) -> BoxFuture<'_, bool> {
+    self.record(format!("close {conn_id}"));
+    Box::pin(async move { conn_id == 7 })
+  }
+
+  fn drain(&self, timeout_ms: u64) -> BoxFuture<'_, usize> {
+    self.record(format!("drain {timeout_ms}"));
+    self.draining.store(true, Ordering::Relaxed);
+    Box::pin(async { 1 })
+  }
+
+  fn redirect_uri(&self) -> BoxFuture<'_, Option<String>> {
+    Box::pin(async { self.redirect_uri.lock().unwrap().clone() })
+  }
+
+  fn set_redirect_uri(&self, uri: Option<String>) -> BoxFuture<'_, ()> {
+    *self.redirect_uri.lock().unwrap() = uri;
+    Box::pin(async {})
+  }
+
+  fn log_filter(&self) -> Option<String> {
+    Some("info".into())
+  }
+
+  fn set_log_filter(&self, filter: &str) -> Result<(), String> {
+    if filter.contains('!') {
+      return Err("invalid filter directive".into());
+    }
+    self.record(format!("log {filter}"));
+    Ok(())
+  }
 }
 
 impl Inspect for FakeRelay {
@@ -149,7 +199,7 @@ impl Client {
     let (config, _) = ApiConfig::from_settings(settings).unwrap();
     let relay = Arc::new(FakeRelay::default());
     relay.accepting.store(true, Ordering::Relaxed);
-    let state = Arc::new(ApiState::new(config, relay.clone()));
+    let state = Arc::new(ApiState::new(config, relay.clone(), relay.clone()));
     Client { state, relay }
   }
 
@@ -163,11 +213,30 @@ impl Client {
     from: &str,
     headers: &[(&str, &str)],
   ) -> (StatusCode, Value, axum::http::HeaderMap) {
+    self.send_json(method, path, from, headers, None).await
+  }
+
+  /// [`Client::send`] with a JSON body.
+  pub async fn send_json(
+    &self,
+    method: Method,
+    path: &str,
+    from: &str,
+    headers: &[(&str, &str)],
+    json: Option<Value>,
+  ) -> (StatusCode, Value, axum::http::HeaderMap) {
     let mut request = Request::builder().method(method).uri(path);
     for (name, value) in headers {
       request = request.header(*name, *value);
     }
-    let mut request = request.body(Body::empty()).unwrap();
+    let body = match json {
+      Some(json) => {
+        request = request.header(header::CONTENT_TYPE, "application/json");
+        Body::from(json.to_string())
+      }
+      None => Body::empty(),
+    };
+    let mut request = request.body(body).unwrap();
     let peer: SocketAddr = from.parse().unwrap();
     request.extensions_mut().insert(ConnectInfo(peer));
     let response = routes::router(self.state.clone())
@@ -506,4 +575,138 @@ async fn a_metrics_token_alone_protects_only_the_metrics() {
   assert_eq!(status, StatusCode::UNAUTHORIZED);
   let (status, ..) = client.send(Method::GET, "/api/v1/config", local, &[]).await;
   assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn actions_are_off_unless_enabled() {
+  let client = Client::new(ApiSettings {
+    write_token: Some("wr1te".into()),
+    ..Default::default()
+  });
+  let (status, body, _) = client
+    .send(
+      Method::DELETE,
+      "/api/v1/connections/7",
+      "127.0.0.1:5000",
+      &[("authorization", "Bearer wr1te")],
+    )
+    .await;
+  assert_eq!(
+    (status, body["error"].as_str()),
+    (StatusCode::NOT_FOUND, Some("feature_off"))
+  );
+  // The read on the same path still answers.
+  assert_eq!(client.get("/api/v1/connections/7").await.0, StatusCode::OK);
+  assert!(client.relay.actions.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn actions_need_the_write_token_and_reach_the_relay() {
+  let client = Client::new(ApiSettings {
+    features: Some(vec!["state".into(), "actions".into()]),
+    read_token: Some("r3ad".into()),
+    write_token: Some("wr1te".into()),
+    ..Default::default()
+  });
+  let local = "127.0.0.1:5000";
+  let read = [("authorization", "Bearer r3ad")];
+  let write = [("authorization", "Bearer wr1te")];
+
+  let (status, ..) = client
+    .send(Method::POST, "/api/v1/connections/7/goaway", local, &read)
+    .await;
+  assert_eq!(status, StatusCode::FORBIDDEN);
+
+  let (status, ..) = client
+    .send(
+      Method::POST,
+      "/api/v1/connections/7/goaway?timeout_ms=500",
+      local,
+      &write,
+    )
+    .await;
+  assert_eq!(status, StatusCode::ACCEPTED);
+  let (status, ..) = client
+    .send(
+      Method::POST,
+      "/api/v1/connections/7/goaway?timeout_ms=9999999",
+      local,
+      &write,
+    )
+    .await;
+  assert_eq!(status, StatusCode::BAD_REQUEST);
+  let (status, ..) = client
+    .send(Method::DELETE, "/api/v1/connections/8", local, &write)
+    .await;
+  assert_eq!(status, StatusCode::NOT_FOUND);
+  let (status, ..) = client
+    .send(Method::DELETE, "/api/v1/connections/7", local, &write)
+    .await;
+  assert_eq!(status, StatusCode::NO_CONTENT);
+
+  let (status, body, _) = client
+    .send(Method::POST, "/api/v1/drain", local, &write)
+    .await;
+  assert_eq!((status, body["told"].as_u64()), (StatusCode::OK, Some(1)));
+
+  let uri = json!({ "uri": "moqt://other.example:4433" });
+  let (status, ..) = client
+    .send_json(
+      Method::PUT,
+      "/api/v1/config/redirect_uri",
+      local,
+      &write,
+      Some(uri),
+    )
+    .await;
+  assert_eq!(status, StatusCode::OK);
+  let (_, body, _) = client
+    .send(Method::GET, "/api/v1/config/redirect_uri", local, &read)
+    .await;
+  assert_eq!(body["uri"], "moqt://other.example:4433");
+
+  let (status, body, _) = client
+    .send_json(
+      Method::PUT,
+      "/api/v1/logging",
+      local,
+      &write,
+      Some(json!({ "filter": "!" })),
+    )
+    .await;
+  assert_eq!(
+    (status, body["error"].as_str()),
+    (StatusCode::BAD_REQUEST, Some("bad_filter"))
+  );
+  let (status, ..) = client
+    .send_json(
+      Method::PUT,
+      "/api/v1/logging",
+      local,
+      &write,
+      Some(json!({ "nope": 1 })),
+    )
+    .await;
+  assert_eq!(status, StatusCode::BAD_REQUEST);
+  let (status, ..) = client
+    .send_json(
+      Method::PUT,
+      "/api/v1/logging",
+      local,
+      &write,
+      Some(json!({ "filter": "debug" })),
+    )
+    .await;
+  assert_eq!(status, StatusCode::OK);
+
+  assert_eq!(
+    *client.relay.actions.lock().unwrap(),
+    [
+      "goaway 7 500",
+      "close 8",
+      "close 7",
+      "drain 10000",
+      "log debug"
+    ]
+  );
 }

@@ -63,8 +63,8 @@ pub(crate) struct Server {
   #[cfg_attr(not(feature = "observability"), allow(dead_code))]
   pub started_at: std::time::SystemTime,
   pub cluster: Arc<cluster::ClusterState>,
-  /// GOAWAY redirect URI clients should migrate to. Seeded from config; a future
-  /// admin API mutates this at runtime.
+  /// GOAWAY redirect URI clients should migrate to. Seeded from config; the API's
+  /// `actions` feature can change it at runtime.
   pub redirect_uri: Arc<RwLock<Option<String>>>,
 }
 
@@ -209,7 +209,8 @@ impl Server {
   }
 
   /// Sends GOAWAY to every connected client so they can migrate before the relay exits.
-  async fn broadcast_goaway(&self, timeout_ms: u64) {
+  /// Returns how many clients were told.
+  async fn broadcast_goaway(&self, timeout_ms: u64) -> usize {
     let redirect_uri = self.redirect_uri().await;
     let clients: Vec<Arc<MOQTClient>> = {
       let clients = self.client_manager.clients.read().await;
@@ -220,12 +221,13 @@ impl Server {
       redirect_uri,
       clients.len()
     );
-    for client in clients {
+    for client in &clients {
       let goaway = GoAway::new(redirect_uri.clone(), timeout_ms);
       client
         .queue_message(ControlMessage::Goaway(Box::new(goaway)))
         .await;
     }
+    clients.len()
   }
 
   /// Demultiplexes one incoming QUIC connection by its negotiated ALPN protocol —
@@ -324,11 +326,27 @@ fn init_logging(config: &AppConfig) {
     .with_default_directive(LevelFilter::INFO.into())
     .from_env_lossy();
 
-  tracing_subscriber::fmt()
+  let builder = tracing_subscriber::fmt()
     .with_target(true)
     .with_level(true)
-    .with_env_filter(env_filter)
-    .init();
+    .with_env_filter(env_filter);
+  // The filter can be changed at runtime only when the API's `actions` feature is
+  // on, so other relays keep the plain filter.
+  #[cfg(feature = "observability")]
+  if config.api_enable
+    && config
+      .api_features
+      .as_ref()
+      .is_some_and(|f| f.iter().any(|f| f == "actions"))
+  {
+    let builder = builder.with_filter_reloading();
+    inspect::keep_log_filter(builder.reload_handle());
+    builder.init();
+  } else {
+    builder.init();
+  }
+  #[cfg(not(feature = "observability"))]
+  builder.init();
 
   if let Some(dir) = &config.qlog_folder {
     match qlog::init(dir, "server") {

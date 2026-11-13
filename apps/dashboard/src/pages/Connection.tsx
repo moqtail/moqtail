@@ -45,7 +45,7 @@ export function Connection(props: { id: string }) {
         <Badge tone={stateTone(c.state)}>{c.state}</Badge>
         {c.role === 'cluster_peer' && <Badge>cluster peer</Badge>}
       </div>
-      {open && hasFeature(dashboard, 'actions') && <Actions connId={c.conn_id} />}
+      {open && dashboard.index?.features.includes('actions') && <Actions connId={c.conn_id} />}
       <div class="grid gap-4 lg:grid-cols-2">
         <Card title="Connection">
           <Facts

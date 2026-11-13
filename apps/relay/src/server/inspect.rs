@@ -70,6 +70,35 @@ pub(crate) fn zone_for(
   }
 }
 
+/// Reads and replaces the log filter; kept at startup when the API's `actions`
+/// feature is on.
+#[cfg(feature = "observability")]
+type SetLogFilter = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+#[cfg(feature = "observability")]
+struct LogFilter {
+  get: Box<dyn Fn() -> Option<String> + Send + Sync>,
+  set: SetLogFilter,
+}
+
+#[cfg(feature = "observability")]
+static LOG_FILTER: std::sync::OnceLock<LogFilter> = std::sync::OnceLock::new();
+
+/// Keeps the handle that changes the log filter, for [`moqtail_probe::Actions`].
+#[cfg(feature = "observability")]
+pub(crate) fn keep_log_filter<S: 'static>(
+  handle: tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, S>,
+) {
+  let reader = handle.clone();
+  let _ = LOG_FILTER.set(LogFilter {
+    get: Box::new(move || reader.with_current(|f| f.to_string()).ok()),
+    set: Box::new(move |text| {
+      let filter = tracing_subscriber::EnvFilter::try_new(text).map_err(|e| e.to_string())?;
+      handle.reload(filter).map_err(|e| e.to_string())
+    }),
+  });
+}
+
 /// When an object arrived from its publisher, for measuring its processing time.
 /// Builds without the observability layer read no clock.
 pub(crate) fn arrival_time() -> Option<std::time::Instant> {
@@ -82,14 +111,19 @@ pub(crate) fn arrival_time() -> Option<std::time::Instant> {
 /// The `Inspect` implementation, built only with the observability layer.
 #[cfg(feature = "observability")]
 mod relay {
+  use super::LOG_FILTER;
   use super::{
     connection_info, location_text, millis_since_epoch, namespace_text, subscription_info,
   };
   use crate::server::Server;
+  use crate::server::session::client::MOQTClient;
   use crate::server::track::track_manager::{SubscribeKind, TrackManager};
   use crate::server::track::{Track, TrackOrigin, TrackStatus};
+  use moqtail::model::control::control_message::ControlMessage;
+  use moqtail::model::control::goaway::GoAway;
+  use moqtail::model::error::TerminationCode;
   use moqtail_probe::{
-    AdvertInfo, BoxFuture, ClusterInfo, ClusterPeerInfo, ConnectionInfo, Inspect,
+    Actions, AdvertInfo, BoxFuture, ClusterInfo, ClusterPeerInfo, ConnectionInfo, Inspect,
     NamespaceSubscriptionInfo, RelayStatus, TrackDetail, TrackInfo, TrackPublisher,
     TrackSubscription,
   };
@@ -204,6 +238,69 @@ mod relay {
           peers,
         }
       })
+    }
+  }
+
+  impl RelayInspect {
+    async fn client(&self, conn_id: u64) -> Option<std::sync::Arc<MOQTClient>> {
+      let id = usize::try_from(conn_id).ok()?;
+      self.0.client_manager.clients.read().await.get(&id).cloned()
+    }
+  }
+
+  impl Actions for RelayInspect {
+    fn goaway(&self, conn_id: u64, timeout_ms: u64) -> BoxFuture<'_, bool> {
+      Box::pin(async move {
+        let Some(client) = self.client(conn_id).await else {
+          return false;
+        };
+        let goaway = GoAway::new(self.0.redirect_uri().await, timeout_ms);
+        client
+          .queue_message(ControlMessage::Goaway(Box::new(goaway)))
+          .await;
+        true
+      })
+    }
+
+    fn close(&self, conn_id: u64) -> BoxFuture<'_, bool> {
+      Box::pin(async move {
+        let Some(client) = self.client(conn_id).await else {
+          return false;
+        };
+        // The session sees the closed connection and cleans up as for any close.
+        client
+          .connection
+          .close(TerminationCode::NoError as u32, b"closed by the operator");
+        true
+      })
+    }
+
+    fn drain(&self, timeout_ms: u64) -> BoxFuture<'_, usize> {
+      Box::pin(async move {
+        self.0.draining.store(true, Ordering::Relaxed);
+        self.0.broadcast_goaway(timeout_ms).await
+      })
+    }
+
+    fn redirect_uri(&self) -> BoxFuture<'_, Option<String>> {
+      Box::pin(self.0.redirect_uri())
+    }
+
+    fn set_redirect_uri(&self, uri: Option<String>) -> BoxFuture<'_, ()> {
+      Box::pin(async move {
+        *self.0.redirect_uri.write().await = uri;
+      })
+    }
+
+    fn log_filter(&self) -> Option<String> {
+      LOG_FILTER.get().and_then(|f| (f.get)())
+    }
+
+    fn set_log_filter(&self, filter: &str) -> Result<(), String> {
+      let log_filter = LOG_FILTER
+        .get()
+        .ok_or("the log filter was not made changeable at startup")?;
+      (log_filter.set)(filter)
     }
   }
 

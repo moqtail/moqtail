@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import { useEffect, useMemo, useState } from 'preact/hooks';
-import { ApiClient, ApiError } from './api/client';
+import { useMemo, useState } from 'preact/hooks';
+import { ApiClient } from './api/client';
 import type { ApiIndex } from './api/types';
 import { ErrorNote } from './components/ui';
 import { type Dashboard, DashboardContext } from './context';
@@ -38,6 +38,7 @@ import {
   saveTokens,
   tokensRemembered,
 } from './lib/relays';
+import { usePoll } from './lib/poll';
 import { href, useRoute } from './lib/route';
 
 /** The navigation; a page shows only when the relay serves its feature. */
@@ -58,8 +59,6 @@ export function App() {
   const [activeId, setActiveId] = useState(() => loadActive(relays));
   const [tokens, setTokens] = useState(() => loadTokens(activeId));
   const [refreshMs, setRefreshMs] = useState(loadRefreshMs);
-  const [index, setIndex] = useState<ApiIndex>();
-  const [indexError, setIndexError] = useState<ApiError>();
   const relay = relays.find(r => r.id === activeId) ?? relays[0];
 
   const api = useMemo(
@@ -71,19 +70,11 @@ export function App() {
     [relay.baseUrl, tokens.write],
   );
 
-  // The index says which features the relay serves; asked again when the relay or token changes.
-  useEffect(() => {
-    const controller = new AbortController();
-    setIndex(undefined);
-    setIndexError(undefined);
-    api
-      .get<ApiIndex>('', undefined, controller.signal)
-      .then(setIndex)
-      .catch(e => {
-        if (e instanceof ApiError) setIndexError(e);
-      });
-    return () => controller.abort();
-  }, [api]);
+  // The index says which features the relay serves. It is asked again every ten
+  // seconds, so a relay that was down or restarted with other features is noticed.
+  const indexPoll = usePoll(signal => api.get<ApiIndex>('', undefined, signal), 10000, [api]);
+  const index = indexPoll.data;
+  const indexError = index ? undefined : indexPoll.error;
 
   const dashboard: Dashboard = { relay, api, writeApi, refreshMs, index };
   const selectRelay = (id: string) => {

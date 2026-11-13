@@ -19,12 +19,14 @@ use crate::ApiState;
 use crate::config::Feature;
 use crate::error::ApiError;
 use axum::extract::State;
+use axum::http::Method;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{MethodRouter, get};
+use axum::routing::{MethodFilter, MethodRouter, delete, get, on, post, put};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// One row of the endpoint index.
@@ -73,6 +75,48 @@ const ENDPOINTS: &[Endpoint] = &[
     path: "/api/v1/connections/{conn_id}",
     feature: Feature::State,
     route: || get(crate::connections::detail),
+  },
+  Endpoint {
+    method: "DELETE",
+    path: "/api/v1/connections/{conn_id}",
+    feature: Feature::Actions,
+    route: || delete(crate::actions::close),
+  },
+  Endpoint {
+    method: "POST",
+    path: "/api/v1/connections/{conn_id}/goaway",
+    feature: Feature::Actions,
+    route: || post(crate::actions::goaway),
+  },
+  Endpoint {
+    method: "POST",
+    path: "/api/v1/drain",
+    feature: Feature::Actions,
+    route: || post(crate::actions::drain),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/config/redirect_uri",
+    feature: Feature::Actions,
+    route: || get(crate::actions::redirect_uri),
+  },
+  Endpoint {
+    method: "PUT",
+    path: "/api/v1/config/redirect_uri",
+    feature: Feature::Actions,
+    route: || put(crate::actions::set_redirect_uri),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/logging",
+    feature: Feature::Actions,
+    route: || get(crate::actions::logging),
+  },
+  Endpoint {
+    method: "PUT",
+    path: "/api/v1/logging",
+    feature: Feature::Actions,
+    route: || put(crate::actions::set_logging),
   },
   Endpoint {
     method: "GET",
@@ -161,15 +205,28 @@ const ENDPOINTS: &[Endpoint] = &[
 ];
 
 pub fn router(state: Arc<ApiState>) -> Router {
-  let mut router = Router::new();
+  // Several rows can share a path with different methods; their routes merge.
+  let mut paths: BTreeMap<&str, MethodRouter<Arc<ApiState>>> = BTreeMap::new();
   for endpoint in ENDPOINTS {
     let route = if state.config.has(endpoint.feature) {
       (endpoint.route)()
     } else {
       let feature = endpoint.feature;
-      axum::routing::any(move || async move { feature_off(feature) })
+      let method = Method::from_bytes(endpoint.method.as_bytes()).expect("a known method");
+      on(
+        MethodFilter::try_from(method).expect("a routable method"),
+        move || async move { feature_off(feature) },
+      )
     };
-    router = router.route(endpoint.path, route);
+    let merged = match paths.remove(endpoint.path) {
+      Some(existing) => existing.merge(route),
+      None => route,
+    };
+    paths.insert(endpoint.path, merged);
+  }
+  let mut router = Router::new();
+  for (path, route) in paths {
+    router = router.route(path, route);
   }
   router
     .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not_found").into_response() })

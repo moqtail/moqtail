@@ -54,7 +54,10 @@ pub fn start(server: &Server) -> Result<()> {
   for warning in warnings {
     warn!("{warning}");
   }
-  let probe = relay_api::start(config, Arc::new(RelayInspect(server.clone())))?;
+  let probe = {
+    let relay = Arc::new(RelayInspect(server.clone()));
+    relay_api::start(config, relay.clone(), relay)?
+  };
   moqtail_probe::install(probe);
   Ok(())
 }

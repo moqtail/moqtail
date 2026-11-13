@@ -16,9 +16,11 @@
 //!
 //! It runs on its own small tokio runtime, so serving requests, encoding JSON and
 //! slow clients never take time from the relay's delivery threads. It reads the
-//! relay only through [`moqtail_probe::Inspect`].
+//! relay only through [`moqtail_probe::Inspect`], and changes it only through
+//! [`moqtail_probe::Actions`].
 
 mod access;
+mod actions;
 pub mod config;
 mod connections;
 mod control;
@@ -39,7 +41,7 @@ mod zones;
 use anyhow::{Context, Result};
 use config::{ApiConfig, Feature};
 use control::ControlTracker;
-use moqtail_probe::{ConnectionInfo, Inspect, Probe, TrackInfo};
+use moqtail_probe::{Actions, ConnectionInfo, Inspect, Probe, TrackInfo};
 use probe::{ApiProbe, Connection};
 use snapshot::Cached;
 use std::net::SocketAddr;
@@ -50,6 +52,8 @@ use tracing::{error, info};
 pub(crate) struct ApiState {
   pub config: ApiConfig,
   pub inspect: Arc<dyn Inspect>,
+  /// Changes to the relay; used only by the `actions` feature.
+  pub actions: Arc<dyn Actions>,
   pub probe: Arc<ApiProbe>,
   pub control: Arc<ControlTracker>,
   pub zones: Arc<zones::Zones>,
@@ -60,7 +64,11 @@ pub(crate) struct ApiState {
 }
 
 impl ApiState {
-  pub(crate) fn new(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Self {
+  pub(crate) fn new(
+    config: ApiConfig,
+    inspect: Arc<dyn Inspect>,
+    actions: Arc<dyn Actions>,
+  ) -> Self {
     let zones = Arc::new(zones::Zones::new(&config.accounting_zones));
     let control = Arc::new(ControlTracker::new(config.upstream_timeout, zones.clone()));
     let latency = (config.has(Feature::Latency) || config.metrics_track.is_some()).then(|| {
@@ -82,6 +90,7 @@ impl ApiState {
     ApiState {
       config,
       inspect,
+      actions,
       probe,
       control,
       zones,
@@ -138,11 +147,15 @@ impl ApiState {
 /// Binds the API's listener and serves it from a dedicated thread. Returns once the
 /// socket is bound, so a port already in use is reported at relay startup. The
 /// returned probe is the one the relay core should report to.
-pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Probe>> {
+pub fn start(
+  config: ApiConfig,
+  inspect: Arc<dyn Inspect>,
+  actions: Arc<dyn Actions>,
+) -> Result<Arc<dyn Probe>> {
   let main = bind_listener(config.bind)?;
   let metrics = config.metrics_bind.map(bind_listener).transpose()?;
   let (bind, metrics_bind) = (config.bind, config.metrics_bind);
-  let state = Arc::new(ApiState::new(config, inspect));
+  let state = Arc::new(ApiState::new(config, inspect, actions));
   let probe: Arc<dyn Probe> = state.probe.clone();
   if state.config.has(Feature::State)
     || state.config.has(Feature::Metrics)

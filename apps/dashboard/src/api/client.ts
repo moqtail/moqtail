@@ -59,10 +59,19 @@ export class ApiClient {
     return this.token ? { Authorization: `Bearer ${this.token}` } : {};
   }
 
-  private async send(path: string, query?: Query, signal?: AbortSignal): Promise<Response> {
+  private async send(
+    path: string,
+    query?: Query,
+    signal?: AbortSignal,
+    init?: RequestInit,
+  ): Promise<Response> {
     let response: Response;
     try {
-      response = await fetch(this.url(path, query), { headers: this.headers(), signal });
+      response = await fetch(this.url(path, query), {
+        ...init,
+        headers: { ...this.headers(), ...init?.headers },
+        signal,
+      });
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') throw e;
       throw new ApiError(0, 'unreachable', `cannot reach ${this.baseUrl}: ${String(e)}`);
@@ -82,6 +91,23 @@ export class ApiClient {
   async get<T>(path: string, query?: Query, signal?: AbortSignal): Promise<T> {
     const response = await this.send(path, query, signal);
     return (await response.json()) as T;
+  }
+
+  /** A change: POST, PUT or DELETE, with an optional JSON body. Returns the JSON
+   *  answer, or `undefined` when there is none. */
+  async write<T = unknown>(
+    method: 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    query?: Query,
+    body?: unknown,
+  ): Promise<T | undefined> {
+    const init: RequestInit =
+      body === undefined
+        ? { method }
+        : { method, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } };
+    const response = await this.send(path, query, undefined, init);
+    const text = await response.text();
+    return text ? (JSON.parse(text) as T) : undefined;
   }
 
   async text(path: string, query?: Query, signal?: AbortSignal): Promise<string> {

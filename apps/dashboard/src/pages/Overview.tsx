@@ -16,6 +16,7 @@
 
 import { useRef } from 'preact/hooks';
 import type { LatencyReport, Overview as OverviewData } from '../api/types';
+import { RelayActions } from '../components/Actions';
 import { Chart } from '../components/Chart';
 import { Badge, Card, ErrorNote, Loading, Stat, Table } from '../components/ui';
 import { hasFeature, useDashboard } from '../context';
@@ -222,6 +223,7 @@ export function Overview() {
           objects dropped.
         </p>
       )}
+      {dashboard.index?.features.includes('actions') && <RelayActions />}
     </div>
   );
 }

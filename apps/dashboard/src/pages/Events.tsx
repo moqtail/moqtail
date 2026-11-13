@@ -53,6 +53,9 @@ export function Events() {
   const [streams, setStreams] = useState(false);
   const [paused, setPaused] = useState(false);
   const [lines, setLines] = useState<Line[]>([]);
+  // Data stream headers left out while the box is unticked, so the page shows it
+  // is receiving even when nothing else happens.
+  const [hidden, setHidden] = useState(0);
   const [error, setError] = useState<ApiError>();
   const streamsRef = useRef(streams);
   streamsRef.current = streams;
@@ -63,7 +66,13 @@ export function Events() {
     const parser = new SseParser();
     let key = 0;
     let pending: Line[] = [];
+    let pendingHidden = 0;
     const flush = setInterval(() => {
+      if (pendingHidden > 0) {
+        const count = pendingHidden;
+        pendingHidden = 0;
+        setHidden(previous => previous + count);
+      }
       if (pending.length === 0) return;
       const added = pending.reverse();
       pending = [];
@@ -84,7 +93,10 @@ export function Events() {
                 pending.push({ key: key++, kind: m.event, text: m.data });
                 continue;
               }
-              if (!streamsRef.current && isStreamHeader(event.name)) continue;
+              if (!streamsRef.current && isStreamHeader(event.name)) {
+                pendingHidden += 1;
+                continue;
+              }
               pending.push({ key: key++, kind: m.event, event });
             } else {
               pending.push({ key: key++, kind: m.event, text: m.data });
@@ -118,6 +130,7 @@ export function Events() {
             e.preventDefault();
             setFilter({ conn: draft.conn.trim(), name: draft.name.trim() });
             setLines([]);
+            setHidden(0);
           }}
         >
           <label>
@@ -151,7 +164,14 @@ export function Events() {
           <button type="button" class="btn" onClick={() => setPaused(!paused)}>
             {paused ? 'Resume' : 'Pause'}
           </button>
-          <button type="button" class="btn" onClick={() => setLines([])}>
+          <button
+            type="button"
+            class="btn"
+            onClick={() => {
+              setLines([]);
+              setHidden(0);
+            }}
+          >
             Clear
           </button>
         </form>
@@ -161,8 +181,16 @@ export function Events() {
       <p class="mb-2 text-xs text-neutral-500">
         Newest first, the last {MAX_LINES} kept, updated twice a second.{' '}
         {paused ? 'Paused: nothing is received.' : 'Receiving.'}
-        {!streams && ' Data stream headers are hidden.'}
+        {!streams &&
+          ` ${hidden.toLocaleString('en-US')} data stream headers hidden; tick the box to show them.`}
       </p>
+      {lines.length === 0 && !paused && (
+        <p class="py-6 text-center text-xs text-neutral-500">
+          {streams
+            ? 'Waiting for events…'
+            : 'Waiting for control messages. A steady relay sends few; they appear when a client connects, subscribes or leaves.'}
+        </p>
+      )}
       <ol class="max-h-[70vh] overflow-auto font-mono text-xs" aria-live="off">
         {lines.map(line => (
           <li key={line.key} class="border-b border-white/6 py-1">

@@ -16,11 +16,48 @@
 
 @import 'tailwindcss';
 
+/* The look of the other MOQtail apps (client-js, moqtail.dev): dark only, near-black
+   neutrals, hairline borders, small uppercase section labels and monospace numbers. */
+
 @layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-neutral-950 text-neutral-200 antialiased;
+  }
   th {
-    @apply px-2 py-1 text-left font-medium;
+    @apply px-2 py-1.5 text-left text-[11px] font-semibold tracking-widest text-neutral-500 uppercase;
   }
   td {
-    @apply px-2 py-1 tabular-nums;
+    @apply border-t border-white/6 px-2 py-1.5 font-mono text-xs whitespace-nowrap text-neutral-300 tabular-nums;
   }
+  input,
+  select {
+    @apply rounded-md border border-neutral-700/80 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 transition-colors outline-none focus:border-blue-500/60;
+  }
+  input[type='checkbox'] {
+    @apply accent-blue-500;
+  }
+}
+
+@layer components {
+  /* A secondary button; the primary one adds .btn-primary. */
+  .btn {
+    @apply cursor-pointer rounded-lg border border-neutral-700/80 bg-neutral-900 px-3 py-1 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-600 hover:text-neutral-100 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply border-transparent bg-blue-600 text-white hover:bg-blue-500 active:bg-blue-700;
+  }
+  .btn-danger {
+    @apply border-red-500/30 bg-red-500/10 text-red-300 hover:border-red-500/50 hover:text-red-200;
+  }
+  .link {
+    @apply text-blue-400 transition-colors hover:text-blue-300;
+  }
+}
+
+/* uPlot draws in canvas; its legend and axes follow the dark theme here. */
+.u-legend {
+  @apply text-[11px] text-neutral-400;
 }

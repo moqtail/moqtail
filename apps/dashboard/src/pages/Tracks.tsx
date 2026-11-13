@@ -51,10 +51,10 @@ export function Tracks() {
     <Card
       title="Tracks"
       actions={
-        <label class="flex items-center gap-1 text-sm">
+        <label class="flex items-center gap-1.5 text-xs text-neutral-400">
           Namespace
           <input
-            class="w-32 rounded border px-1 dark:bg-zinc-800"
+            class="w-32"
             value={prefix}
             onInput={e => {
               setPrefix(e.currentTarget.value);
@@ -89,10 +89,7 @@ export function Tracks() {
                 <tr key={t.track_id}>
                   <td>{t.track_id}</td>
                   <td>
-                    <a
-                      class="text-blue-600 hover:underline dark:text-blue-400"
-                      href={href('tracks', t.track_id)}
-                    >
+                    <a class="link" href={href('tracks', t.track_id)}>
                       {t.namespace} : {t.name}
                     </a>
                   </td>
@@ -119,7 +116,9 @@ export function Tracks() {
               ))}
             </tbody>
           </Table>
-          {polled.data.items.length === 0 && <p class="mt-2 text-sm text-zinc-500">No tracks.</p>}
+          {polled.data.items.length === 0 && (
+            <p class="mt-2 text-xs text-neutral-500">No tracks.</p>
+          )}
           <Pager
             total={polled.data.total}
             offset={polled.data.offset}
@@ -152,37 +151,34 @@ export function Track(props: { id: string }) {
       <Card title="Fan-out">
         <div class="flex flex-wrap items-center gap-4 text-sm">
           <div>
-            <div class="text-xs text-zinc-500">Publishers</div>
+            <div class="text-xs text-neutral-500">Publishers</div>
             {t.publishers.length ? (
               t.publishers.map(p => (
                 <div key={p.conn_id}>
-                  <a
-                    class="text-blue-600 hover:underline dark:text-blue-400"
-                    href={href('connections', p.conn_id)}
-                  >
+                  <a class="link" href={href('connections', p.conn_id)}>
                     connection {p.conn_id}
                   </a>{' '}
-                  <span class="text-zinc-500">alias {p.alias}</span>
+                  <span class="text-neutral-500">alias {p.alias}</span>
                 </div>
               ))
             ) : (
-              <div class="text-zinc-500">none</div>
+              <div class="text-neutral-500">none</div>
             )}
           </div>
-          <div aria-hidden="true" class="text-2xl text-zinc-400">
+          <div aria-hidden="true" class="text-2xl text-neutral-600">
             →
           </div>
-          <div class="rounded border px-3 py-2 text-center">
+          <div class="rounded-lg border border-white/6 bg-neutral-950 px-3 py-2 text-center font-mono text-xs">
             relay
-            <div class="text-xs text-zinc-500">
+            <div class="text-xs text-neutral-500">
               {count(t.cached_groups)} groups, {bytes(t.cached_bytes)} cached
             </div>
           </div>
-          <div aria-hidden="true" class="text-2xl text-zinc-400">
+          <div aria-hidden="true" class="text-2xl text-neutral-600">
             →
           </div>
           <div>
-            <div class="text-xs text-zinc-500">Subscribers</div>
+            <div class="text-xs text-neutral-500">Subscribers</div>
             {t.subscribers} subscription(s){t.forwarding ? '' : ', none forwarding'}
           </div>
         </div>

@@ -82,7 +82,7 @@ export function Events() {
           <label>
             Connection{' '}
             <input
-              class="w-20 rounded border px-1 dark:bg-zinc-800"
+              class="w-20"
               inputMode="numeric"
               value={conn}
               onChange={e => setConn(e.currentTarget.value.trim())}
@@ -91,42 +91,39 @@ export function Events() {
           <label>
             Event name{' '}
             <input
-              class="w-48 rounded border px-1 dark:bg-zinc-800"
+              class="w-48"
               placeholder="moqt:control_message"
               value={name}
               onChange={e => setName(e.currentTarget.value.trim())}
             />
           </label>
-          <button type="button" class="rounded border px-2" onClick={() => setPaused(!paused)}>
+          <button type="button" class="btn" onClick={() => setPaused(!paused)}>
             {paused ? 'Resume' : 'Pause'}
           </button>
-          <button type="button" class="rounded border px-2" onClick={() => setLines([])}>
+          <button type="button" class="btn" onClick={() => setLines([])}>
             Clear
           </button>
         </div>
       }
     >
       {error && <ErrorNote error={error} />}
-      <p class="mb-2 text-xs text-zinc-500">
+      <p class="mb-2 text-xs text-neutral-500">
         Newest first, the last {MAX_LINES} kept.{' '}
         {paused ? 'Paused: nothing is received.' : 'Receiving.'}
       </p>
       <ol class="max-h-[70vh] overflow-auto font-mono text-xs" aria-live="off">
         {lines.map(line => (
-          <li key={line.key} class="border-b border-zinc-100 py-0.5 dark:border-zinc-800">
+          <li key={line.key} class="border-b border-white/6 py-1">
             {line.event ? (
               <>
-                <a
-                  class="text-blue-600 hover:underline dark:text-blue-400"
-                  href={href('connections', line.event.conn_id)}
-                >
+                <a class="link" href={href('connections', line.event.conn_id)}>
                   [{line.event.conn_id}]
                 </a>{' '}
                 <span class="font-semibold">{line.event.name}</span>{' '}
                 {JSON.stringify(line.event.data)}
               </>
             ) : (
-              <span class="text-zinc-500">
+              <span class="text-neutral-500">
                 {line.kind}: {line.text}
               </span>
             )}

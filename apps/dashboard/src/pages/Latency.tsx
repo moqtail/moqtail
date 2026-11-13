@@ -68,13 +68,9 @@ export function Latency() {
       <Card
         title="Object processing time"
         actions={
-          <label class="text-sm">
+          <label class="text-xs text-neutral-400">
             Window{' '}
-            <select
-              class="rounded border dark:bg-zinc-800"
-              value={window}
-              onChange={e => setWindow(e.currentTarget.value)}
-            >
+            <select value={window} onChange={e => setWindow(e.currentTarget.value)}>
               <option value="10s">10 seconds</option>
               <option value="60s">1 minute</option>
               <option value="5m">5 minutes</option>
@@ -83,7 +79,7 @@ export function Latency() {
           </label>
         }
       >
-        <p class="mb-2 text-xs text-zinc-500">
+        <p class="mb-2 text-xs text-neutral-500">
           From arrival to written, per delivery. Values are histogram bucket bounds, within a factor
           of two above the real value.
           {report.covered_s !== null && ` Covers the last ${Math.round(report.covered_s)} s.`}
@@ -122,10 +118,7 @@ export function Latency() {
               {report.slowest_tracks.map(t => (
                 <tr key={t.track_id}>
                   <td>
-                    <a
-                      class="text-blue-600 hover:underline dark:text-blue-400"
-                      href={href('tracks', t.track_id)}
-                    >
+                    <a class="link" href={href('tracks', t.track_id)}>
                       {t.track ?? t.track_id}
                     </a>
                   </td>
@@ -147,10 +140,7 @@ export function Latency() {
               {report.slowest_subscriptions.map(s => (
                 <tr key={`${s.conn_id}-${s.request_id}`}>
                   <td>
-                    <a
-                      class="text-blue-600 hover:underline dark:text-blue-400"
-                      href={href('connections', s.conn_id)}
-                    >
+                    <a class="link" href={href('connections', s.conn_id)}>
                       {s.conn_id}
                     </a>{' '}
                     / {s.request_id}
@@ -166,7 +156,7 @@ export function Latency() {
         title={`Slowlog: deliveries over ${ms(slowlog.threshold_ms)}, first objects over ${ms(slowlog.first_object_threshold_ms)}`}
       >
         {slowlog.dropped > 0 && (
-          <p class="mb-2 text-xs text-zinc-500">
+          <p class="mb-2 text-xs text-neutral-500">
             {count(slowlog.dropped)} entries were not kept because the list was busy.
           </p>
         )}
@@ -194,18 +184,12 @@ export function Latency() {
                     : '–'}
                 </td>
                 <td>
-                  <a
-                    class="text-blue-600 hover:underline dark:text-blue-400"
-                    href={href('tracks', e.track_id)}
-                  >
+                  <a class="link" href={href('tracks', e.track_id)}>
                     {e.track_id}
                   </a>
                 </td>
                 <td>
-                  <a
-                    class="text-blue-600 hover:underline dark:text-blue-400"
-                    href={href('connections', e.conn_id)}
-                  >
+                  <a class="link" href={href('connections', e.conn_id)}>
                     {e.conn_id}
                   </a>{' '}
                   / {e.request_id}
@@ -216,7 +200,7 @@ export function Latency() {
           </tbody>
         </Table>
         {slowlog.entries.length === 0 && (
-          <p class="mt-2 text-sm text-zinc-500">Nothing over the thresholds.</p>
+          <p class="mt-2 text-xs text-neutral-500">Nothing over the thresholds.</p>
         )}
       </Card>
     </div>

@@ -72,7 +72,7 @@ export function Connections() {
           <label class="flex items-center gap-1">
             Namespace
             <input
-              class="w-32 rounded border px-1 dark:bg-zinc-800"
+              class="w-32"
               value={prefix}
               onInput={e => {
                 setPrefix(e.currentTarget.value);
@@ -121,10 +121,7 @@ export function Connections() {
               {polled.data.items.map(c => (
                 <tr key={c.conn_id}>
                   <td>
-                    <a
-                      class="text-blue-600 hover:underline dark:text-blue-400"
-                      href={href('connections', c.conn_id)}
-                    >
+                    <a class="link" href={href('connections', c.conn_id)}>
                       {c.conn_id}
                     </a>
                   </td>
@@ -152,7 +149,9 @@ export function Connections() {
             </tbody>
           </Table>
           {polled.data.items.length === 0 && (
-            <p class="mt-2 text-sm text-zinc-500">No {closed ? 'closed' : 'open'} connections.</p>
+            <p class="mt-2 text-xs text-neutral-500">
+              No {closed ? 'closed' : 'open'} connections.
+            </p>
           )}
           <Pager
             total={polled.data.total}

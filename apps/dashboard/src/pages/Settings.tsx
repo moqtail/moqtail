@@ -29,7 +29,7 @@ export interface SettingsProps {
   onRefreshMs: (value: number) => void;
 }
 
-const field = 'w-full rounded border px-2 py-1 dark:bg-zinc-800';
+const field = 'mt-1 block w-full';
 
 function RelayForm(props: { relay: Relay; onSave: (relay: Relay) => void; onRemove?: () => void }) {
   const [draft, setDraft] = useState(props.relay);
@@ -43,11 +43,11 @@ function RelayForm(props: { relay: Relay; onSave: (relay: Relay) => void; onRemo
         props.onSave({ ...draft, baseUrl: draft.baseUrl.trim() });
       }}
     >
-      <label class="text-sm">
+      <label class="text-xs text-neutral-400">
         Name
         <input class={field} required value={draft.name} onInput={set('name')} />
       </label>
-      <label class="text-sm">
+      <label class="text-xs text-neutral-400">
         API address
         <input
           class={field}
@@ -59,13 +59,9 @@ function RelayForm(props: { relay: Relay; onSave: (relay: Relay) => void; onRemo
         />
       </label>
       <div class="flex gap-2">
-        <button class="rounded border px-2 py-1">Save</button>
+        <button class="btn">Save</button>
         {props.onRemove && (
-          <button
-            type="button"
-            class="rounded border px-2 py-1 text-red-700 dark:text-red-400"
-            onClick={props.onRemove}
-          >
+          <button type="button" class="btn btn-danger" onClick={props.onRemove}>
             Remove
           </button>
         )}
@@ -106,7 +102,7 @@ export function Settings(props: SettingsProps) {
               props.onRelays([...props.relays, { ...relay, id: crypto.randomUUID() }])
             }
           />
-          <p class="text-xs text-zinc-500">
+          <p class="text-xs text-neutral-500">
             The relay must list this page's origin ({location.origin}) in{' '}
             <code>api_cors_origins</code>.
           </p>
@@ -121,7 +117,7 @@ export function Settings(props: SettingsProps) {
             setSaved(true);
           }}
         >
-          <label class="block text-sm">
+          <label class="block text-xs text-neutral-400">
             Read token
             <input
               class={field}
@@ -134,7 +130,7 @@ export function Settings(props: SettingsProps) {
               }}
             />
           </label>
-          <label class="block text-sm">
+          <label class="block text-xs text-neutral-400">
             Write token, for actions on connections
             <input
               class={field}
@@ -147,7 +143,7 @@ export function Settings(props: SettingsProps) {
               }}
             />
           </label>
-          <label class="flex items-center gap-2 text-sm">
+          <label class="flex items-center gap-2 text-xs text-neutral-400">
             <input
               type="checkbox"
               checked={remember}
@@ -158,15 +154,14 @@ export function Settings(props: SettingsProps) {
             />
             Remember on this computer (otherwise forgotten when the browser closes)
           </label>
-          <button class="rounded border px-2 py-1">Save tokens</button>
-          {saved && <span class="ml-2 text-sm text-green-700 dark:text-green-400">Saved.</span>}
+          <button class="btn btn-primary">Save tokens</button>
+          {saved && <span class="ml-2 text-sm text-emerald-400">Saved.</span>}
         </form>
       </Card>
       <Card title="Refresh">
-        <label class="text-sm">
+        <label class="text-xs text-neutral-400">
           Reload pages every{' '}
           <select
-            class="rounded border dark:bg-zinc-800"
             value={props.refreshMs}
             onChange={e => props.onRefreshMs(Number(e.currentTarget.value))}
           >

@@ -123,7 +123,7 @@ export function Overview() {
           {overview.draining ? 'draining' : overview.accepting ? 'ready' : 'starting'}
         </Badge>
         <span>{overview.version}</span>
-        <span class="text-zinc-500">
+        <span class="text-neutral-500">
           up {duration((Date.now() - overview.started_at_ms) / 1000)} · pid {overview.pid}
         </span>
       </div>
@@ -152,8 +152,8 @@ export function Overview() {
               times={h.times}
               values={[h.objectsIn, h.objectsOut]}
               series={[
-                { label: 'in', color: '#2563eb' },
-                { label: 'out', color: '#16a34a' },
+                { label: 'in', color: '#60a5fa' },
+                { label: 'out', color: '#34d399' },
               ]}
               format={v => rate(v, 'objects')}
             />
@@ -164,15 +164,15 @@ export function Overview() {
               times={h.times}
               values={[h.bytesIn, h.bytesOut]}
               series={[
-                { label: 'in', color: '#2563eb' },
-                { label: 'out', color: '#16a34a' },
+                { label: 'in', color: '#60a5fa' },
+                { label: 'out', color: '#34d399' },
               ]}
               format={v => rate(v, 'bytes')}
             />
           </Card>
         </div>
       ) : (
-        <p class="text-sm text-zinc-500">Traffic rates need the relay's `metrics` feature.</p>
+        <p class="text-xs text-neutral-500">Traffic rates need the relay's `metrics` feature.</p>
       )}
       {latency && (
         <Card title="Object processing time, last 10 seconds">
@@ -181,8 +181,8 @@ export function Overview() {
             times={h.times}
             values={[h.p50, h.p99]}
             series={[
-              { label: 'p50', color: '#7c3aed' },
-              { label: 'p99', color: '#dc2626' },
+              { label: 'p50', color: '#a78bfa' },
+              { label: 'p99', color: '#f87171' },
             ]}
             format={v => ms(v)}
           />
@@ -217,7 +217,7 @@ export function Overview() {
         </Table>
       </Card>
       {overview.traffic && (
-        <p class="text-xs text-zinc-500">
+        <p class="text-xs text-neutral-500">
           Since start: {bytes(overview.traffic.bytes_received)} in,{' '}
           {bytes(overview.traffic.bytes_sent)} out, {count(overview.traffic.objects_dropped)}{' '}
           objects dropped.

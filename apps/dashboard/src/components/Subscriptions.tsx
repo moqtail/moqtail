@@ -26,7 +26,7 @@ export function Subscriptions(props: {
   showConn?: boolean;
   showTrack?: boolean;
 }) {
-  if (!props.subscriptions.length) return <p class="text-sm text-zinc-500">None.</p>;
+  if (!props.subscriptions.length) return <p class="text-xs text-neutral-500">None.</p>;
   return (
     <Table>
       <thead>
@@ -49,10 +49,7 @@ export function Subscriptions(props: {
           <tr key={`${s.conn_id ?? ''}-${s.request_id}`}>
             {props.showConn && (
               <td>
-                <a
-                  class="text-blue-600 hover:underline dark:text-blue-400"
-                  href={href('connections', s.conn_id!)}
-                >
+                <a class="link" href={href('connections', s.conn_id!)}>
                   {s.conn_id}
                 </a>
               </td>
@@ -60,10 +57,7 @@ export function Subscriptions(props: {
             <td>{s.request_id}</td>
             {props.showTrack && (
               <td>
-                <a
-                  class="text-blue-600 hover:underline dark:text-blue-400"
-                  href={href('tracks', s.track_id)}
-                >
+                <a class="link" href={href('tracks', s.track_id)}>
                   {s.track}
                 </a>
               </td>

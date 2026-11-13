@@ -29,21 +29,15 @@ function Line(props: { message: TimelineMessage; showHex: boolean; nested?: bool
   const m = props.message;
   return (
     <li class={props.nested ? 'ml-6' : ''}>
-      <span class="inline-block w-20 text-right text-zinc-500">{m.at.toFixed(3)}s</span>{' '}
+      <span class="inline-block w-20 text-right text-neutral-500">{m.at.toFixed(3)}s</span>{' '}
       <span
-        class={
-          m.direction === '<-'
-            ? 'text-blue-600 dark:text-blue-400'
-            : 'text-emerald-600 dark:text-emerald-400'
-        }
+        class={m.direction === '<-' ? 'text-blue-400' : 'text-emerald-400'}
         aria-label={m.direction === '<-' ? 'received' : 'sent'}
       >
         {m.direction}
       </span>{' '}
-      <span class={m.type === 'request_error' ? 'text-red-600 dark:text-red-400' : ''}>
-        {m.text}
-      </span>
-      {props.showHex && <div class="ml-24 text-xs break-all text-zinc-500">{m.hex}</div>}
+      <span class={m.type === 'request_error' ? 'text-red-400' : ''}>{m.text}</span>
+      {props.showHex && <div class="ml-24 text-xs break-all text-neutral-500">{m.hex}</div>}
     </li>
   );
 }
@@ -105,7 +99,7 @@ export function Timeline(props: { connId: number; open: boolean }) {
         <div class="flex items-center gap-3 text-sm">
           {props.open && <Badge tone="ok">live</Badge>}
           <input
-            class="w-36 rounded border px-1 dark:bg-zinc-800"
+            class="w-36"
             placeholder="filter, e.g. subscribe"
             value={filter}
             onInput={e => setFilter(e.currentTarget.value)}
@@ -119,7 +113,7 @@ export function Timeline(props: { connId: number; open: boolean }) {
             />
             Raw hex
           </label>
-          <button type="button" class="rounded border px-2" onClick={download}>
+          <button type="button" class="btn" onClick={download}>
             Download .sqlog
           </button>
         </div>
@@ -128,14 +122,14 @@ export function Timeline(props: { connId: number; open: boolean }) {
       {error && <ErrorNote error={error} />}
       {timeline.peerSetup && (
         <p class="mb-2 text-sm">
-          <span class="text-zinc-500">Peer SETUP:</span> {timeline.peerSetup.text}
+          <span class="text-neutral-500">Peer SETUP:</span> {timeline.peerSetup.text}
         </p>
       )}
       <ol class="space-y-0.5 font-mono text-xs">
         {timeline.entries.map((entry, i) => {
           if (entry.kind === 'error') {
             return (
-              <li key={i} class="text-red-600 dark:text-red-400">
+              <li key={i} class="text-red-400">
                 <span class="inline-block w-20 text-right">{entry.at.toFixed(3)}s</span> !!{' '}
                 {entry.message}
                 <div class="ml-24 break-all">{entry.hex}</div>
@@ -172,7 +166,7 @@ export function Timeline(props: { connId: number; open: boolean }) {
           ))}
         </ul>
       )}
-      {!error && events.length === 0 && <p class="text-sm text-zinc-500">No events yet.</p>}
+      {!error && events.length === 0 && <p class="text-xs text-neutral-500">No events yet.</p>}
     </Card>
   );
 }

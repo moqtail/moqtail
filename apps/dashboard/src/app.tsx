@@ -15,7 +15,7 @@
  */
 
 import { useMemo, useState } from 'preact/hooks';
-import { ApiClient } from './api/client';
+import { ApiClient, type ApiError } from './api/client';
 import type { ApiIndex } from './api/types';
 import { ErrorNote } from './components/ui';
 import { type Dashboard, DashboardContext } from './context';
@@ -40,6 +40,21 @@ import {
 } from './lib/relays';
 import { usePoll } from './lib/poll';
 import { href, useRoute } from './lib/route';
+
+/** Whether the relay answers, as the other MOQtail apps show it: a dot and a word. */
+function RelayStatus(props: { index?: ApiIndex; error?: ApiError }) {
+  const [dot, label] = props.index
+    ? ['bg-emerald-400', 'Connected']
+    : props.error
+      ? ['bg-red-400', 'Unreachable']
+      : ['bg-yellow-400 animate-pulse', 'Connecting…'];
+  return (
+    <span class="flex items-center gap-1.5 text-xs text-neutral-400 select-none">
+      <span class={`h-2 w-2 rounded-full ${dot}`} />
+      {label}
+    </span>
+  );
+}
 
 /** The navigation; a page shows only when the relay serves its feature. */
 const PAGES: { page: string; label: string; feature?: string }[] = [
@@ -134,40 +149,60 @@ export function App() {
 
   return (
     <DashboardContext.Provider value={dashboard}>
-      <div class="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-        <header class="flex flex-wrap items-center gap-4 border-b border-zinc-200 bg-white px-4 py-2 dark:border-zinc-800 dark:bg-zinc-900">
-          <span class="font-semibold">MOQtail relay</span>
-          <label class="text-sm">
-            <span class="sr-only">Relay</span>
-            <select
-              class="rounded border px-1 dark:bg-zinc-800"
-              value={relay.id}
-              onChange={e => selectRelay(e.currentTarget.value)}
-            >
-              {relays.map(r => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <nav aria-label="Pages" class="flex flex-wrap gap-3 text-sm">
+      <div class="min-h-screen">
+        <header class="sticky top-0 z-10 border-b border-white/6 bg-neutral-950/80 backdrop-blur-sm">
+          <div class="flex h-12 items-center justify-between gap-4 px-4 md:px-5">
+            <div class="flex items-center gap-2.5">
+              <img src="/favicon.svg" alt="MOQtail logo" class="h-5 w-5" />
+              <a
+                href="https://moqtail.dev"
+                target="_blank"
+                rel="noreferrer"
+                class="text-sm font-semibold tracking-tight transition-colors hover:text-neutral-300"
+              >
+                MOQtail Relay
+              </a>
+              <span class="text-neutral-700 select-none">·</span>
+              <RelayStatus index={index} error={indexError} />
+            </div>
+            <div class="flex items-center gap-3">
+              {index && (
+                <span class="hidden font-mono text-[10px] text-neutral-600 tabular-nums sm:block">
+                  {index.version}
+                </span>
+              )}
+              <label>
+                <span class="sr-only">Relay</span>
+                <select value={relay.id} onChange={e => selectRelay(e.currentTarget.value)}>
+                  {relays.map(r => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+          <nav aria-label="Pages" class="flex gap-1 overflow-x-auto px-3 md:px-4">
             {PAGES.filter(p => !p.feature || !index || index.features.includes(p.feature)).map(
               p => (
                 <a
                   key={p.page}
                   href={href(p.page)}
                   aria-current={route.page === p.page ? 'page' : undefined}
-                  class={route.page === p.page ? 'font-semibold underline' : 'hover:underline'}
+                  class={`border-b-2 px-2 py-2 text-xs font-medium whitespace-nowrap transition-colors ${
+                    route.page === p.page
+                      ? 'border-blue-500 text-neutral-100'
+                      : 'border-transparent text-neutral-400 hover:text-neutral-100'
+                  }`}
                 >
                   {p.label}
                 </a>
               ),
             )}
           </nav>
-          {index && <span class="ml-auto text-xs text-zinc-500">relay {index.version}</span>}
         </header>
-        <main class="mx-auto max-w-7xl space-y-4 p-4">
+        <main class="mx-auto max-w-7xl space-y-4 p-4 md:p-5">
           {indexError && route.page !== 'settings' && <ErrorNote error={indexError} />}
           {content}
         </main>

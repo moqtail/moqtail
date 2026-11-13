@@ -23,10 +23,7 @@ import { href } from '../lib/route';
 
 function ConnLink(props: { id: number }) {
   return (
-    <a
-      class="text-blue-600 hover:underline dark:text-blue-400"
-      href={href('connections', props.id)}
-    >
+    <a class="link" href={href('connections', props.id)}>
       {props.id}
     </a>
   );
@@ -53,7 +50,7 @@ export function Upstreams() {
   return (
     <div class="space-y-4">
       <Card title="Upstreams">
-        <p class="mb-2 text-xs text-zinc-500">
+        <p class="mb-2 text-xs text-neutral-500">
           Publishers and cluster peers the relay sends requests to.
         </p>
         <Table>
@@ -96,7 +93,7 @@ export function Upstreams() {
             ))}
           </tbody>
         </Table>
-        {upstreams.length === 0 && <p class="mt-2 text-sm text-zinc-500">No upstreams.</p>}
+        {upstreams.length === 0 && <p class="mt-2 text-xs text-neutral-500">No upstreams.</p>}
       </Card>
       <div class="grid gap-4 lg:grid-cols-2">
         <Card title="Announced namespaces">
@@ -151,7 +148,7 @@ export function Upstreams() {
         <Card
           title={`Cluster${clusterInfo.hop_id !== null ? ` (this relay's hop id ${clusterInfo.hop_id})` : ''}`}
         >
-          <p class="mb-2 text-xs text-zinc-500">
+          <p class="mb-2 text-xs text-neutral-500">
             Configured peers: {clusterInfo.configured_peers.join(', ') || 'none'}
           </p>
           {clusterInfo.peers.map(p => (
@@ -200,7 +197,7 @@ export function Zones() {
   return (
     <Card title="Accounting zones">
       {polled.data.length === 0 ? (
-        <p class="text-sm text-zinc-500">
+        <p class="text-xs text-neutral-500">
           No zones. List namespace prefixes in the relay's <code>accounting_zones</code> setting to
           count traffic per prefix.
         </p>

@@ -20,8 +20,8 @@ import { useDashboard } from '../context';
 import { href } from '../lib/route';
 import { Card, ErrorNote } from './ui';
 
-const button = 'rounded border px-2 py-1 text-sm disabled:opacity-40';
-const field = 'rounded border px-2 py-1 text-sm dark:bg-zinc-800';
+const button = 'btn';
+const field = '';
 
 /** Runs one change at a time and reports how it went. */
 function useAction() {
@@ -46,9 +46,9 @@ function useAction() {
 
 function NoWriteToken() {
   return (
-    <p class="text-sm text-zinc-500">
+    <p class="text-xs text-neutral-500">
       Set the write token in{' '}
-      <a class="text-blue-600 underline dark:text-blue-400" href={href('settings')}>
+      <a class="link underline" href={href('settings')}>
         Settings
       </a>{' '}
       to act on the relay.
@@ -59,7 +59,7 @@ function NoWriteToken() {
 function Outcome(props: { error?: ApiError; done?: string }) {
   if (props.error) return <ErrorNote error={props.error} />;
   return props.done ? (
-    <p role="status" class="text-sm text-green-700 dark:text-green-400">
+    <p role="status" class="text-sm text-emerald-400">
       {props.done}
     </p>
   ) : null;
@@ -76,7 +76,7 @@ export function Actions(props: { connId: number }) {
   return (
     <div class="space-y-2">
       <div class="flex flex-wrap items-center gap-2">
-        <label class="text-sm">
+        <label class="text-xs text-neutral-400">
           Move within{' '}
           <input
             class={`${field} w-24`}
@@ -103,7 +103,7 @@ export function Actions(props: { connId: number }) {
         </button>
         <button
           type="button"
-          class={`${button} text-red-700 dark:text-red-400`}
+          class={`${button} btn-danger`}
           disabled={action.busy}
           onClick={() => {
             if (confirm(`Close connection ${props.connId} now? The client is not asked first.`)) {
@@ -154,7 +154,7 @@ export function RelayActions() {
               );
             }}
           >
-            <label class="text-sm">
+            <label class="text-xs text-neutral-400">
               Log filter{' '}
               <input
                 class={`${field} w-64`}
@@ -176,7 +176,7 @@ export function RelayActions() {
               );
             }}
           >
-            <label class="text-sm">
+            <label class="text-xs text-neutral-400">
               GOAWAY sends clients to{' '}
               <input
                 class={`${field} w-64`}
@@ -191,7 +191,7 @@ export function RelayActions() {
           </form>
           <button
             type="button"
-            class={`${button} text-red-700 dark:text-red-400`}
+            class={`${button} btn-danger`}
             disabled={action.busy}
             onClick={() => {
               if (

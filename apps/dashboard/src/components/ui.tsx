@@ -23,11 +23,13 @@ export function Card(props: {
   children: ComponentChildren;
 }) {
   return (
-    <section class="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+    <section class="rounded-xl border border-white/6 bg-neutral-900/60 p-4">
       {(props.title || props.actions) && (
         <header class="mb-3 flex items-center justify-between gap-2">
           {props.title && (
-            <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{props.title}</h2>
+            <h2 class="text-[11px] font-semibold tracking-widest text-neutral-500 uppercase">
+              {props.title}
+            </h2>
           )}
           {props.actions}
         </header>
@@ -39,10 +41,14 @@ export function Card(props: {
 
 export function Stat(props: { label: string; value: ComponentChildren; hint?: string }) {
   return (
-    <div class="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-      <div class="text-xs text-zinc-500 dark:text-zinc-400">{props.label}</div>
-      <div class="mt-1 text-xl font-semibold tabular-nums">{props.value}</div>
-      {props.hint && <div class="mt-0.5 text-xs text-zinc-500">{props.hint}</div>}
+    <div class="rounded-xl border border-white/6 bg-neutral-900/60 p-3">
+      <div class="text-[11px] font-semibold tracking-widest text-neutral-500 uppercase">
+        {props.label}
+      </div>
+      <div class="mt-1 font-mono text-xl font-semibold text-neutral-100 tabular-nums">
+        {props.value}
+      </div>
+      {props.hint && <div class="mt-0.5 text-[11px] text-neutral-500">{props.hint}</div>}
     </div>
   );
 }
@@ -52,13 +58,15 @@ export function Badge(props: {
   children: ComponentChildren;
 }) {
   const tones = {
-    ok: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-    warn: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-    bad: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-    plain: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300',
+    ok: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300',
+    warn: 'border-amber-500/30 bg-amber-500/15 text-amber-300',
+    bad: 'border-red-500/30 bg-red-500/15 text-red-300',
+    plain: 'border-neutral-500/30 bg-neutral-500/15 text-neutral-300',
   };
   return (
-    <span class={`rounded px-1.5 py-0.5 text-xs font-medium ${tones[props.tone ?? 'plain']}`}>
+    <span
+      class={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${tones[props.tone ?? 'plain']}`}
+    >
       {props.children}
     </span>
   );
@@ -80,25 +88,23 @@ export function ErrorNote(props: { error: ApiError }) {
   return (
     <div
       role="alert"
-      class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+      class="rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300"
     >
-      <div class="font-medium">{error.code}</div>
-      {hint && <div class="mt-1">{hint}</div>}
+      <div class="font-mono font-medium">{error.code}</div>
+      {hint && <div class="mt-1 text-red-300/80">{hint}</div>}
     </div>
   );
 }
 
 export function Loading() {
-  return <div class="text-sm text-zinc-500">Loading…</div>;
+  return <div class="text-xs text-neutral-500">Loading…</div>;
 }
 
 /** A table that scrolls sideways on narrow screens. */
 export function Table(props: { children: ComponentChildren }) {
   return (
     <div class="overflow-x-auto">
-      <table class="w-full border-collapse text-left text-sm tabular-nums [&_td]:border-t [&_td]:border-zinc-100 [&_td]:px-2 [&_td]:py-1.5 dark:[&_td]:border-zinc-800 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-xs [&_th]:font-medium [&_th]:text-zinc-500">
-        {props.children}
-      </table>
+      <table class="w-full border-collapse text-left">{props.children}</table>
     </div>
   );
 }
@@ -115,7 +121,11 @@ export function SortHeader(props: {
   const next = active && descending ? props.sortKey : `-${props.sortKey}`;
   return (
     <th aria-sort={active ? (descending ? 'descending' : 'ascending') : 'none'}>
-      <button type="button" class="hover:underline" onClick={() => props.onSort(next)}>
+      <button
+        type="button"
+        class="cursor-pointer uppercase transition-colors hover:text-neutral-300"
+        onClick={() => props.onSort(next)}
+      >
         {props.label}
         {active ? (descending ? ' ↓' : ' ↑') : ''}
       </button>
@@ -132,10 +142,10 @@ export function Pager(props: {
   if (props.total <= props.limit) return null;
   const last = Math.min(props.offset + props.limit, props.total);
   return (
-    <nav class="mt-2 flex items-center gap-2 text-sm" aria-label="Pages">
+    <nav class="mt-3 flex items-center gap-2 text-xs text-neutral-400" aria-label="Pages">
       <button
         type="button"
-        class="rounded border px-2 disabled:opacity-40"
+        class="btn"
         disabled={props.offset === 0}
         onClick={() => props.onOffset(Math.max(0, props.offset - props.limit))}
       >
@@ -146,7 +156,7 @@ export function Pager(props: {
       </span>
       <button
         type="button"
-        class="rounded border px-2 disabled:opacity-40"
+        class="btn"
         disabled={last >= props.total}
         onClick={() => props.onOffset(props.offset + props.limit)}
       >
@@ -159,11 +169,11 @@ export function Pager(props: {
 /** A labelled key–value list. */
 export function Facts(props: { rows: [string, ComponentChildren][] }) {
   return (
-    <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+    <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-xs">
       {props.rows.map(([label, value]) => (
         <>
-          <dt class="text-zinc-500">{label}</dt>
-          <dd class="break-all tabular-nums">{value}</dd>
+          <dt class="text-neutral-500">{label}</dt>
+          <dd class="font-mono break-all text-neutral-300 tabular-nums">{value}</dd>
         </>
       ))}
     </dl>

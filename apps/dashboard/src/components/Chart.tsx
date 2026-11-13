@@ -18,6 +18,10 @@ import { useEffect, useRef } from 'preact/hooks';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 
+// Axis labels and grid lines in the dark theme's neutrals.
+const AXIS = '#737373';
+const GRID = 'rgba(255, 255, 255, 0.06)';
+
 export interface Series {
   label: string;
   /** A CSS colour. */
@@ -46,7 +50,16 @@ export function Chart(props: {
       width: host.current.clientWidth || 400,
       height: props.height ?? 160,
       legend: { show: true },
-      axes: [{}, { values: (_u, ticks) => ticks.map(t => props.format(t)), size: 70 }],
+      axes: [
+        { stroke: AXIS, grid: { stroke: GRID }, ticks: { stroke: GRID } },
+        {
+          stroke: AXIS,
+          grid: { stroke: GRID },
+          ticks: { stroke: GRID },
+          values: (_u, ticks) => ticks.map(t => props.format(t)),
+          size: 70,
+        },
+      ],
       series: [{}, ...props.series.map(s => ({ label: s.label, stroke: s.color, width: 1.5 }))],
     };
     plot.current = new uPlot(

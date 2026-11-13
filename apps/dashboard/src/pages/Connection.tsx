@@ -98,7 +98,7 @@ export function Connection(props: { id: string }) {
         </Card>
         <Card title="SETUP options">
           <Facts rows={c.setup_options.map(o => [o.name, o.value] as [string, string])} />
-          {c.setup_options.length === 0 && <p class="text-sm text-zinc-500">None.</p>}
+          {c.setup_options.length === 0 && <p class="text-xs text-neutral-500">None.</p>}
         </Card>
         <Card title="Publishes">
           <Facts

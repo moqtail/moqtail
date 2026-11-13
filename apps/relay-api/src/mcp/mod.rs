@@ -334,11 +334,17 @@ impl McpServer {
     Parameters(TimelineArgs { conn_id, limit }): Parameters<TimelineArgs>,
   ) -> ToolResult {
     let limit = capped(limit, MAX_TIMELINE_ENTRIES) as usize;
-    let response =
-      match crate::qlog::trace(self.st(), Path(conn_id), Ok(Query(Default::default()))).await {
-        Ok(response) => response,
-        Err(e) => return api_failure(e),
-      };
+    let response = match crate::qlog::trace(
+      self.st(),
+      Path(conn_id),
+      axum::http::HeaderMap::new(),
+      Ok(Query(Default::default())),
+    )
+    .await
+    {
+      Ok(response) => response,
+      Err(e) => return api_failure(e),
+    };
     // Without `follow` the body is the whole file, already in memory.
     let body = match axum::body::to_bytes(response.into_body(), usize::MAX).await {
       Ok(body) => body,

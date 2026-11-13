@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `/api/v1/qlog`: the relay's qlog trace files, served as written, and followed
-//! live while their connection is open.
+//! `/api/v1/qlog`: the relay's qlog trace files, served as written (JSON-SEQ) and
+//! followed live while their connection is open, or as one qlog JSON document
+//! when the request's `Accept` asks for `application/json` or
+//! `application/qlog+json`.
 
 pub mod events;
 pub mod timeline;
@@ -25,7 +27,7 @@ use axum::Json;
 use axum::body::Body;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use moqtail::transport::qlog::{self, LiveEvent};
@@ -36,6 +38,8 @@ use std::time::UNIX_EPOCH;
 use tokio::sync::broadcast::error::RecvError;
 
 const CONTENT_TYPE: &str = "application/qlog+json-seq";
+/// The single-document form, for clients that parse one JSON value.
+const CONTAINED_TYPE: &str = "application/qlog+json";
 /// The JSON-SEQ record separator that starts every record.
 const RS: u8 = 0x1e;
 
@@ -119,9 +123,18 @@ pub async fn index(State(state): State<Arc<ApiState>>) -> Result<Json<Vec<TraceF
 pub async fn trace(
   State(state): State<Arc<ApiState>>,
   Path(conn_id): Path<u64>,
+  headers: HeaderMap,
   query: Result<Query<TraceQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
   let query = parse_query(query)?;
+  let json = wants_json(&headers);
+  if json && query.follow {
+    return Err(
+      ApiError::new(StatusCode::NOT_ACCEPTABLE, "follow_needs_json_seq").detail(
+        "following a trace streams it as JSON-SEQ; drop follow, or accept application/qlog+json-seq",
+      ),
+    );
+  }
   let folder = folder(&state)?;
   // Follow before reading, so no event falls between the file and the live feed.
   let live = query.follow.then(qlog::subscribe).flatten();
@@ -133,6 +146,9 @@ pub async fn trace(
     .await
     .map_err(|e| folder_error(folder, e))?;
   let (records, last_time) = complete_records(&content, query.since);
+  if json {
+    return Ok(contained_response(&records));
+  }
 
   let still_open = state
     .open_connections()
@@ -150,6 +166,7 @@ pub async fn trace(
 pub async fn quic_trace(
   State(state): State<Arc<ApiState>>,
   Path(conn_id): Path<u64>,
+  headers: HeaderMap,
 ) -> Result<Response, ApiError> {
   let folder = folder(&state)?;
   let open = state.open_connections().await;
@@ -184,7 +201,72 @@ pub async fn quic_trace(
     .await
     .map_err(|e| folder_error(folder, e))?;
   let (records, _) = complete_records(&content, None);
+  if wants_json(&headers) {
+    return Ok(contained_response(&records));
+  }
   Ok(([(header::CONTENT_TYPE, CONTENT_TYPE)], records).into_response())
+}
+
+/// Whether the request asks for one JSON document rather than JSON-SEQ. JSON-SEQ
+/// stays the answer to anything else, including `*/*`.
+fn wants_json(headers: &HeaderMap) -> bool {
+  let accept = headers
+    .get(header::ACCEPT)
+    .and_then(|v| v.to_str().ok())
+    .unwrap_or("")
+    .to_ascii_lowercase();
+  !accept.contains("json-seq")
+    && (accept.contains("application/json") || accept.contains(CONTAINED_TYPE))
+}
+
+fn contained_response(records: &[u8]) -> Response {
+  (
+    [(header::CONTENT_TYPE, CONTAINED_TYPE)],
+    Json(contained(records)),
+  )
+    .into_response()
+}
+
+/// One qlog document from JSON-SEQ records: the header's fields at the top level,
+/// and its trace with every event in one `events` array. The first record
+/// without an event name is the header. Our traces name their schema
+/// (`file_schema`), quinn's QUIC traces their format (`qlog_format`); either is
+/// changed to the single-document form.
+fn contained(records: &[u8]) -> serde_json::Value {
+  use serde_json::{Map, Value};
+  let mut header: Option<Map<String, Value>> = None;
+  let mut events = Vec::new();
+  for record in records.split(|b| *b == RS).filter(|r| !r.is_empty()) {
+    let Ok(value) = serde_json::from_slice::<Value>(record) else {
+      continue;
+    };
+    match value {
+      Value::Object(object) if header.is_none() && !object.contains_key("name") => {
+        header = Some(object);
+      }
+      event => events.push(event),
+    }
+  }
+  let mut header = header.unwrap_or_default();
+  let mut trace = match header.remove("trace") {
+    Some(Value::Object(trace)) => trace,
+    _ => Map::new(),
+  };
+  trace.insert("events".into(), Value::Array(events));
+  if header.contains_key("file_schema") {
+    header.insert(
+      "file_schema".into(),
+      "urn:ietf:params:qlog:file:contained".into(),
+    );
+  }
+  if header.contains_key("serialization_format") {
+    header.insert("serialization_format".into(), CONTAINED_TYPE.into());
+  }
+  if header.get("qlog_format").and_then(Value::as_str) == Some("JSON-SEQ") {
+    header.insert("qlog_format".into(), "JSON".into());
+  }
+  header.insert("traces".into(), Value::Array(vec![Value::Object(trace)]));
+  Value::Object(header)
 }
 
 fn folder(state: &ApiState) -> Result<&FsPath, ApiError> {
@@ -299,6 +381,42 @@ fn follow(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn json_seq_records_become_one_contained_document() {
+    let seq = [
+      r#"{"file_schema":"urn:ietf:params:qlog:file:sequential","serialization_format":"application/qlog+json-seq","title":"t","trace":{"vantage_point":{"type":"server"}}}"#,
+      r#"{"time":1.0,"name":"moqt:control_message_parsed","data":{}}"#,
+      r#"{"time":2.0,"name":"moqtail:connection_closed","data":{}}"#,
+    ]
+    .iter()
+    .flat_map(|r| [&[RS][..], r.as_bytes(), b"\n"].concat())
+    .collect::<Vec<u8>>();
+    let doc = contained(&seq);
+    assert_eq!(doc["file_schema"], "urn:ietf:params:qlog:file:contained");
+    assert_eq!(doc["serialization_format"], "application/qlog+json");
+    assert_eq!(doc["title"], "t");
+    assert!(doc.get("trace").is_none());
+    let trace = &doc["traces"][0];
+    assert_eq!(trace["vantage_point"]["type"], "server");
+    assert_eq!(trace["events"].as_array().unwrap().len(), 2);
+    assert_eq!(trace["events"][1]["name"], "moqtail:connection_closed");
+  }
+
+  #[test]
+  fn json_is_served_only_when_asked_for_without_json_seq() {
+    let accept = |v: &str| {
+      let mut h = HeaderMap::new();
+      h.insert(header::ACCEPT, v.parse().unwrap());
+      wants_json(&h)
+    };
+    assert!(accept("application/json"));
+    assert!(accept("application/qlog+json"));
+    assert!(!accept("*/*"));
+    assert!(!accept("application/qlog+json-seq"));
+    assert!(!accept("application/qlog+json-seq, application/json"));
+    assert!(!wants_json(&HeaderMap::new()));
+  }
 
   #[test]
   fn file_names() {

@@ -12,6 +12,9 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 axum = "0.8"
+bytes.workspace = true
+futures-util = "0.3"
+moqtail.workspace = true
 moqtail-probe = { path = "../../libs/moqtail-probe" }
 serde.workspace = true
 serde_json.workspace = true

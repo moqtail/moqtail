@@ -14,9 +14,10 @@
 
 //! qlog traces of MoQT control messages, one JSON-SEQ (`.sqlog`) file per connection.
 //!
-//! Off until [`init`] is called. Callers only build the event JSON; a single writer
-//! thread does all file I/O, and events are dropped rather than ever blocking the
-//! caller when it falls behind.
+//! Off until [`init`] or [`init_live`] is called. Callers only build the event JSON;
+//! a single writer thread does all file I/O, and events are dropped rather than ever
+//! blocking the caller when it falls behind. The same events can also be followed
+//! live with [`subscribe`].
 
 use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
@@ -33,20 +34,35 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::broadcast;
 use tracing::warn;
 
 const MOQT_EVENT_SCHEMA: &str = "urn:ietf:params:qlog:events:moqt-08";
 const LOGLEVEL_EVENT_SCHEMA: &str = "urn:ietf:params:qlog:events:loglevel";
 /// Events buffered for the writer thread before new ones are dropped.
 const QUEUE_CAPACITY: usize = 65_536;
+/// Events buffered for each live follower; a slower follower misses the oldest.
+const LIVE_CAPACITY: usize = 4096;
 
 struct Qlog {
-  tx: SyncSender<Record>,
+  /// The writer thread's queue; `None` when no files are written.
+  files: Option<SyncSender<Record>>,
+  live: broadcast::Sender<LiveEvent>,
   dropped: AtomicU64,
+}
+
+/// What a live follower receives.
+#[derive(Debug, Clone)]
+pub enum LiveEvent {
+  /// One qlog event of a connection, as the JSON written to its file.
+  Event { conn: usize, json: Arc<[u8]> },
+  /// The connection closed; its trace has no more events.
+  Closed(usize),
 }
 
 enum Record {
@@ -65,7 +81,8 @@ pub fn init(dir: impl Into<PathBuf>, vantage: &'static str) -> std::io::Result<(
   let (tx, rx) = sync_channel(QUEUE_CAPACITY);
   if QLOG
     .set(Qlog {
-      tx,
+      files: Some(tx),
+      live: broadcast::channel(LIVE_CAPACITY).0,
       dropped: AtomicU64::new(0),
     })
     .is_ok()
@@ -77,31 +94,67 @@ pub fn init(dir: impl Into<PathBuf>, vantage: &'static str) -> std::io::Result<(
   Ok(())
 }
 
+/// Produces events for live followers only, writing no files. Does nothing when
+/// qlog is already on.
+pub fn init_live() {
+  let _ = QLOG.set(Qlog {
+    files: None,
+    live: broadcast::channel(LIVE_CAPACITY).0,
+    dropped: AtomicU64::new(0),
+  });
+}
+
+/// Follows every event as it is produced. `None` until qlog is on. Without files,
+/// events are built only while at least one follower exists.
+pub fn subscribe() -> Option<broadcast::Receiver<LiveEvent>> {
+  QLOG.get().map(|q| q.live.subscribe())
+}
+
+/// True while events are being produced: files are written or someone follows.
 pub fn enabled() -> bool {
-  QLOG.get().is_some()
+  active().is_some()
+}
+
+fn active() -> Option<&'static Qlog> {
+  QLOG
+    .get()
+    .filter(|q| q.files.is_some() || q.live.receiver_count() > 0)
 }
 
 /// Flushes and closes the connection's file. Its next event opens a new one.
 pub fn close(conn: usize) {
   if let Some(q) = QLOG.get() {
     q.send(Record::Close(conn));
+    let _ = q.live.send(LiveEvent::Closed(conn));
   }
 }
 
 /// Writes out every queued event, waiting up to `timeout`. Call before the process
 /// exits, since the writer thread does not outlive it.
 pub fn flush(timeout: std::time::Duration) {
-  if let Some(q) = QLOG.get() {
+  if let Some(files) = QLOG.get().and_then(|q| q.files.as_ref()) {
     let (tx, rx) = sync_channel(1);
-    if q.tx.send(Record::Flush(tx)).is_ok() {
+    if files.send(Record::Flush(tx)).is_ok() {
       let _ = rx.recv_timeout(timeout);
     }
   }
 }
 
 impl Qlog {
+  /// Hands one event to the file writer and to the live followers.
+  fn emit(&self, conn: usize, json: Vec<u8>) {
+    if self.live.receiver_count() > 0 {
+      let _ = self.live.send(LiveEvent::Event {
+        conn,
+        json: Arc::from(json.as_slice()),
+      });
+    }
+    self.send(Record::Event { conn, json });
+  }
+
   fn send(&self, record: Record) {
-    if let Err(TrySendError::Full(_)) = self.tx.try_send(record) {
+    let Some(files) = &self.files else { return };
+    if let Err(TrySendError::Full(_)) = files.try_send(record) {
       let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
       if n.is_power_of_two() {
         warn!("qlog writer is behind, {n} events dropped so far");
@@ -120,7 +173,7 @@ pub fn control_message(
   message: &ControlMessage,
   raw: &[u8],
 ) {
-  let Some(q) = QLOG.get() else { return };
+  let Some(q) = active() else { return };
   let name = if created {
     "moqt:control_message_created"
   } else {
@@ -132,18 +185,18 @@ pub fn control_message(
     "message": message_json(message),
     "raw": raw_info(raw),
   });
-  q.send(event(conn, name, data));
+  q.emit(conn, event(name, data));
 }
 
 /// Records the header a data stream begins with, sent (`created`) or received, from
 /// its wire bytes: a subgroup or a fetch header. One event per stream, not per object.
 pub fn data_stream_header(conn: usize, stream_id: u64, created: bool, raw: &[u8]) {
-  let Some(q) = QLOG.get() else { return };
+  let Some(q) = active() else { return };
   let Some((name, data)) = stream_header_json(stream_id, raw) else {
     return;
   };
   let suffix = if created { "created" } else { "parsed" };
-  q.send(event(conn, &format!("moqt:{name}_{suffix}"), data));
+  q.emit(conn, event(&format!("moqt:{name}_{suffix}"), data));
 }
 
 fn stream_header_json(stream_id: u64, raw: &[u8]) -> Option<(&'static str, Value)> {
@@ -178,22 +231,20 @@ fn stream_header_json(stream_id: u64, raw: &[u8]) -> Option<(&'static str, Value
 
 /// Records bytes on a control or request stream that did not parse.
 pub(crate) fn parse_error(conn: usize, stream_id: u64, raw: &[u8]) {
-  let Some(q) = QLOG.get() else { return };
+  let Some(q) = active() else { return };
   let data = json!({
     "message": format!("control message on stream {stream_id} failed to parse"),
     "raw": raw_info(raw),
   });
-  q.send(event(conn, "loglevel:error", data));
+  q.emit(conn, event("loglevel:error", data));
 }
 
-fn event(conn: usize, name: &str, data: Value) -> Record {
+fn event(name: &str, data: Value) -> Vec<u8> {
   let time = SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .map(|d| d.as_secs_f64() * 1000.0)
     .unwrap_or(0.0);
-  let json =
-    serde_json::to_vec(&json!({ "time": time, "name": name, "data": data })).unwrap_or_default();
-  Record::Event { conn, json }
+  serde_json::to_vec(&json!({ "time": time, "name": name, "data": data })).unwrap_or_default()
 }
 
 fn write_loop(rx: Receiver<Record>, dir: &Path, vantage: &str) {
@@ -673,10 +724,43 @@ mod tests {
     assert!(stream_header_json(1, &[0xff]).is_none());
   }
 
-  #[test]
-  fn writes_json_seq_file_per_connection() {
+  /// qlog is process-wide and starts once, so every test starts it the same way.
+  fn start_for_tests() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("moqtail-qlog-test-{}", std::process::id()));
     init(&dir, "server").unwrap();
+    dir
+  }
+
+  #[test]
+  fn live_followers_get_each_event_and_the_close() {
+    start_for_tests();
+    let mut follower = subscribe().unwrap();
+    let msg = ControlMessage::NamespaceDone(Box::new(
+      crate::model::control::namespace_done::NamespaceDone {
+        track_namespace_suffix: Tuple::from_utf8_path("b"),
+      },
+    ));
+    control_message(41, 3, false, &msg, &[0x09]);
+    close(41);
+    let mut seen_event = false;
+    loop {
+      match follower.try_recv() {
+        Ok(LiveEvent::Event { conn: 41, json }) => {
+          let event: Value = serde_json::from_slice(&json).unwrap();
+          assert_eq!(event["name"], "moqt:control_message_parsed");
+          seen_event = true;
+        }
+        Ok(LiveEvent::Closed(41)) => break,
+        Ok(_) => continue,
+        Err(e) => panic!("follower stopped before the close: {e:?}"),
+      }
+    }
+    assert!(seen_event);
+  }
+
+  #[test]
+  fn writes_json_seq_file_per_connection() {
+    let dir = start_for_tests();
     let msg = ControlMessage::NamespaceDone(Box::new(
       crate::model::control::namespace_done::NamespaceDone {
         track_namespace_suffix: Tuple::from_utf8_path("a"),

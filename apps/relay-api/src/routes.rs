@@ -74,6 +74,24 @@ const ENDPOINTS: &[Endpoint] = &[
     feature: Feature::State,
     route: || get(crate::connections::detail),
   },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/qlog",
+    feature: Feature::Qlog,
+    route: || get(crate::qlog::index),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/qlog/{conn_id}",
+    feature: Feature::Qlog,
+    route: || get(crate::qlog::trace),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/qlog/{conn_id}/quic",
+    feature: Feature::Qlog,
+    route: || get(crate::qlog::quic_trace),
+  },
 ];
 
 pub fn router(state: Arc<ApiState>) -> Router {

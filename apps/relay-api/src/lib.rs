@@ -24,6 +24,7 @@ mod connections;
 mod error;
 mod list;
 mod probe;
+mod qlog;
 mod routes;
 mod snapshot;
 

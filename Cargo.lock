@@ -1400,7 +1400,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
+ "futures-util",
  "http-body-util",
+ "moqtail",
  "moqtail-probe",
  "serde",
  "serde_json",

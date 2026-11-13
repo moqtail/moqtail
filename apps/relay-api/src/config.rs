@@ -154,6 +154,7 @@ pub struct ApiSettings {
   pub write_token: Option<String>,
   pub cors_origins: Vec<String>,
   pub closed_connection_history: usize,
+  pub qlog_folder: Option<std::path::PathBuf>,
 }
 
 /// The API's settings after parsing and the startup checks.
@@ -169,6 +170,8 @@ pub struct ApiConfig {
   pub cors_origins: Vec<String>,
   /// How many closed connections to keep for `/connections?closed=true`.
   pub closed_connection_history: usize,
+  /// Where the relay writes qlog traces; `None` when it writes none.
+  pub qlog_folder: Option<std::path::PathBuf>,
 }
 
 pub const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4480);
@@ -262,6 +265,7 @@ impl ApiConfig {
         write_token,
         cors_origins: settings.cors_origins,
         closed_connection_history: settings.closed_connection_history,
+        qlog_folder: settings.qlog_folder,
       },
       warnings,
     ))

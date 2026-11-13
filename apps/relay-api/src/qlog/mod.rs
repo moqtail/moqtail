@@ -38,6 +38,11 @@ use std::time::UNIX_EPOCH;
 use tokio::sync::broadcast::error::RecvError;
 
 const CONTENT_TYPE: &str = "application/qlog+json-seq";
+
+/// Asks nginx, and proxies that follow its convention, to pass a streamed
+/// response on as it is written. Buffered, a quiet stream never arrives.
+pub(crate) const NO_PROXY_BUFFERING: (header::HeaderName, &str) =
+  (header::HeaderName::from_static("x-accel-buffering"), "no");
 /// The single-document form, for clients that parse one JSON value.
 const CONTAINED_TYPE: &str = "application/qlog+json";
 /// The JSON-SEQ record separator that starts every record.
@@ -155,11 +160,16 @@ pub async fn trace(
     .await
     .iter()
     .any(|c| c.conn_id == conn_id);
-  let body = match live {
-    Some(live) if still_open => Body::from_stream(follow(records, live, conn_id, last_time)),
-    _ => Body::from(records),
-  };
-  Ok(([(header::CONTENT_TYPE, CONTENT_TYPE)], body).into_response())
+  let headers = [(header::CONTENT_TYPE, CONTENT_TYPE)];
+  Ok(match live {
+    Some(live) if still_open => (
+      headers,
+      [NO_PROXY_BUFFERING],
+      Body::from_stream(follow(records, live, conn_id, last_time)),
+    )
+      .into_response(),
+    _ => (headers, Body::from(records)).into_response(),
+  })
 }
 
 /// A connection's QUIC packet trace, written by debug builds of the relay.

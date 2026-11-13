@@ -25,6 +25,7 @@ use crate::http::list::parse_query;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use moqtail::transport::qlog::{self, LiveEvent};
 use serde::Deserialize;
@@ -43,7 +44,7 @@ pub struct EventsQuery {
 pub async fn events(
   State(_state): State<Arc<ApiState>>,
   query: Result<Query<EventsQuery>, QueryRejection>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
   let query = parse_query(query)?;
   let live = qlog::subscribe().ok_or_else(|| {
     ApiError::new(StatusCode::CONFLICT, "events_off").detail("live events are not running")
@@ -79,10 +80,13 @@ pub async fn events(
           .data(format!("{{\"missed\":{missed}}}")),
         Err(RecvError::Closed) => return None,
       };
-      return Some((Ok(event), (live, query)));
+      return Some((Ok::<_, Infallible>(event), (live, query)));
     }
   });
-  Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+  Ok((
+    [super::NO_PROXY_BUFFERING],
+    Sse::new(stream).keep_alive(KeepAlive::default()),
+  ))
 }
 
 /// The event's JSON with the connection id added first:

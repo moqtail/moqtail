@@ -768,9 +768,9 @@ fn legacy(method: &str, params: Value) -> Value {
 async fn mcp_takes_only_its_own_token_and_refuses_foreign_origins() {
   let client = mcp_client(false);
   let local = "127.0.0.1:5000";
-  let ping = Some(legacy("ping", json!({})));
+  let ping = legacy("ping", json!({}));
   let (status, ..) = client
-    .send_json(Method::POST, "/api/v1/mcp", local, &[], ping.clone())
+    .send_json(Method::POST, "/api/v1/mcp", local, &[], Some(ping.clone()))
     .await;
   assert_eq!(status, StatusCode::UNAUTHORIZED);
   for token in ["Bearer r3ad", "Bearer wr1te"] {
@@ -780,7 +780,7 @@ async fn mcp_takes_only_its_own_token_and_refuses_foreign_origins() {
         "/api/v1/mcp",
         local,
         &[("authorization", token)],
-        ping.clone(),
+        Some(ping.clone()),
       )
       .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{token} does not open MCP");
@@ -805,7 +805,7 @@ async fn mcp_takes_only_its_own_token_and_refuses_foreign_origins() {
       "/api/v1/mcp",
       local,
       &[("authorization", &mcp), ("origin", "https://evil.example")],
-      ping.clone(),
+      Some(ping.clone()),
     )
     .await;
   assert_eq!(status, StatusCode::FORBIDDEN);
@@ -818,7 +818,7 @@ async fn mcp_takes_only_its_own_token_and_refuses_foreign_origins() {
     )
     .await;
   assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-  assert_eq!(client.mcp(None, ping.unwrap()).await.0, StatusCode::OK);
+  assert_eq!(client.mcp(None, ping).await.0, StatusCode::OK);
 }
 
 #[tokio::test]

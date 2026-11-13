@@ -34,6 +34,7 @@ import {
   loadActive,
   loadRefreshMs,
   loadRelays,
+  pinnedRelay,
   loadTokens,
   saveActive,
   saveRefreshMs,
@@ -41,6 +42,7 @@ import {
   saveTokens,
   tokensRemembered,
 } from './lib/relays';
+import type { SiteConfig } from './lib/relays';
 import { usePoll } from './lib/poll';
 import { href, useRoute } from './lib/route';
 
@@ -74,9 +76,10 @@ const PAGES: { page: string; label: string; feature?: string }[] = [
   { page: 'settings', label: 'Settings' },
 ];
 
-export function App() {
+export function App(props: { config: SiteConfig }) {
   const route = useRoute();
-  const [relays, setRelays] = useState(loadRelays);
+  const [relays, setRelays] = useState(() => loadRelays(props.config));
+  const pinned = pinnedRelay(props.config) !== undefined;
   const [activeId, setActiveId] = useState(() => loadActive(relays));
   const [tokens, setTokens] = useState(() => loadTokens(activeId));
   const [refreshMs, setRefreshMs] = useState(loadRefreshMs);
@@ -138,6 +141,7 @@ export function App() {
         <Settings
           key={relay.id}
           relays={relays}
+          pinned={pinned}
           activeId={relay.id}
           tokens={tokens}
           remember={tokensRemembered(relay.id)}
@@ -186,16 +190,22 @@ export function App() {
                   {index.version}
                 </span>
               )}
-              <label>
-                <span class="sr-only">Relay</span>
-                <select value={relay.id} onChange={e => selectRelay(e.currentTarget.value)}>
-                  {relays.map(r => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {pinned ? (
+                <span class="truncate text-xs whitespace-nowrap text-neutral-400">
+                  {relay.name}
+                </span>
+              ) : (
+                <label>
+                  <span class="sr-only">Relay</span>
+                  <select value={relay.id} onChange={e => selectRelay(e.currentTarget.value)}>
+                    {relays.map(r => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
           </div>
           <nav aria-label="Pages" class="flex gap-1 overflow-x-auto px-3 md:px-4">

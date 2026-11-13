@@ -20,6 +20,7 @@ import type { QlogEvent } from '../api/types';
 import { bytes, duration, ms } from './format';
 import { JsonSeqParser, SseParser } from './stream';
 import { buildTimeline } from './timeline';
+import { loadRelays, pinnedRelay } from './relays';
 import { isRoutineStreamEvent } from '../pages/Events';
 import { namespaceRows, underPrefix } from '../pages/Namespaces';
 
@@ -167,5 +168,28 @@ describe('live events', () => {
       false,
     );
     expect(isRoutineStreamEvent(ev('moqt:control_message_parsed'))).toBe(false);
+  });
+});
+
+describe('relays from config.json', () => {
+  const relay = { name: 'eu-1', baseUrl: 'https://eu-1.example:4480' };
+
+  it('pins the dashboard to the configured relay', () => {
+    expect(loadRelays({ relay, relays: [{ name: 'other', baseUrl: 'x' }] })).toEqual([
+      { ...relay, id: 'configured' },
+    ]);
+    expect(pinnedRelay({ relays: [relay] })).toBeUndefined();
+  });
+
+  it('offers the configured list when the browser has none', () => {
+    expect(loadRelays({ relays: [relay, { baseUrl: 7 } as never] })).toEqual([
+      { ...relay, id: 'configured-0' },
+    ]);
+  });
+
+  it('falls back to the local relay when the file is empty or malformed', () => {
+    for (const config of [{}, { relay: 'nope' } as never, { relays: 'nope' } as never]) {
+      expect(loadRelays(config)[0].baseUrl).toBe('http://127.0.0.1:4480');
+    }
   });
 });

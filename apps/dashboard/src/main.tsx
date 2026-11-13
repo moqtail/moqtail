@@ -16,6 +16,9 @@
 
 import { render } from 'preact';
 import { App } from './app';
+import { loadSiteConfig } from './lib/relays';
 import './index.css';
 
-render(<App />, document.getElementById('app')!);
+void loadSiteConfig().then(config =>
+  render(<App config={config} />, document.getElementById('app')!),
+);

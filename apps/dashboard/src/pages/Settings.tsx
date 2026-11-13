@@ -20,6 +20,8 @@ import type { Relay, Tokens } from '../lib/relays';
 
 export interface SettingsProps {
   relays: Relay[];
+  /** Set when config.json fixes the relay, so the list is not shown. */
+  pinned: boolean;
   activeId: string;
   tokens: Tokens;
   remember: boolean;
@@ -78,41 +80,43 @@ export function Settings(props: SettingsProps) {
 
   return (
     <div class="space-y-4">
-      <Card title="Relays">
-        <div class="space-y-3">
-          <p class="text-xs text-neutral-500">
-            The relays this dashboard can show, picked from the list at the top right. Each entry is
-            the address of a relay's HTTP API (its <code>api.bind</code>), not its MoQ address. The
-            list is kept in this browser.
-          </p>
-          {props.relays.map(relay => (
+      {!props.pinned && (
+        <Card title="Relays">
+          <div class="space-y-3">
+            <p class="text-xs text-neutral-500">
+              The relays this dashboard can show, picked from the list at the top right. Each entry
+              is the address of a relay's HTTP API (its <code>api.bind</code>), not its MoQ address.
+              The list is kept in this browser.
+            </p>
+            {props.relays.map(relay => (
+              <RelayForm
+                key={relay.id}
+                relay={relay}
+                onSave={updated =>
+                  props.onRelays(props.relays.map(r => (r.id === relay.id ? updated : r)))
+                }
+                onRemove={
+                  props.relays.length > 1
+                    ? () => props.onRelays(props.relays.filter(r => r.id !== relay.id))
+                    : undefined
+                }
+              />
+            ))}
+            <h3 class="pt-2 text-xs font-semibold text-neutral-300">Add a relay</h3>
             <RelayForm
-              key={relay.id}
-              relay={relay}
-              onSave={updated =>
-                props.onRelays(props.relays.map(r => (r.id === relay.id ? updated : r)))
-              }
-              onRemove={
-                props.relays.length > 1
-                  ? () => props.onRelays(props.relays.filter(r => r.id !== relay.id))
-                  : undefined
+              key={props.relays.length}
+              relay={{ id: '', name: '', baseUrl: '' }}
+              onSave={relay =>
+                props.onRelays([...props.relays, { ...relay, id: crypto.randomUUID() }])
               }
             />
-          ))}
-          <h3 class="pt-2 text-xs font-semibold text-neutral-300">Add a relay</h3>
-          <RelayForm
-            key={props.relays.length}
-            relay={{ id: '', name: '', baseUrl: '' }}
-            onSave={relay =>
-              props.onRelays([...props.relays, { ...relay, id: crypto.randomUUID() }])
-            }
-          />
-          <p class="text-xs text-neutral-500">
-            The relay must list this page's origin ({location.origin}) in{' '}
-            <code>api.cors_origins</code>.
-          </p>
-        </div>
-      </Card>
+            <p class="text-xs text-neutral-500">
+              The relay must list this page's origin ({location.origin}) in{' '}
+              <code>api.cors_origins</code>.
+            </p>
+          </div>
+        </Card>
+      )}
       <Card title={`Tokens for ${active?.name ?? 'this relay'}`}>
         <form
           class="space-y-2"

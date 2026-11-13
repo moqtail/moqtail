@@ -99,6 +99,15 @@ struct Pending {
   started: Instant,
 }
 
+impl Pending {
+  /// A request the relay sent to get something from the peer, so its answer says
+  /// whether the peer serves the relay. A PUBLISH or PUBLISH_NAMESPACE the relay
+  /// sends only offers something, often to a subscriber, and is left out.
+  fn asks_peer(&self) -> bool {
+    self.upstream && !matches!(self.kind, "publish" | "publish_namespace")
+  }
+}
+
 #[derive(Default)]
 struct Upstream {
   ok: u64,
@@ -181,7 +190,7 @@ impl ControlTracker {
     let overdue: Vec<(usize, u64)> = inner
       .pending
       .iter()
-      .filter(|((c, _), p)| *c == conn && p.upstream && p.started.elapsed() > timeout)
+      .filter(|((c, _), p)| *c == conn && p.asks_peer() && p.started.elapsed() > timeout)
       .map(|(key, _)| *key)
       .collect();
     for key in &overdue {
@@ -190,7 +199,7 @@ impl ControlTracker {
     let in_flight = inner
       .pending
       .iter()
-      .filter(|((c, _), p)| *c == conn && p.upstream)
+      .filter(|((c, _), p)| *c == conn && p.asks_peer())
       .count() as u64;
     if !overdue.is_empty() {
       inner.upstreams.entry(conn).or_default().timed_out += overdue.len() as u64;
@@ -321,7 +330,7 @@ impl ControlObserver for ControlTracker {
       Outcome::Ok => requests.ok += 1,
       Outcome::Error { .. } => requests.error += 1,
     }
-    if pending.upstream {
+    if pending.asks_peer() {
       match outcome {
         Outcome::Ok => inner.totals.upstream_ok += 1,
         Outcome::Error { .. } => inner.totals.upstream_failed += 1,
@@ -450,6 +459,7 @@ mod tests {
   use super::*;
   use moqtail::model::common::reason_phrase::ReasonPhrase;
   use moqtail::model::common::tuple::{Tuple, TupleField};
+  use moqtail::model::control::publish_namespace::PublishNamespace;
   use moqtail::model::control::request_error::RequestError;
   use moqtail::model::control::request_ok::RequestOk;
   use moqtail::model::control::subscribe::Subscribe;
@@ -515,6 +525,22 @@ mod tests {
     std::thread::sleep(Duration::from_millis(2));
     tracker.control_message(3, 8, false, &ok()); // answers nothing; creates the source
     let upstream = tracker.upstream(3).unwrap();
+    assert_eq!((upstream.timed_out, upstream.in_flight), (1, 0));
+  }
+
+  #[test]
+  fn an_unanswered_offer_is_not_an_upstream_failure() {
+    let tracker = ControlTracker::new(Duration::ZERO, Arc::new(Zones::new(&[])));
+    let offer = ControlMessage::PublishNamespace(Box::new(PublishNamespace::new(
+      0,
+      Tuple::from_utf8_path("live"),
+      &[],
+    )));
+    tracker.control_message(6, 4, true, &offer);
+    tracker.control_message(6, 8, true, &subscribe());
+    std::thread::sleep(Duration::from_millis(2));
+    tracker.control_message(6, 12, false, &ok()); // answers nothing; creates the source
+    let upstream = tracker.upstream(6).unwrap();
     assert_eq!((upstream.timed_out, upstream.in_flight), (1, 0));
   }
 

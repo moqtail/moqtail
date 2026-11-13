@@ -11,6 +11,8 @@ on:
       - 'apps/relay/**'
       - 'libs/moqtail-rs/**'
       - 'libs/moqtail-ssts/**'
+      - 'apps/relay-api/**'
+      - 'libs/relay-hooks/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/relay.yml'

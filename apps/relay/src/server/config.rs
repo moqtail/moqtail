@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use figment::Figment;
 use figment::providers::{Format, Yaml};
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
-use serde::Deserialize;
+use relay_hooks::settings::ApiSettings;
+use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
 use socket2::{Domain, Socket, Type};
 use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
@@ -31,7 +32,7 @@ use wtransport::quinn::congestion::BbrConfig;
 use wtransport::quinn::{self, TransportConfig};
 
 /// Cache expiration strategy
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CacheExpirationType {
   /// Time-to-live: entries expire after a fixed duration from creation
@@ -43,7 +44,7 @@ pub enum CacheExpirationType {
 /// How the relay picks the Track Alias it gives a subscriber. Either is allowed: a
 /// publisher may give concurrent subscriptions to one track the same alias or
 /// different ones, and subscribers have to handle both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrackAliasMode {
   /// One alias per track: every subscription to it gets the track's relay id.
@@ -82,7 +83,7 @@ pub struct Cli {
 /// The settings the relay runs on. YAML keys are the field names; a key left out
 /// takes the field's `#[default]`, and an unknown key is a startup error.
 /// Durations are written with units: `10s`, `500ms`, `30m`.
-#[derive(Debug, Clone, Deserialize, SmartDefault, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, SmartDefault, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
   /// Address to bind. `[::]` (the default) takes IPv4 and IPv6 alike.
@@ -258,6 +259,9 @@ pub struct AppConfig {
   pub peers: Vec<String>,
   /// Skip certificate validation when dialing `peers` (self-signed dev certs).
   pub peer_no_cert_validation: bool,
+  /// The HTTP API and the measurements behind it, under `api:`; the fields are
+  /// documented on `relay_hooks::settings::ApiSettings`.
+  pub api: ApiSettings,
 }
 
 impl AppConfig {
@@ -435,7 +439,9 @@ fn bind_udp_socket(addr: SocketAddr, reuse_port: bool, buffer_bytes: usize) -> R
   if reuse_port {
     socket.set_reuse_port(true)?;
   }
-  socket.bind(&addr.into())?;
+  socket
+    .bind(&addr.into())
+    .with_context(|| format!("cannot listen on UDP {addr}; is another program using it?"))?;
   socket.set_nonblocking(true)?;
   if buffer_bytes > 0 {
     request_buffer_sizes(&socket, buffer_bytes);

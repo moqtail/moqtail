@@ -34,16 +34,17 @@ use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
 use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::goaway::GoAway;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::setup::Setup;
 use moqtail::model::control::subscribe_tracks::SubscribeTracks;
 use moqtail::model::data::full_track_name::FullTrackName;
-use moqtail::model::error::StreamResetCode;
+use moqtail::model::error::{StreamResetCode, TerminationCode};
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,6 +60,9 @@ pub(crate) const HOP_ID: u64 = 0x40B54;
 pub(crate) const RELAY_COST: u64 = 0x40B56;
 
 const REDIAL_DELAY: Duration = Duration::from_secs(1);
+/// The longest a peer's GOAWAY timeout delays the next dial, so a peer that asks
+/// for a long one is not left unreachable for good.
+const MAX_GOAWAY_WAIT: Duration = Duration::from_secs(60);
 
 /// Relay-wide clustering state, shared by every session.
 #[derive(Debug, Default)]
@@ -69,6 +73,73 @@ pub(crate) struct ClusterState {
   /// Serializes `sync_tracks` the same way.
   tracks: Mutex<()>,
   next_advert: AtomicU64,
+  /// Each peer this relay dials, by its configured URL. Written only when a link
+  /// connects, drops or fails to dial.
+  links: std::sync::Mutex<HashMap<String, PeerLink>>,
+  /// What a peer's GOAWAY asked for, by the peer's address, until the link it
+  /// came on has closed and `run_peer` has read it.
+  goaways: std::sync::Mutex<HashMap<SocketAddr, GoAwayHint>>,
+}
+
+/// What a peer's GOAWAY asked for.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GoAwayHint {
+  /// Where to dial next; `None` means the same URL.
+  pub uri: Option<String>,
+  /// How long the peer keeps the old session; zero when it named none.
+  pub timeout: Duration,
+}
+
+/// Where a link this relay dials stands.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PeerLink {
+  /// The QUIC connection to the peer is open.
+  pub up: bool,
+  /// The peer's address while the link is up.
+  pub remote: Option<SocketAddr>,
+  /// When the link last went up or down.
+  pub since: Option<std::time::SystemTime>,
+  /// Why the link last went down, or why the last dial failed.
+  pub last_error: Option<String>,
+}
+
+impl ClusterState {
+  /// Every peer this relay dials and its link, by configured URL.
+  #[cfg(feature = "observability")]
+  pub(crate) fn links(&self) -> HashMap<String, PeerLink> {
+    self.links.lock().unwrap().clone()
+  }
+
+  fn note_goaway(&self, remote: SocketAddr, hint: GoAwayHint) {
+    self.goaways.lock().unwrap().insert(remote, hint);
+  }
+
+  fn take_goaway(&self, remote: SocketAddr) -> Option<GoAwayHint> {
+    self.goaways.lock().unwrap().remove(&remote)
+  }
+
+  fn link_up(&self, url: &str, remote: SocketAddr) {
+    let mut links = self.links.lock().unwrap();
+    let link = links.entry(url.to_string()).or_default();
+    *link = PeerLink {
+      up: true,
+      remote: Some(remote),
+      since: Some(std::time::SystemTime::now()),
+      last_error: link.last_error.take(),
+    };
+  }
+
+  fn link_down(&self, url: &str, error: String) {
+    let mut links = self.links.lock().unwrap();
+    let link = links.entry(url.to_string()).or_default();
+    // A failed redial of a link already down keeps the time it went down.
+    if link.up || link.since.is_none() {
+      link.since = Some(std::time::SystemTime::now());
+    }
+    link.up = false;
+    link.remote = None;
+    link.last_error = Some(error);
+  }
 }
 
 /// A SUBSCRIBE_TRACKS this relay holds on a peer; dropping it cancels the request.
@@ -89,6 +160,15 @@ pub(crate) struct Advert {
   /// withdraws the advertisement.
   updates: mpsc::UnboundedSender<ControlMessage>,
   generation: u64,
+}
+
+impl Advert {
+  /// The session the route came from, the hops it took, its cost and generation,
+  /// for the observability API.
+  #[cfg(feature = "observability")]
+  pub(crate) fn describe(&self) -> (usize, &[u64], u64, u64) {
+    (self.source, &self.hops, self.cost, self.generation)
+  }
 }
 
 #[derive(Clone)]
@@ -131,34 +211,94 @@ pub(crate) fn loops_through(hops: &[u64], hop_id: u64) -> bool {
   hop_id != 0 && hops.contains(&hop_id)
 }
 
-/// Dials a peer for as long as the relay runs, redialing whenever the session ends.
-pub(crate) async fn run_peer(server: Server, url: String) {
-  let rest = url.strip_prefix("moqt://").unwrap_or(&url);
+/// Splits a peer URL such as `moqt://host:4433/path` into its authority and path.
+fn split_peer_url(url: &str) -> (String, String) {
+  let rest = url.strip_prefix("moqt://").unwrap_or(url);
   let rest = rest.split('#').next().unwrap_or_default();
   let (authority, path) = match rest.find('/') {
     Some(i) => rest.split_at(i),
     None => (rest, ""),
   };
+  (authority.to_string(), path.to_string())
+}
+
+/// Where and when to dial next after a link ends. A peer's GOAWAY with a new
+/// URI sends the next dial there at once. Without one, the peer is draining and
+/// would refuse every request, so the next dial waits out the GOAWAY's timeout,
+/// capped at [`MAX_GOAWAY_WAIT`]; the URL dialed stays the configured one.
+fn next_dial(goaway: Option<&GoAwayHint>) -> (Option<String>, Duration) {
+  match goaway {
+    Some(GoAwayHint { uri: Some(uri), .. }) => (Some(uri.clone()), Duration::ZERO),
+    Some(GoAwayHint { uri: None, timeout }) if !timeout.is_zero() => {
+      (None, (*timeout).min(MAX_GOAWAY_WAIT))
+    }
+    _ => (None, REDIAL_DELAY),
+  }
+}
+
+/// Dials a peer for as long as the relay runs, redialing whenever the session ends.
+pub(crate) async fn run_peer(server: Server, url: String) {
+  // A peer's GOAWAY can name where to dial next; that applies to one dial only.
+  let mut redirect: Option<String> = None;
   loop {
-    match dial(&server, authority).await {
+    let target = redirect.take().unwrap_or_else(|| url.clone());
+    let (authority, path) = split_peer_url(&target);
+    let mut wait = REDIAL_DELAY;
+    match dial(&server, &authority).await {
       Ok(connection) => {
-        info!("Cluster peer {url} connected");
-        let session = Session::connect_quic(
-          connection.clone(),
-          server.clone(),
-          authority.into(),
-          path.into(),
-        );
+        info!("Cluster peer {url} connected to {target}");
+        server.cluster.link_up(&url, connection.remote_address());
+        let session = Session::connect_quic(connection.clone(), server.clone(), authority, path);
         if let Err(e) = session.await {
           warn!("Cluster peer {url} session failed: {e:?}");
         }
         let reason = connection.closed().await;
-        info!("Cluster peer {url} disconnected: {reason}");
+        let goaway = server.cluster.take_goaway(connection.remote_address());
+        match &goaway {
+          Some(g) => {
+            info!(
+              "Cluster peer {url} sent GOAWAY (new URI {:?}, timeout {:?})",
+              g.uri, g.timeout
+            );
+            server.cluster.link_down(&url, "peer sent GOAWAY".into());
+          }
+          None => {
+            info!("Cluster peer {url} disconnected: {reason}");
+            server.cluster.link_down(&url, reason.to_string());
+          }
+        }
+        (redirect, wait) = next_dial(goaway.as_ref());
       }
-      Err(e) => warn!("Cluster peer {url} unreachable: {e:#}"),
+      Err(e) => {
+        warn!("Cluster peer {url} unreachable at {target}: {e:#}");
+        server.cluster.link_down(&url, format!("{e:#}"));
+      }
     }
-    tokio::time::sleep(REDIAL_DELAY).await;
+    tokio::time::sleep(wait).await;
   }
+}
+
+/// A peer sent GOAWAY on its session: remember what it asked for, then close the
+/// session. Closing runs the usual cleanup, which withdraws every route through
+/// the peer, so other paths win at once instead of after the idle timeout. If
+/// this relay dials the peer, `run_peer` redials as [`next_dial`] decides;
+/// otherwise the peer will redial this relay.
+pub(crate) fn peer_going_away(context: &SessionContext, goaway: &GoAway) {
+  let remote = context.connection.remote_address();
+  info!(
+    "Cluster peer {remote} (connection {}) sent GOAWAY; closing the link",
+    context.connection_id
+  );
+  context.cluster.note_goaway(
+    remote,
+    GoAwayHint {
+      uri: goaway.new_session_uri.clone().filter(|u| !u.is_empty()),
+      timeout: Duration::from_millis(goaway.timeout),
+    },
+  );
+  context
+    .connection
+    .close(TerminationCode::NoError.to_u32(), b"peer sent GOAWAY");
 }
 
 async fn dial(server: &Server, authority: &str) -> Result<quinn::Connection> {
@@ -725,6 +865,64 @@ fn subscribe_tracks(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn a_peer_url_splits_into_authority_and_path() {
+    assert_eq!(
+      split_peer_url("moqt://relay-2.example:4433/live#x"),
+      ("relay-2.example:4433".to_string(), "/live".to_string())
+    );
+    assert_eq!(
+      split_peer_url("moqt://[::1]:4433"),
+      ("[::1]:4433".to_string(), String::new())
+    );
+  }
+
+  #[test]
+  fn goaway_decides_where_and_when_to_dial_next() {
+    let hint = |uri: Option<&str>, ms: u64| GoAwayHint {
+      uri: uri.map(String::from),
+      timeout: Duration::from_millis(ms),
+    };
+    // No GOAWAY: the usual redial delay, to the configured URL.
+    assert_eq!(next_dial(None), (None, REDIAL_DELAY));
+    // A new URI: dial it at once.
+    assert_eq!(
+      next_dial(Some(&hint(Some("moqt://b:4433"), 10_000))),
+      (Some("moqt://b:4433".to_string()), Duration::ZERO)
+    );
+    // Draining with no new URI: wait out the timeout, capped.
+    assert_eq!(
+      next_dial(Some(&hint(None, 10_000))),
+      (None, Duration::from_secs(10))
+    );
+    assert_eq!(
+      next_dial(Some(&hint(None, 3_600_000))),
+      (None, MAX_GOAWAY_WAIT)
+    );
+    // No timeout named: the usual delay.
+    assert_eq!(next_dial(Some(&hint(None, 0))), (None, REDIAL_DELAY));
+  }
+
+  #[test]
+  fn a_goaway_hint_is_read_once_by_the_peers_address() {
+    let state = ClusterState::default();
+    let remote: SocketAddr = "127.0.0.1:4703".parse().unwrap();
+    state.note_goaway(
+      remote,
+      GoAwayHint {
+        uri: None,
+        timeout: Duration::from_secs(10),
+      },
+    );
+    assert!(
+      state
+        .take_goaway("127.0.0.1:4702".parse().unwrap())
+        .is_none()
+    );
+    assert!(state.take_goaway(remote).is_some());
+    assert!(state.take_goaway(remote).is_none());
+  }
 
   #[test]
   fn zero_never_loops() {

@@ -245,6 +245,13 @@ impl MessageHandler {
         }
       }
 
+      // A cluster peer going away: stop routing through it and let the link be
+      // redialed. GOAWAY from an ordinary client means nothing to a relay.
+      ControlMessage::Goaway(goaway) if client.peer_hop_id.is_some() => {
+        crate::server::cluster::peer_going_away(&context, goaway);
+        Ok(())
+      }
+
       // Catch-all for any unhandled control messages
       m => {
         info!("unhandled message received");

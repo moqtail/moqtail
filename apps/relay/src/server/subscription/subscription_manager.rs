@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::inspect;
 use crate::server::{subscription::SubscriptionOrigin, track::ActiveSubgroupHeaderMap};
 
 use crate::server::config::AppConfig;
@@ -35,8 +36,20 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, trace, warn};
 
 pub type SubscriptionId = (usize, u64); // connection_id and request_id
-/// An event and when it was queued, so the subscriber can tell how late it is.
-pub type QueuedEvent = (Instant, TrackEvent);
+/// When an event passed two points on its way to a subscriber: read from the
+/// publisher, and handed to the subscribers' queues. The subscriber's task adds the
+/// moment it writes the object, which splits processing time into its ingest,
+/// queue and write stages.
+#[derive(Debug, Clone, Copy)]
+pub struct EventTimes {
+  /// When the object was read from the publisher; `None` when the relay is built
+  /// without measuring processing time.
+  pub arrived: Option<Instant>,
+  /// When the event was handed to the subscribers' queues.
+  pub queued: Instant,
+}
+
+pub type QueuedEvent = (EventTimes, TrackEvent);
 pub type SubscriberSenderMap =
   HashMap<SubscriptionId, (UnboundedSender<QueuedEvent>, Arc<SubscriberQueue>)>;
 
@@ -75,7 +88,20 @@ pub(crate) struct SubscriptionManager {
   config: &'static AppConfig,
 }
 
+/// Counts an object not queued for a subscriber that had too much waiting.
+fn count_queue_drop() {
+  if let Some(c) = inspect::counters() {
+    c.dropped_queue_full.add(1);
+  }
+}
+
 impl SubscriptionManager {
+  #[cfg(feature = "observability")]
+  /// Every subscription to the track, copied out for the observability API.
+  pub async fn all(&self) -> Vec<Arc<RwLock<Subscription>>> {
+    self.subscriptions.read().await.values().cloned().collect()
+  }
+
   pub fn new(
     relay_track_id: u64,
     full_track_name: FullTrackName,
@@ -295,14 +321,29 @@ impl SubscriptionManager {
     self.subscriptions.read().await.len()
   }
 
-  // Send event to all subscribers
+  /// Sends an event that did not come from a publisher's object, such as a closed
+  /// stream, to all subscribers.
   pub async fn send_event_to_subscribers(
     &self,
     event: TrackEvent,
   ) -> Result<Vec<SubscriptionId>, anyhow::Error> {
+    self.send_object_event(event, None).await
+  }
+
+  /// Sends an event to all subscribers. `arrived` is when its object was read from
+  /// the publisher.
+  pub async fn send_object_event(
+    &self,
+    event: TrackEvent,
+    arrived: Option<Instant>,
+  ) -> Result<Vec<SubscriptionId>, anyhow::Error> {
     let mut failed_subscriptions = Vec::new();
     let mut total_subscriptions = 0;
     let queued_at = Instant::now();
+    let times = EventTimes {
+      arrived,
+      queued: queued_at,
+    };
     let bytes = event.queued_bytes();
     let max_bytes = self.config.max_subscriber_queue_bytes;
 
@@ -318,6 +359,7 @@ impl SubscriptionManager {
         if let Some(group) = event.object_group() {
           // The subscription drops these anyway; queuing them only keeps it at the cap.
           if queue.skips(group) {
+            count_queue_drop();
             continue;
           }
           // An empty queue takes any Object, so one larger than the cap still goes out.
@@ -329,11 +371,12 @@ impl SubscriptionManager {
                 subscription_id, max_bytes, self.relay_track_id, group
               );
             }
+            count_queue_drop();
             continue;
           }
         }
         queue.bytes.fetch_add(bytes, Ordering::Relaxed);
-        if let Err(e) = sender.send((queued_at, event.clone())) {
+        if let Err(e) = sender.send((times, event.clone())) {
           queue.bytes.fetch_sub(bytes, Ordering::Relaxed);
           error!(
             "Failed to send event to subscription {:?}: {}",

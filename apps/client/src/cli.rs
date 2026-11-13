@@ -229,6 +229,27 @@ pub struct Cli {
   #[arg(long, default_value_t = false)]
   pub no_gap_properties: bool,
 
+  /// Stamp every Object with its send time, in microseconds since the Unix epoch, in
+  /// the LOC Timestamp property, so subscribers can measure end-to-end latency
+  /// (publish and publish-namespace).
+  #[arg(long, default_value_t = false)]
+  pub timestamp: bool,
+
+  /// Subscriber sessions to open, each with its own connection (subscribe only).
+  /// More than one, or --report, runs the subscribe as a load test.
+  #[arg(long, default_value_t = 1)]
+  pub sessions: u32,
+
+  /// Sessions started per second when --sessions is above one; 0 starts them all at
+  /// once (subscribe only).
+  #[arg(long, default_value_t = 0)]
+  pub ramp: u32,
+
+  /// Write the load test's results as JSON to this file: sessions, throughput,
+  /// gaps and the latency of Objects that carry a send time (subscribe only).
+  #[arg(long)]
+  pub report: Option<String>,
+
   /// Send an End of Group object after each group's last Object (publish and
   /// publish-namespace).
   #[arg(long, default_value_t = false)]

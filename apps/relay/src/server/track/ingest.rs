@@ -15,6 +15,7 @@
 //! Objects arriving from a publisher: deduplicated, cached, counted in the Largest Location, then fanned out.
 
 use super::{Track, TrackEvent};
+use crate::server::inspect;
 use crate::server::stream_id::StreamId;
 use crate::server::utils;
 use anyhow::Result;
@@ -112,6 +113,14 @@ impl Track {
     object: &Object,
     header_info: Option<&HeaderInfo>,
   ) -> Result<()> {
+    let arrived = inspect::arrival_time();
+    let payload_bytes = object.payload.as_ref().map_or(0, |p| p.len());
+    if let Some(c) = inspect::counters() {
+      c.object_received(payload_bytes);
+    }
+    if let Some(zone) = &self.zone {
+      zone.object_in(payload_bytes);
+    }
     trace!(
       "new_subgroup_object: relay_track_id={} location: {:?} stream_id={} diff_ms={}",
       self.relay_track_id,
@@ -160,7 +169,7 @@ impl Track {
     };
     self
       .subscription_manager
-      .send_event_to_subscribers(event)
+      .send_object_event(event, arrived)
       .await?;
     Ok(())
   }
@@ -173,6 +182,14 @@ impl Track {
   }
 
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
+    let arrived = inspect::arrival_time();
+    let payload_bytes = datagram.payload.as_ref().map_or(0, |p| p.len());
+    if let Some(c) = inspect::counters() {
+      c.object_received(payload_bytes);
+    }
+    if let Some(zone) = &self.zone {
+      zone.object_in(payload_bytes);
+    }
     self.datagram_arrivals.arrived();
     trace!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
@@ -221,7 +238,7 @@ impl Track {
 
     self
       .subscription_manager
-      .send_event_to_subscribers(event)
+      .send_object_event(event, arrived)
       .await?;
 
     Ok(())

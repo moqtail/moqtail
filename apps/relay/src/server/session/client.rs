@@ -16,6 +16,7 @@ pub(crate) mod request_subscription_map;
 pub(crate) mod switch_context;
 
 use crate::server::cluster;
+use crate::server::inspect;
 use crate::server::{
   config::{AppConfig, TrackAliasMode},
   requests::DownstreamRequests,
@@ -37,7 +38,7 @@ use moqtail::{
   transport::{
     connection::{TransportConnection, TransportKind, TransportSendStream, TransportWriteError},
     data_stream_handler::FetchRequest,
-    qlog,
+    qlog::{self, StreamEnd},
   },
 };
 use switch_context::SwitchContext;
@@ -111,6 +112,8 @@ pub type ResponseSenderList = Vec<Arc<RwLock<ResponseSenderMap>>>;
 #[derive(Debug, Clone)]
 pub(crate) struct MOQTClient {
   pub connection_id: usize,
+  /// When SETUP completed and this client was created.
+  pub connected_at: std::time::SystemTime,
   pub transport_kind: TransportKind,
   pub connection: Arc<TransportConnection>,
   #[allow(dead_code)]
@@ -218,6 +221,7 @@ impl MOQTClient {
 
     MOQTClient {
       connection_id,
+      connected_at: std::time::SystemTime::now(),
       transport_kind: connection.kind(),
       connection,
       client_setup,
@@ -462,6 +466,9 @@ impl MOQTClient {
             "open_stream | added send_stream to send streams ({}) connection_id: {}",
             stream_key, self.connection_id
           );
+          if let Some(c) = inspect::counters() {
+            c.streams_opened.add(1);
+          }
           (s, true)
         }
         std::collections::hash_map::Entry::Occupied(s) => {
@@ -544,6 +551,7 @@ impl MOQTClient {
 
     if let Some(send_stream) = stream {
       let mut stream = send_stream.lock().await;
+      let quic_stream_id = stream.id();
       // Only SSTS clients use a discard timeout: a connection that never
       // negotiated the feature always closes gracefully, so in-flight data is
       // never discarded for traffic that never opted in.
@@ -564,6 +572,7 @@ impl MOQTClient {
           );
           anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_key, e)
         })?;
+        self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
         self
           .ssts
           .on_stream_closed(stream_key.stream_id.relay_track_id)
@@ -574,6 +583,9 @@ impl MOQTClient {
       tokio::select! {
         finish_result = stream.finish() => {
             self.ssts.on_stream_closed(stream_key.stream_id.relay_track_id).await;
+            if finish_result.is_ok() {
+              self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
+            }
             finish_result.map_err(|e| anyhow::anyhow!(
                 "close_stream | Failed to finish ({}): {:?}", stream_key, e
             )).map(|_| true)
@@ -588,7 +600,10 @@ impl MOQTClient {
             // The stream was discarded because it did not finish in time,
             // which is what this code is for: the peer must be able to tell a
             // late delivery apart from a cancelled or failed one.
-            let _ = stream.reset(StreamResetCode::DeliveryTimeout.to_u64());
+            let code = StreamResetCode::DeliveryTimeout.to_u64();
+            if stream.reset(code).is_ok() {
+              self.record_stream_end(quic_stream_id, true, StreamEnd::Reset(code));
+            }
             let _ = self.ssts.abr_tx.try_send(ssts::AbrMessage::StreamTimeout {
                 group_id,
             });
@@ -603,6 +618,15 @@ impl MOQTClient {
         stream_key, self.connection_id
       );
       Ok(false)
+    }
+  }
+
+  /// Records how one of this client's data streams ended. Nothing is recorded once
+  /// the connection has closed: a FIN or RESET_STREAM then never reaches the peer,
+  /// and it would land after the trace's close.
+  fn record_stream_end(&self, stream_id: u64, created: bool, end: StreamEnd) {
+    if qlog::enabled() && self.connection.close_reason().is_none() {
+      qlog::stream_end(self.connection_id, stream_id, created, end);
     }
   }
 
@@ -642,10 +666,12 @@ impl MOQTClient {
   /// Reset a data stream with an application error code (QUIC RESET_STREAM) and
   /// drop it from the send-stream map, releasing its switching-set stream slot.
   pub async fn reset_stream(&self, stream_key: &SendStreamKey, code: u64) {
-    if let Some(stream) = self.release_stream(stream_key).await
-      && let Err(e) = stream.lock().await.reset(code)
-    {
-      warn!("Error resetting data stream {}: {:?}", stream_key, e);
+    if let Some(stream) = self.release_stream(stream_key).await {
+      let mut stream = stream.lock().await;
+      match stream.reset(code) {
+        Ok(()) => self.record_stream_end(stream.id(), true, StreamEnd::Reset(code)),
+        Err(e) => warn!("Error resetting data stream {}: {:?}", stream_key, e),
+      }
     }
   }
 
@@ -686,7 +712,13 @@ impl MOQTClient {
       match stream.write_all_chunks(&mut chunks).await {
         Ok(..) => {}
         Err(e) => {
-          if let TransportWriteError::ClosedOrStopped = &e {
+          if let TransportWriteError::Stopped(code) = &e {
+            self.record_stream_end(stream.id(), false, StreamEnd::StopSending(*code));
+          }
+          if matches!(
+            e,
+            TransportWriteError::ClosedOrStopped | TransportWriteError::Stopped(_)
+          ) {
             warn!(
               "write_stream_object | Send stream is closed or stopped ({})",
               stream_key

@@ -86,8 +86,11 @@ impl From<quinn::SendDatagramError> for TransportConnectionError {
 
 #[derive(Debug, Error)]
 pub enum TransportWriteError {
-  #[error("stream closed or stopped")]
+  #[error("stream closed")]
   ClosedOrStopped,
+  /// The peer asked us to stop with STOP_SENDING and this application error code.
+  #[error("stream stopped by the peer with code {0:#x}")]
+  Stopped(u64),
   #[error("{0}")]
   Other(String),
 }
@@ -96,7 +99,8 @@ impl From<wtransport::error::StreamWriteError> for TransportWriteError {
   fn from(e: wtransport::error::StreamWriteError) -> Self {
     use wtransport::error::StreamWriteError as E;
     match e {
-      E::Closed | E::Stopped(_) => Self::ClosedOrStopped,
+      E::Closed => Self::ClosedOrStopped,
+      E::Stopped(code) => Self::Stopped(code.into_inner()),
       other => Self::Other(format!("{other:?}")),
     }
   }
@@ -106,7 +110,8 @@ impl From<quinn::WriteError> for TransportWriteError {
   fn from(e: quinn::WriteError) -> Self {
     use quinn::WriteError as E;
     match e {
-      E::ClosedStream | E::Stopped(_) => Self::ClosedOrStopped,
+      E::ClosedStream => Self::ClosedOrStopped,
+      E::Stopped(code) => Self::Stopped(code.into_inner()),
       other => Self::Other(format!("{other:?}")),
     }
   }
@@ -297,6 +302,23 @@ impl TransportConnection {
     let rtt = conn.rtt().max(std::time::Duration::from_millis(1));
     // kbps = window_bytes * 8 bits / rtt_seconds / 1000
     window_bytes.saturating_mul(8_000) / u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX).max(1)
+  }
+
+  fn quic(&self) -> &quinn::Connection {
+    match self {
+      Self::WebTransport(c) => c.quic_connection(),
+      Self::Quic(c) => c,
+    }
+  }
+
+  /// The QUIC connection's statistics: RTT, congestion window, losses and bytes.
+  pub fn quic_stats(&self) -> quinn::ConnectionStats {
+    self.quic().stats()
+  }
+
+  /// Why the connection closed; `None` while it is open.
+  pub fn close_reason(&self) -> Option<quinn::ConnectionError> {
+    self.quic().close_reason()
   }
 
   pub fn stable_id(&self) -> usize {

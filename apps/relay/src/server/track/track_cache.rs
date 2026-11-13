@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::inspect;
 use moka::future::Cache;
 use moka::notification::RemovalCause;
 use moqtail::model::common::location::Location;
@@ -143,6 +144,7 @@ impl TrackCache {
     let cache_builder = Cache::builder()
       .max_capacity(cache_size as u64)
       .eviction_listener(move |key: Arc<CacheKey>, value: GroupObjects, cause| {
+        inspect::count_cache_removal(cause);
         let relay_track_id = key.relay_track_id;
         let group_id = key.group_id;
         let log_folder = log_folder_for_listener.clone();
@@ -328,10 +330,34 @@ impl TrackCache {
     })
   }
 
-  /// Get cache statistics (for monitoring/debugging)
-  #[allow(dead_code)]
+  #[cfg(feature = "observability")]
+  /// The number of cached groups, and their weighted size.
   pub async fn get_cache_stats(&self) -> (u64, u64) {
     (self.cache.entry_count(), self.cache.weighted_size())
+  }
+
+  #[cfg(feature = "observability")]
+  /// Payload bytes held in the cache, for the observability API. Reads every cached group, so
+  /// it is meant for one track at a time.
+  pub async fn payload_bytes(&self) -> u64 {
+    let mut total = 0;
+    for (_, objects) in self.cache.iter() {
+      total += objects
+        .read()
+        .await
+        .iter()
+        .map(|o| o.payload.len() as u64)
+        .sum::<u64>();
+    }
+    total
+  }
+
+  #[cfg(feature = "observability")]
+  /// The ids of the cached groups, in ascending order, for the observability API.
+  pub fn group_ids(&self) -> Vec<u64> {
+    let mut ids: Vec<u64> = self.cache.iter().map(|(key, _)| key.group_id).collect();
+    ids.sort_unstable();
+    ids
   }
 
   /// Manually run pending tasks (for testing or maintenance)

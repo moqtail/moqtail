@@ -4,6 +4,12 @@ version = "0.18.0"
 edition = "2024"
 build="build.rs"
 
+[features]
+default = ["observability"]
+# The HTTP API and the hooks behind it. Without it the relay builds with none of
+# the observability layer, which is the baseline for performance comparisons.
+observability = ["dep:relay-api"]
+
 [dependencies]
 anyhow.workspace = true
 tracing.workspace = true
@@ -16,6 +22,8 @@ serde_json.workspace = true
 bytes.workspace = true
 moqtail.workspace = true
 moqtail-ssts.workspace = true
+relay-hooks = { path = "../../libs/relay-hooks" }
+relay-api = { path = "../relay-api", optional = true }
 clap.workspace = true
 once_cell.workspace = true
 moka.workspace = true

@@ -16,6 +16,7 @@
 
 use super::upstream::{handle_malformed_upstream_fetch, send_upstream_fetch_for_range};
 use super::{FetchStop, PendingUpstreamFetch};
+use crate::server::inspect;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::{SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
@@ -423,6 +424,10 @@ pub(crate) async fn serve_fetch_stream(
         );
         TerminationCode::InternalError
       })?;
+    let payload_bytes = match &entry {
+      FetchObject::Object(object) => object.payload.len(),
+      FetchObject::EndOfRange { .. } => 0,
+    };
     *prev_ctx = Some(entry.next_context(prev_ctx.as_ref()));
     let object_id = match &entry {
       FetchObject::Object(object) => object.object_id,
@@ -438,6 +443,9 @@ pub(crate) async fn serve_fetch_stream(
         );
         TerminationCode::InternalError
       })?;
+    if let Some(c) = inspect::counters() {
+      c.fetch_object_sent(payload_bytes);
+    }
 
     if let FetchObject::Object(object) = entry
       && context.server_config.enable_object_logging

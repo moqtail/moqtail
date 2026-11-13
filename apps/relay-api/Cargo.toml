@@ -1,0 +1,31 @@
+[package]
+name = "relay-api"
+description = "HTTP API for observing a MOQtail relay"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+axum = "0.8"
+bytes.workspace = true
+futures-util = "0.3"
+libc = "0.2"
+moqtail.workspace = true
+relay-hooks = { path = "../../libs/relay-hooks" }
+rand.workspace = true
+rmcp = { version = "3.10", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+tokio.workspace = true
+tracing.workspace = true
+wtransport = { workspace = true, features = ["dangerous-configuration"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

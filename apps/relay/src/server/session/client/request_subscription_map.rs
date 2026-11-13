@@ -43,6 +43,12 @@ impl RequestSubscriptionMap {
     map.get(&request_id).cloned()
   }
 
+  /// Every subscription, by request id, copied out for the observability API.
+  pub async fn all(&self) -> Vec<(u64, Weak<RwLock<Subscription>>)> {
+    let map = self.map.read().await;
+    map.iter().map(|(id, s)| (*id, s.clone())).collect()
+  }
+
   pub async fn remove(&self, request_id: u64) -> bool {
     let mut map = self.map.write().await;
     map.remove(&request_id).is_some()

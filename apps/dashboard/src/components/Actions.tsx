@@ -1,0 +1,231 @@
+/**
+ * Copyright 2026 The MOQtail Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { useEffect, useState } from 'preact/hooks';
+import { ApiError } from '../api/client';
+import { useDashboard } from '../context';
+import { href } from '../lib/route';
+import { Card, ErrorNote } from './ui';
+
+const button = 'btn';
+const field = '';
+
+/** Runs one change at a time and reports how it went. */
+function useAction() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError>();
+  const [done, setDone] = useState<string>();
+  const run = async (label: string, action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(undefined);
+    setDone(undefined);
+    try {
+      await action();
+      setDone(label);
+    } catch (e) {
+      setError(e instanceof ApiError ? e : new ApiError(0, 'error', String(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, error, done, run };
+}
+
+function NoWriteToken() {
+  return (
+    <p class="text-xs text-neutral-500">
+      Set the write token in{' '}
+      <a class="link underline" href={href('settings')}>
+        Settings
+      </a>{' '}
+      to act on the relay.
+    </p>
+  );
+}
+
+function Outcome(props: { error?: ApiError; done?: string }) {
+  if (props.error) return <ErrorNote error={props.error} />;
+  return props.done ? (
+    <p role="status" class="text-sm text-emerald-400">
+      {props.done}
+    </p>
+  ) : null;
+}
+
+/** GOAWAY and close for one connection. */
+export function Actions(props: { connId: number }) {
+  const { writeApi } = useDashboard();
+  const [timeoutMs, setTimeoutMs] = useState(10000);
+  const action = useAction();
+  if (!writeApi) return <NoWriteToken />;
+  const path = `/connections/${props.connId}`;
+
+  return (
+    <div class="space-y-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="text-xs text-neutral-400">
+          Move within{' '}
+          <input
+            class={`${field} w-24`}
+            type="number"
+            min={0}
+            max={600000}
+            step={1000}
+            value={timeoutMs}
+            onInput={e => setTimeoutMs(Number(e.currentTarget.value))}
+          />{' '}
+          ms
+        </label>
+        <button
+          type="button"
+          class={button}
+          disabled={action.busy}
+          onClick={() =>
+            action.run(
+              `GOAWAY sent; the relay closes the connection if it is still open after ${timeoutMs} ms.`,
+              () => writeApi.write('POST', `${path}/goaway`, { timeout_ms: timeoutMs }),
+            )
+          }
+        >
+          Send GOAWAY
+        </button>
+        <button
+          type="button"
+          class={`${button} btn-danger`}
+          disabled={action.busy}
+          onClick={() => {
+            if (confirm(`Close connection ${props.connId} now? The client is not asked first.`)) {
+              void action.run('Connection closed.', () => writeApi.write('DELETE', path));
+            }
+          }}
+        >
+          Close now
+        </button>
+      </div>
+      <Outcome error={action.error} done={action.done} />
+    </div>
+  );
+}
+
+/** Drain, the GOAWAY redirect URI and the log filter, for the whole relay. */
+export function RelayActions() {
+  const { api, writeApi } = useDashboard();
+  const [filter, setFilter] = useState('');
+  const [uri, setUri] = useState('');
+  const action = useAction();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api.get<{ filter: string | null }>('/logging', undefined, controller.signal).then(
+      r => setFilter(r.filter ?? ''),
+      () => {},
+    );
+    api.get<{ uri: string | null }>('/config/redirect_uri', undefined, controller.signal).then(
+      r => setUri(r.uri ?? ''),
+      () => {},
+    );
+    return () => controller.abort();
+  }, [api]);
+
+  if (!writeApi) {
+    return (
+      <Card title="Relay actions">
+        <NoWriteToken />
+      </Card>
+    );
+  }
+  return (
+    <div class="space-y-4">
+      <Card title="Settings that change while the relay runs">
+        <div class="space-y-3">
+          <form
+            class="flex flex-wrap items-center gap-2"
+            onSubmit={e => {
+              e.preventDefault();
+              void action.run('Log filter changed.', () =>
+                writeApi.write('PUT', '/logging', undefined, { filter }),
+              );
+            }}
+          >
+            <label class="text-xs text-neutral-400">
+              Log filter{' '}
+              <input
+                class={`${field} w-64`}
+                value={filter}
+                placeholder="info,relay=debug"
+                onInput={e => setFilter(e.currentTarget.value)}
+              />
+            </label>
+            <button class={button} disabled={action.busy}>
+              Apply
+            </button>
+          </form>
+          <form
+            class="flex flex-wrap items-center gap-2"
+            onSubmit={e => {
+              e.preventDefault();
+              void action.run('Redirect URI changed.', () =>
+                writeApi.write('PUT', '/config/redirect_uri', undefined, { uri: uri || null }),
+              );
+            }}
+          >
+            <label class="text-xs text-neutral-400">
+              GOAWAY sends clients to{' '}
+              <input
+                class={`${field} w-64`}
+                value={uri}
+                placeholder="none"
+                onInput={e => setUri(e.currentTarget.value)}
+              />
+            </label>
+            <button class={button} disabled={action.busy}>
+              Apply
+            </button>
+          </form>
+          <p class="text-xs text-neutral-500">
+            Both last until the relay restarts. To act on one connection, open it from Connections.
+          </p>
+        </div>
+      </Card>
+      <section class="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+        <h2 class="text-[11px] font-semibold tracking-widest text-red-300 uppercase">
+          Danger zone
+        </h2>
+        <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <p class="text-xs text-neutral-400">
+            <span class="font-medium text-neutral-200">Drain the relay.</span> It refuses new
+            requests until it is restarted, sends GOAWAY to every client, and closes those still
+            connected after 10 seconds. Use it before taking the relay down.
+          </p>
+          <button
+            type="button"
+            class={`${button} btn-danger`}
+            disabled={action.busy}
+            onClick={() => {
+              const answer = prompt('Type "drain" to drain the relay.');
+              if (answer?.trim().toLowerCase() === 'drain') {
+                void action.run('Draining.', () => writeApi.write('POST', '/drain'));
+              }
+            }}
+          >
+            Drain the relay
+          </button>
+        </div>
+      </section>
+      <Outcome error={action.error} done={action.done} />
+    </div>
+  );
+}

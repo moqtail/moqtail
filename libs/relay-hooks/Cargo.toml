@@ -10,5 +10,7 @@ publish = false
 doctest = false
 
 [dependencies]
+humantime-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+smart-default.workspace = true

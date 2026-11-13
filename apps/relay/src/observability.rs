@@ -18,42 +18,25 @@
 use crate::server::Server;
 use crate::server::inspect::RelayInspect;
 use anyhow::Result;
-use relay_api::config::{ApiConfig, ApiSettings};
+use relay_api::config::{ApiConfig, RelaySettings};
 use std::sync::Arc;
 use tracing::warn;
 
-/// Starts the HTTP API when `api_enable` is set. Errors in the `api_*` settings stop
+/// Starts the HTTP API when `api.enable` is set. Errors in the `api:` settings stop
 /// the relay at startup rather than leaving it running without the API.
 pub fn start(server: &Server) -> Result<()> {
   let c = server.app_config;
-  if !c.api_enable {
+  if !c.api.enable {
     return Ok(());
   }
-  let (config, warnings) = ApiConfig::from_settings(ApiSettings {
-    bind: c.api_bind,
-    features: c.api_features.clone(),
-    allow: c.api_allow.clone(),
-    read_token: c.api_read_token.clone(),
-    write_token: c.api_write_token.clone(),
-    metrics_bind: c.api_metrics_bind,
-    metrics_token: c.api_metrics_token.clone(),
-    mcp_token_hash: c.api_mcp_token_hash.clone(),
-    mcp_write: c.api_mcp_write,
-    mcp_name: c.api_mcp_name.clone(),
-    cors_origins: c.api_cors_origins.clone(),
-    closed_connection_history: c.closed_connection_history,
-    qlog_folder: c.qlog_folder.as_ref().map(Into::into),
-    upstream_timeout: c.upstream_subscribe_timeout,
-    latency_detail: Some(c.latency_detail.clone()),
-    latency_sample: c.latency_sample,
-    slowlog_threshold: c.slowlog_threshold,
-    slowlog_first_object_threshold: c.slowlog_first_object_threshold,
-    slowlog_size: c.slowlog_size,
-    accounting_zones: c.accounting_zones.clone(),
-    metrics_track_enable: c.metrics_track_enable,
-    metrics_resource_id: c.metrics_resource_id.clone(),
-    relay_addr: Some(loopback_of(c.bind)),
-  })?;
+  let (config, warnings) = ApiConfig::from_settings(
+    c.api.clone(),
+    RelaySettings {
+      qlog_folder: c.qlog_folder.as_ref().map(Into::into),
+      upstream_timeout: c.upstream_subscribe_timeout,
+      relay_addr: Some(loopback_of(c.bind)),
+    },
+  )?;
   for warning in warnings {
     warn!("{warning}");
   }
@@ -96,7 +79,7 @@ pub fn api_token_command() -> Result<bool> {
     _ => return Ok(false),
   };
   println!(
-    "api_mcp_token_hash: \"{}\"",
+    "Under api: in the relay's configuration:\n  mcp_token_hash: \"{}\"",
     relay_api::token::TokenHash::new(&token)
   );
   Ok(true)

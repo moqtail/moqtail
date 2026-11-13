@@ -64,7 +64,7 @@ async fn check_with(
     && !allow.iter().any(|range| range.contains(peer.ip()))
   {
     return ApiError::new(StatusCode::FORBIDDEN, "address_not_allowed")
-      .detail(format!("{} is not in api_allow", peer.ip()))
+      .detail(format!("{} is not in api.allow", peer.ip()))
       .into_response();
   }
 
@@ -77,7 +77,7 @@ async fn check_with(
     && origin.is_none()
   {
     return ApiError::new(StatusCode::FORBIDDEN, "origin_not_allowed")
-      .detail("this Origin is not in api_cors_origins")
+      .detail("this Origin is not in api.cors_origins")
       .into_response();
   }
 

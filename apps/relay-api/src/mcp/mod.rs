@@ -339,7 +339,7 @@ struct Tool {
   description: &'static str,
   arguments: fn() -> Value,
   feature: Feature,
-  /// Changes the relay; offered only with `api_mcp_write`.
+  /// Changes the relay; offered only with `api.mcp_write`.
   write: bool,
 }
 

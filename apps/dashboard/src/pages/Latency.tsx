@@ -22,7 +22,7 @@ import { clock, count, ms } from '../lib/format';
 import { usePoll } from '../lib/poll';
 import { href } from '../lib/route';
 
-/** Slowlog entries per page; the relay keeps up to `slowlog_size` of them. */
+/** Slowlog entries per page; the relay keeps up to `api.slowlog_size` of them. */
 const SLOWLOG_PAGE = 25;
 
 function SummaryCells(props: { s: Summary }) {

@@ -54,7 +54,7 @@ impl Feature {
     Feature::Mcp,
   ];
 
-  /// The features that run when `api_features` is not set.
+  /// The features that run when `api.features` is not set.
   pub const DEFAULT: [Feature; 5] = [
     Feature::Health,
     Feature::State,
@@ -150,42 +150,15 @@ fn prefix_matches(network: &[u8], addr: &[u8], prefix: u8) -> bool {
   network[full_bytes] & mask == addr[full_bytes] & mask
 }
 
-/// The `api_*` settings as they appear in the relay's configuration file.
+pub use relay_hooks::settings::ApiSettings;
+
+/// What the API needs from the relay's own settings, outside the `api:` section.
 #[derive(Debug, Clone, Default)]
-pub struct ApiSettings {
-  pub bind: Option<SocketAddr>,
-  pub features: Option<Vec<String>>,
-  pub allow: Option<Vec<String>>,
-  pub read_token: Option<String>,
-  pub write_token: Option<String>,
-  pub metrics_bind: Option<SocketAddr>,
-  pub metrics_token: Option<String>,
-  /// The MCP token's salted hash, as `relay api-token` prints it.
-  pub mcp_token_hash: Option<String>,
-  /// Lets MCP clients use the write tools; needs the `actions` feature too.
-  pub mcp_write: bool,
-  /// How the relay introduces itself to agents; unset means the host name.
-  pub mcp_name: Option<String>,
-  pub cors_origins: Vec<String>,
-  pub closed_connection_history: usize,
+pub struct RelaySettings {
+  /// Where the relay writes qlog traces; `None` when it writes none.
   pub qlog_folder: Option<std::path::PathBuf>,
+  /// How long the relay waits for a publisher to answer a request.
   pub upstream_timeout: std::time::Duration,
-  /// `relay`, `track` or `subscription`; unset means `subscription`.
-  pub latency_detail: Option<String>,
-  /// Measure every Nth object; 0 and 1 measure every object.
-  pub latency_sample: u64,
-  /// Deliveries slower than this go to the slowlog.
-  pub slowlog_threshold: std::time::Duration,
-  /// Subscriptions waiting longer than this for their first object go to the slowlog.
-  pub slowlog_first_object_threshold: std::time::Duration,
-  /// Slowlog entries kept.
-  pub slowlog_size: usize,
-  /// Namespace prefixes whose traffic is counted separately.
-  pub accounting_zones: Vec<String>,
-  /// Publish the relay's metrics as MoQ tracks.
-  pub metrics_track_enable: bool,
-  /// 16 lowercase hexadecimal characters; unset makes one up for the process.
-  pub metrics_resource_id: Option<String>,
   /// Where the metrics publisher reaches the relay: a loopback address and its
   /// QUIC port.
   pub relay_addr: Option<SocketAddr>,
@@ -262,31 +235,31 @@ fn listener_allow(
     // all arrive from loopback, so an allowlist could only lock them out.
     if allow_set && allow != default_allow() {
       warnings.push(format!(
-        "api_allow is ignored for {setting} {bind}, a loopback address"
+        "api.allow is ignored for {setting} {bind}, a loopback address"
       ));
     }
     return Ok(None);
   }
   if allow.is_empty() {
     bail!(
-      "api_allow is empty, so nobody could connect to {setting} {bind}; \
+      "api.allow is empty, so nobody could connect to {setting} {bind}; \
        list the client ranges to allow"
     );
   }
   if allow.iter().any(Cidr::is_everything) && !authenticated {
     bail!(
-      "api_allow lets every address reach {setting} {bind}, and no token is set; \
-       set a token or narrow api_allow"
+      "api.allow lets every address reach {setting} {bind}, and no token is set; \
+       set a token or narrow api.allow"
     );
   }
   if allow == default_allow() {
     warnings.push(format!(
-      "{setting} {bind} is a network address but api_allow allows only loopback; \
+      "{setting} {bind} is a network address but api.allow allows only loopback; \
        remote clients will get 403"
     ));
   } else if !authenticated {
     warnings.push(format!(
-      "{setting} {bind} serves reads without a token to the ranges in api_allow"
+      "{setting} {bind} serves reads without a token to the ranges in api.allow"
     ));
   }
   Ok(Some(allow.to_vec()))
@@ -310,7 +283,7 @@ fn host_name() -> Option<String> {
 impl ApiConfig {
   /// Parses the settings and applies the startup rules. Returns the configuration
   /// and the warnings to log, or an error when the API must not start.
-  pub fn from_settings(settings: ApiSettings) -> Result<(Self, Vec<String>)> {
+  pub fn from_settings(settings: ApiSettings, relay: RelaySettings) -> Result<(Self, Vec<String>)> {
     let mut warnings = Vec::new();
     let bind = settings.bind.unwrap_or(DEFAULT_BIND);
 
@@ -332,11 +305,8 @@ impl ApiConfig {
     };
     let allow = allow_ranges.clone();
 
-    let latency_detail = match &settings.latency_detail {
-      Some(name) => LatencyDetail::parse(name)?,
-      None => LatencyDetail::Subscription,
-    };
-    let metrics_track = match (settings.metrics_track_enable, settings.relay_addr) {
+    let latency_detail = LatencyDetail::parse(&settings.latency_detail)?;
+    let metrics_track = match (settings.metrics_track_enable, relay.relay_addr) {
       (true, Some(addr)) => Some((
         addr,
         crate::metrics::track::resource_id(settings.metrics_resource_id.as_deref())?,
@@ -348,22 +318,22 @@ impl ApiConfig {
     let write_token = settings.write_token.filter(|t| !t.is_empty());
 
     if features.contains(&Feature::Actions) && write_token.is_none() {
-      bail!("the `actions` API feature needs `api_write_token`");
+      bail!("the `actions` API feature needs `api.write_token`");
     }
     let mcp_token = match settings.mcp_token_hash.as_deref().filter(|h| !h.is_empty()) {
-      Some(hash) => Some(TokenHash::parse(hash).context("api_mcp_token_hash")?),
+      Some(hash) => Some(TokenHash::parse(hash).context("api.mcp_token_hash")?),
       None => None,
     };
     if features.contains(&Feature::Mcp) && mcp_token.is_none() {
-      bail!("the `mcp` API feature needs `api_mcp_token_hash`; make one with `relay api-token`");
+      bail!("the `mcp` API feature needs `api.mcp_token_hash`; make one with `relay api-token`");
     }
     let mcp_write = settings.mcp_write && features.contains(&Feature::Actions);
     if settings.mcp_write && !mcp_write {
-      warnings.push("api_mcp_write has no effect without the `actions` API feature".into());
+      warnings.push("api.mcp_write has no effect without the `actions` API feature".into());
     }
 
     let allow = listener_allow(
-      "api_bind",
+      "api.bind",
       bind,
       allow_set,
       &allow,
@@ -373,7 +343,7 @@ impl ApiConfig {
     let metrics_token = settings.metrics_token.filter(|t| !t.is_empty());
     let metrics_allow = match settings.metrics_bind {
       Some(metrics_bind) => listener_allow(
-        "api_metrics_bind",
+        "api.metrics_bind",
         metrics_bind,
         allow_set,
         &allow_ranges,
@@ -402,8 +372,8 @@ impl ApiConfig {
           .unwrap_or_else(|| "unnamed".into()),
         cors_origins: settings.cors_origins,
         closed_connection_history: settings.closed_connection_history,
-        qlog_folder: settings.qlog_folder,
-        upstream_timeout: settings.upstream_timeout,
+        qlog_folder: relay.qlog_folder,
+        upstream_timeout: relay.upstream_timeout,
         latency_detail,
         latency_sample: settings.latency_sample.max(1),
         slowlog: SlowlogConfig {
@@ -452,52 +422,81 @@ mod tests {
 
   #[test]
   fn loopback_bind_skips_the_allowlist() {
-    let (config, warnings) =
-      ApiConfig::from_settings(settings("127.0.0.1:4480", Some(&[]), None)).unwrap();
+    let (config, warnings) = ApiConfig::from_settings(
+      settings("127.0.0.1:4480", Some(&[]), None),
+      RelaySettings::default(),
+    )
+    .unwrap();
     assert!(config.allow.is_none());
     assert_eq!(
       warnings.len(),
       1,
-      "a changed api_allow is reported as ignored"
+      "a changed api.allow is reported as ignored"
     );
 
-    let (_, warnings) = ApiConfig::from_settings(settings("127.0.0.1:4480", None, None)).unwrap();
+    let (_, warnings) = ApiConfig::from_settings(
+      settings("127.0.0.1:4480", None, None),
+      RelaySettings::default(),
+    )
+    .unwrap();
     assert!(warnings.is_empty());
   }
 
   #[test]
   fn network_bind_rules() {
-    assert!(ApiConfig::from_settings(settings("0.0.0.0:4480", Some(&[]), None)).is_err());
     assert!(
-      ApiConfig::from_settings(settings("0.0.0.0:4480", Some(&["0.0.0.0/0"]), None)).is_err()
+      ApiConfig::from_settings(
+        settings("0.0.0.0:4480", Some(&[]), None),
+        RelaySettings::default()
+      )
+      .is_err()
     );
     assert!(
-      ApiConfig::from_settings(settings("0.0.0.0:4480", Some(&["0.0.0.0/0"]), Some("t"))).is_ok()
+      ApiConfig::from_settings(
+        settings("0.0.0.0:4480", Some(&["0.0.0.0/0"]), None),
+        RelaySettings::default()
+      )
+      .is_err()
+    );
+    assert!(
+      ApiConfig::from_settings(
+        settings("0.0.0.0:4480", Some(&["0.0.0.0/0"]), Some("t")),
+        RelaySettings::default()
+      )
+      .is_ok()
     );
 
-    let (_, warnings) =
-      ApiConfig::from_settings(settings("0.0.0.0:4480", Some(&["10.0.0.0/8"]), None)).unwrap();
+    let (_, warnings) = ApiConfig::from_settings(
+      settings("0.0.0.0:4480", Some(&["10.0.0.0/8"]), None),
+      RelaySettings::default(),
+    )
+    .unwrap();
     assert!(warnings[0].contains("without a token"));
 
-    let (_, warnings) = ApiConfig::from_settings(settings("0.0.0.0:4480", None, None)).unwrap();
+    let (_, warnings) = ApiConfig::from_settings(
+      settings("0.0.0.0:4480", None, None),
+      RelaySettings::default(),
+    )
+    .unwrap();
     assert!(warnings[0].contains("will get 403"));
   }
 
   #[test]
   fn features() {
-    let (config, _) = ApiConfig::from_settings(ApiSettings::default()).unwrap();
+    let (config, _) =
+      ApiConfig::from_settings(ApiSettings::default(), RelaySettings::default()).unwrap();
     assert!(config.has(Feature::State) && !config.has(Feature::Events));
 
     let unknown = ApiSettings {
       features: Some(vec!["health".into(), "nope".into()]),
       ..Default::default()
     };
-    assert!(ApiConfig::from_settings(unknown).is_err());
+    assert!(ApiConfig::from_settings(unknown, RelaySettings::default()).is_err());
 
     let actions_without_token = ApiSettings {
       features: Some(vec!["actions".into()]),
       ..Default::default()
     };
-    assert!(ApiConfig::from_settings(actions_without_token).is_err());
+    assert!(ApiConfig::from_settings(actions_without_token, RelaySettings::default()).is_err());
   }
 }

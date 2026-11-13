@@ -93,9 +93,10 @@ cat > "$OUT/observability.yaml" <<EOF
 bind: '127.0.0.1:$PORT'
 cert_file: $CERT
 key_file: $KEY
-api_enable: true
-api_bind: 127.0.0.1:$API_PORT
-api_features: [health, state, metrics, latency, qlog, events]
+api:
+  enable: true
+  bind: 127.0.0.1:$API_PORT
+  features: [health, state, metrics, latency, qlog, events]
 EOF
 
 PIDS=()

@@ -79,7 +79,7 @@ export function ErrorNote(props: { error: ApiError }) {
     error.code === 'feature_off'
       ? (error.detail ?? 'This part of the API is turned off on the relay.')
       : error.code === 'unreachable'
-        ? "Check the API address, that api_enable is on, and that api_cors_origins lists this page's origin."
+        ? "Check the API address, that api.enable is on, and that api.cors_origins lists this page's origin."
         : error.code === 'token_required' || error.code === 'token_rejected'
           ? "Set the relay's token in Settings."
           : error.code === 'qlog_off'

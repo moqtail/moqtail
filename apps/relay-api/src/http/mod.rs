@@ -268,7 +268,7 @@ pub fn metrics_router(state: Arc<ApiState>) -> Router {
 fn feature_off(feature: Feature) -> Response {
   ApiError::new(StatusCode::NOT_FOUND, "feature_off")
     .detail(format!(
-      "add `{}` to api_features to turn this endpoint on",
+      "add `{}` to api.features to turn this endpoint on",
       feature.name()
     ))
     .into_response()

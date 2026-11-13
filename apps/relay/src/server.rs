@@ -334,9 +334,10 @@ fn init_logging(config: &AppConfig) {
   // on. A changeable filter takes a read lock each time it checks or writes a log
   // event, so relays without the feature keep the plain one.
   #[cfg(feature = "observability")]
-  if config.api_enable
+  if config.api.enable
     && config
-      .api_features
+      .api
+      .features
       .as_ref()
       .is_some_and(|f| f.iter().any(|f| f == "actions"))
   {

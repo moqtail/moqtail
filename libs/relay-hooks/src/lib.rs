@@ -26,6 +26,7 @@
 //! Everything that serves or exports this data lives in the observability crate,
 //! `relay-api`, which the core never imports.
 
+pub mod settings;
 pub mod stats;
 
 use serde::Serialize;

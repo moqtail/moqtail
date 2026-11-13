@@ -83,52 +83,53 @@ ssts_discard_timeout: 1600ms
 peers: []
 peer_no_cert_validation: false
 
-# HTTP API under /api/v1 for observing the relay; off unless api_enable is true.
-api_enable: false
-# Address of the API; unset means 127.0.0.1:4480.
-# api_bind: 127.0.0.1:4480
-# Parts that run; unset means [health, state, metrics, latency, qlog].
-# Also available: events, actions (actions needs api_write_token).
-# api_features: [health, state, metrics, latency, qlog]
-# (also available: events, actions, mcp)
-# Client ranges allowed when api_bind is a network address; unset means loopback
-# only. Ignored on a loopback api_bind, where only local programs can connect.
-# api_allow: [127.0.0.1/32, ::1/128, 10.0.0.0/8]
-# Bearer token for reads (health and ready never need it), and for writes.
-# api_read_token: ""
-# api_write_token: ""
-# Browser origins allowed to call the API, such as the dashboard's.
-api_cors_origins: []
-# A second listener serving only /api/v1/metrics, and a token that reads the
-# metrics and nothing else (for Prometheus).
-# api_metrics_bind: 0.0.0.0:4481
-# api_metrics_token: ""
-# MCP server for AI agents at /api/v1/mcp (add `mcp` to api_features). It
-# accepts only this token, stored as a salted hash: run `relay api-token` and
-# paste the line it prints. Agents see namespaces, track names and whatever peers
-# send in control messages, which goes to the agent's model provider.
-# api_mcp_token_hash: ""
-# Lets MCP clients use the write tools; needs the `actions` feature too.
-api_mcp_write: false
-# How the relay introduces itself to MCP clients, so an agent connected to
-# several relays can tell them apart (unset = the host name).
-# api_mcp_name: interop-paris
-# Closed connections the API keeps a summary of (a few hundred bytes each).
-closed_connection_history: 10000
-# How finely object processing time is kept: relay, track or subscription.
-latency_detail: subscription
-# Measure every Nth object only (by object id); 1 measures every object.
-latency_sample: 1
-# Deliveries slower than this go to /api/v1/latency/slow, and subscriptions that
-# wait longer than the second for their first object; the last slowlog_size kept.
-slowlog_threshold: 20ms
-slowlog_first_object_threshold: 1s
-slowlog_size: 1000
-# Namespace prefixes counted separately in /api/v1/zones and the metrics, such as
-# one per tenant; a namespace belongs to the longest prefix it falls under.
-accounting_zones: []
-# Publish the relay's own metrics as MoQ tracks (catalog, "4" every second, "6"
-# every ten seconds) under metrics.moq.arpa/v1/<metrics_resource_id>. The
-# publisher connects to this relay over loopback. Needs api_enable.
-metrics_track_enable: false
-# metrics_resource_id: 0123456789abcdef
+# HTTP API under /api/v1 for observing and operating the relay, and the
+# measurements behind it. Off unless api.enable is true.
+api:
+  enable: false
+  # Address of the API; unset means 127.0.0.1:4480.
+  # bind: 127.0.0.1:4480
+  # Parts that run; unset means [health, state, metrics, latency, qlog].
+  # Also available: events, actions (needs write_token), mcp (needs mcp_token_hash).
+  # features: [health, state, metrics, latency, qlog]
+  # Client ranges allowed when bind is a network address; unset means loopback
+  # only. Ignored on a loopback bind, where only local programs can connect.
+  # allow: [127.0.0.1/32, ::1/128, 10.0.0.0/8]
+  # Bearer token for reads (health and ready never need it), and for writes.
+  # read_token: ""
+  # write_token: ""
+  # Browser origins allowed to call the API, such as the dashboard's.
+  cors_origins: []
+  # A second listener serving only /api/v1/metrics, and a token that reads the
+  # metrics and nothing else (for Prometheus).
+  # metrics_bind: 0.0.0.0:4481
+  # metrics_token: ""
+  # MCP server for AI agents at /api/v1/mcp (add mcp to features). It accepts only
+  # this token, stored as a salted hash: run `relay api-token` and paste the line
+  # it prints. Agents see namespaces, track names and whatever peers send in
+  # control messages, which goes to the agent's model provider.
+  # mcp_token_hash: ""
+  # Lets MCP clients use the write tools; needs the actions feature too.
+  mcp_write: false
+  # How the relay introduces itself to MCP clients, so an agent connected to
+  # several relays can tell them apart (unset = the host name).
+  # mcp_name: interop-paris
+  # Closed connections kept in a summary (a few hundred bytes each).
+  closed_connection_history: 10000
+  # How finely object processing time is kept: relay, track or subscription.
+  latency_detail: subscription
+  # Measure every Nth object only (by object id); 1 measures every object.
+  latency_sample: 1
+  # Deliveries slower than this go to /api/v1/latency/slow, and subscriptions that
+  # wait longer than the second for their first object; the last slowlog_size kept.
+  slowlog_threshold: 20ms
+  slowlog_first_object_threshold: 1s
+  slowlog_size: 1000
+  # Namespace prefixes counted separately in /api/v1/zones and the metrics, such as
+  # one per tenant; a namespace belongs to the longest prefix it falls under.
+  accounting_zones: []
+  # Publish the relay's own metrics as MoQ tracks (catalog, "4" every second, "6"
+  # every ten seconds) under metrics.moq.arpa/v1/<metrics_resource_id>. The
+  # publisher connects to this relay over loopback. Needs enable.
+  metrics_track_enable: false
+  # metrics_resource_id: 0123456789abcdef

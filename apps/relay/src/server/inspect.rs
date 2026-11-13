@@ -67,7 +67,7 @@ pub(crate) fn count_cache_removal(cause: moka::notification::RemovalCause) {
 }
 
 /// The traffic counters of the accounting zone a track's namespace falls under:
-/// the longest prefix listed in `accounting_zones`. `None` when no zones are
+/// the longest prefix listed in `api.accounting_zones`. `None` when no zones are
 /// configured, and always in a build without the `observability` feature.
 pub(crate) fn zone_for(
   name: &FullTrackName,

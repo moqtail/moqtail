@@ -134,7 +134,7 @@ mod tests {
 
   #[test]
   fn the_digest_is_double_sha256_of_salt_and_token() {
-    let salt = [0u8; SALT_BYTES];
+    let salt: [u8; SALT_BYTES] = rand::random();
     let once = Sha256::digest([&salt[..], b"t"].concat());
     let twice: [u8; 32] = Sha256::digest(once).into();
     assert_eq!(digest(&salt, "t"), twice);

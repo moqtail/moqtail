@@ -475,7 +475,7 @@ struct SlowSubscription {
 fn latency_of(state: &ApiState) -> Result<&Arc<Latency>, ApiError> {
   state.reporter.latency.as_ref().ok_or_else(|| {
     ApiError::new(StatusCode::NOT_FOUND, "feature_off")
-      .detail("add `latency` to api_features to turn this endpoint on")
+      .detail("add `latency` to api.features to turn this endpoint on")
   })
 }
 

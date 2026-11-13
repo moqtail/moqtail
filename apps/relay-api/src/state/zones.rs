@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Accounting zones: traffic counted per namespace prefix listed in
-//! `accounting_zones`, for per-tenant numbers on a CDN. A namespace belongs to
+//! `api.accounting_zones`, for per-tenant numbers on a CDN. A namespace belongs to
 //! the longest prefix it falls under, or to no zone.
 
 use crate::ApiState;

@@ -15,7 +15,7 @@
 //! Request-level tests: each one sends a request through the full router,
 //! including the access checks, as a client at a given address would.
 
-use crate::config::{ApiConfig, ApiSettings};
+use crate::config::{ApiConfig, ApiSettings, RelaySettings};
 use crate::{ApiState, http as routes};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
@@ -196,7 +196,7 @@ pub(crate) struct Client {
 
 impl Client {
   pub fn new(settings: ApiSettings) -> Self {
-    let (config, _) = ApiConfig::from_settings(settings).unwrap();
+    let (config, _) = ApiConfig::from_settings(settings, RelaySettings::default()).unwrap();
     let relay = Arc::new(FakeRelay::default());
     relay.accepting.store(true, Ordering::Relaxed);
     let state = Arc::new(ApiState::new(config, relay.clone(), relay.clone()));
@@ -979,37 +979,50 @@ async fn mcp_speaks_the_2026_revision_without_a_handshake() {
 
 #[test]
 fn mcp_needs_a_token_hash_to_start() {
-  let error = ApiConfig::from_settings(ApiSettings {
-    features: Some(vec!["mcp".into()]),
-    ..Default::default()
-  })
+  let error = ApiConfig::from_settings(
+    ApiSettings {
+      features: Some(vec!["mcp".into()]),
+      ..Default::default()
+    },
+    RelaySettings::default(),
+  )
   .unwrap_err();
-  assert!(error.to_string().contains("api_mcp_token_hash"));
-  let error = ApiConfig::from_settings(ApiSettings {
-    features: Some(vec!["mcp".into()]),
-    mcp_token_hash: Some("plain-token".into()),
-    ..Default::default()
-  })
+  assert!(error.to_string().contains("api.mcp_token_hash"));
+  let error = ApiConfig::from_settings(
+    ApiSettings {
+      features: Some(vec!["mcp".into()]),
+      mcp_token_hash: Some("plain-token".into()),
+      ..Default::default()
+    },
+    RelaySettings::default(),
+  )
   .unwrap_err();
   assert!(format!("{error:#}").contains("sha256d"));
-  let (_, warnings) = ApiConfig::from_settings(ApiSettings {
-    features: Some(vec!["mcp".into()]),
-    mcp_token_hash: Some(crate::mcp::token::TokenHash::new("t").to_string()),
-    mcp_write: true,
-    ..Default::default()
-  })
+  let (_, warnings) = ApiConfig::from_settings(
+    ApiSettings {
+      features: Some(vec!["mcp".into()]),
+      mcp_token_hash: Some(crate::mcp::token::TokenHash::new("t").to_string()),
+      mcp_write: true,
+      ..Default::default()
+    },
+    RelaySettings::default(),
+  )
   .unwrap();
-  assert!(warnings.iter().any(|w| w.contains("api_mcp_write")));
+  assert!(warnings.iter().any(|w| w.contains("api.mcp_write")));
 }
 
 #[test]
 fn the_relay_is_named_after_its_host_unless_told_otherwise() {
-  let (config, _) = ApiConfig::from_settings(ApiSettings::default()).unwrap();
+  let (config, _) =
+    ApiConfig::from_settings(ApiSettings::default(), RelaySettings::default()).unwrap();
   assert!(!config.mcp_name.is_empty() && config.mcp_name != "unnamed");
-  let (config, _) = ApiConfig::from_settings(ApiSettings {
-    mcp_name: Some("  ".into()),
-    ..Default::default()
-  })
+  let (config, _) = ApiConfig::from_settings(
+    ApiSettings {
+      mcp_name: Some("  ".into()),
+      ..Default::default()
+    },
+    RelaySettings::default(),
+  )
   .unwrap();
   assert_ne!(
     config.mcp_name.trim(),

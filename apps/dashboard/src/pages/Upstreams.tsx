@@ -149,8 +149,8 @@ export function Zones() {
     <Card title="Accounting zones">
       {polled.data.length === 0 ? (
         <p class="text-xs text-neutral-500">
-          No zones. List namespace prefixes in the relay's <code>accounting_zones</code> setting to
-          count traffic per prefix.
+          No zones. List namespace prefixes in the relay's <code>api.accounting_zones</code> setting
+          to count traffic per prefix.
         </p>
       ) : (
         <Table>

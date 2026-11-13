@@ -1412,8 +1412,10 @@ dependencies = [
 name = "relay-hooks"
 version = "0.1.0"
 dependencies = [
+ "humantime-serde",
  "serde",
  "serde_json",
+ "smart-default",
 ]
 
 [[package]]

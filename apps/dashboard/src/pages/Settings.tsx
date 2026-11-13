@@ -82,7 +82,7 @@ export function Settings(props: SettingsProps) {
         <div class="space-y-3">
           <p class="text-xs text-neutral-500">
             The relays this dashboard can show, picked from the list at the top right. Each entry is
-            the address of a relay's HTTP API (its <code>api_bind</code>), not its MoQ address. The
+            the address of a relay's HTTP API (its <code>api.bind</code>), not its MoQ address. The
             list is kept in this browser.
           </p>
           {props.relays.map(relay => (
@@ -109,7 +109,7 @@ export function Settings(props: SettingsProps) {
           />
           <p class="text-xs text-neutral-500">
             The relay must list this page's origin ({location.origin}) in{' '}
-            <code>api_cors_origins</code>.
+            <code>api.cors_origins</code>.
           </p>
         </div>
       </Card>

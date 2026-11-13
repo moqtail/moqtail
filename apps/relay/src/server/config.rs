@@ -17,6 +17,7 @@ use clap::Parser;
 use figment::Figment;
 use figment::providers::{Format, Yaml};
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
+use relay_hooks::settings::ApiSettings;
 use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
 use socket2::{Domain, Socket, Type};
@@ -258,70 +259,9 @@ pub struct AppConfig {
   pub peers: Vec<String>,
   /// Skip certificate validation when dialing `peers` (self-signed dev certs).
   pub peer_no_cert_validation: bool,
-  /// Starts the HTTP API under `/api/v1`.
-  pub api_enable: bool,
-  /// Address of the API. Unset means `127.0.0.1:4480`.
-  pub api_bind: Option<SocketAddr>,
-  /// Parts of the API that run: health, state, metrics, latency, qlog, events,
-  /// actions, mcp. Unset means health, state, metrics, latency and qlog.
-  pub api_features: Option<Vec<String>>,
-  /// Client address ranges allowed on a network `api_bind`. Unset means loopback
-  /// only; ignored on a loopback `api_bind`.
-  pub api_allow: Option<Vec<String>>,
-  /// When set, API reads need it as a bearer token, except health and readiness.
-  #[serde(skip_serializing)]
-  pub api_read_token: Option<String>,
-  /// Needed for the API's write endpoints; also allows reads.
-  #[serde(skip_serializing)]
-  pub api_write_token: Option<String>,
-  /// Browser origins allowed to call the API, such as the dashboard's.
-  pub api_cors_origins: Vec<String>,
-  /// A second listener serving only `/api/v1/metrics`, for example to open the
-  /// metrics to a monitoring network while the rest of the API stays on loopback.
-  pub api_metrics_bind: Option<SocketAddr>,
-  /// A token that reads `/api/v1/metrics` and nothing else, for Prometheus.
-  #[serde(skip_serializing)]
-  pub api_metrics_token: Option<String>,
-  /// The MCP token's salted hash (`sha256d$...`), as `relay api-token` prints it.
-  /// The only credential `/api/v1/mcp` accepts. Shown in `/api/v1/config`, since
-  /// the hash does not let anyone in.
-  pub api_mcp_token_hash: Option<String>,
-  /// Lets MCP clients use the write tools (GOAWAY, close, drain, log filter,
-  /// redirect URI). Needs the `actions` feature too.
-  pub api_mcp_write: bool,
-  /// How the relay introduces itself to MCP clients, such as `interop-paris`, so an
-  /// agent connected to several relays can tell them apart. Unset means the host
-  /// name.
-  pub api_mcp_name: Option<String>,
-  /// Closed connections the API keeps a summary of, oldest dropped first.
-  #[default(10_000)]
-  pub closed_connection_history: usize,
-  /// How finely the API keeps object processing time: relay, track or subscription.
-  #[default("subscription")]
-  pub latency_detail: String,
-  /// Measure the processing time of every Nth object only; 1 measures all of them.
-  #[default(1)]
-  pub latency_sample: u64,
-  /// Deliveries slower than this, from arrival to written, go to the API's slowlog.
-  #[default(Duration::from_millis(20))]
-  #[serde(with = "humantime_serde")]
-  pub slowlog_threshold: Duration,
-  /// Subscriptions waiting longer than this for their first object go to the slowlog.
-  #[default(Duration::from_secs(1))]
-  #[serde(with = "humantime_serde")]
-  pub slowlog_first_object_threshold: Duration,
-  /// Slowlog entries kept.
-  #[default(1000)]
-  pub slowlog_size: usize,
-  /// Namespace prefixes (`a/b`) whose traffic and requests the API counts
-  /// separately; a namespace belongs to the longest prefix it falls under.
-  pub accounting_zones: Vec<String>,
-  /// Publish the relay's own metrics as MoQ tracks under
-  /// `metrics.moq.arpa/v1/<metrics_resource_id>`. Needs `api_enable`.
-  pub metrics_track_enable: bool,
-  /// 16 lowercase hexadecimal characters naming this relay in the metrics
-  /// namespace; unset makes one up each time the relay starts.
-  pub metrics_resource_id: Option<String>,
+  /// The HTTP API and the measurements behind it, under `api:`; the fields are
+  /// documented on `relay_hooks::settings::ApiSettings`.
+  pub api: ApiSettings,
 }
 
 impl AppConfig {

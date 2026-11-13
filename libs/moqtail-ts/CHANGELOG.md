@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.16.1
+
+### Patch Changes
+
+- [`d2b115c`](https://github.com/moqtail/moqtail/commit/d2b115cb5a3897900630e66892b043ef73bdbdcf) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Mark the package `sideEffects: false` so bundlers can tree-shake unused modules.
+
 ## 0.16.0
 
 ### Minor Changes

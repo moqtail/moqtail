@@ -1,5 +1,25 @@
 # relay
 
+## 0.19.0
+
+### Minor Changes
+
+- [#473](https://github.com/moqtail/moqtail/pull/473) [`94eb2d5`](https://github.com/moqtail/moqtail/commit/94eb2d59c8b25510af430d9ef103db235f83eb2a) Thanks [@zafergurel](https://github.com/zafergurel)! - qlog traces of control messages. Set `qlog_folder` in the relay config, or pass `--qlog-folder` to the client, to write one JSON-SEQ `.sqlog` file per connection with a `moqt:control_message_created`/`_parsed` event (decoded message plus raw bytes) for every control message, in the MoQT qlog event format. Unset, nothing is recorded. The per-message hex dumps at INFO level are removed. The relay logs to stdout only; it no longer writes a rolling `relay.log` into `log_folder`.
+
+  In debug builds the relay also writes a QUIC packet-level qlog per connection (`*_quic.sqlog`: packets sent, received and lost, RTT and congestion window) into the same folder.
+
+- [#474](https://github.com/moqtail/moqtail/pull/474) [`1409d03`](https://github.com/moqtail/moqtail/commit/1409d03bbe14090174d99f60a02ceec3aab92609) Thanks [@zafergurel](https://github.com/zafergurel)! - qlog traces now also record a `moqt:subgroup_header_*`/`moqt:fetch_header_*` event for every data stream opened or accepted (one per stream, not per object). `scripts/qlog-summary.py <folder>` prints each connection's peer SETUP, requests with their responses, data streams per track and parse errors.
+
+- [#467](https://github.com/moqtail/moqtail/pull/467) [`bca5642`](https://github.com/moqtail/moqtail/commit/bca5642ba085d00f7f107972becfa6e85d6f5a77) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Relays can form a mesh. Set `hop_id` to declare this relay's Hop ID in SETUP and list other relays in `peers` to dial them. Namespaces announced or PUBLISHed on one relay are advertised to peers with HOP_PATH and ROUTE_COST (accumulating each sender's RELAY_COST, `relay_cost`), never back through a relay already on the path, and SUBSCRIBE/FETCH/TRACK_STATUS go to the one source the draft's path selection picks. `moqtail-rs` gains the HOP_PATH/ROUTE_COST message parameters and NAMESPACE's optional parameter block.
+
+- [#466](https://github.com/moqtail/moqtail/pull/466) [`44ff0df`](https://github.com/moqtail/moqtail/commit/44ff0df5a3936139653491a9554dc2c21f13565a) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Move the relay's settings into a YAML file passed with `--config` (see `apps/relay/relay.example.yaml`). The command line keeps only `--config`, `--bind`, `--cert-file` and `--key-file`, which override the file. `--host`/`--port` are now `--bind <ip:port>`, and durations take units (`10s`, `500ms`, `30m`), so the `_secs`/`_ms`/`_minutes` suffixes are gone from the keys.
+
+### Patch Changes
+
+- [#472](https://github.com/moqtail/moqtail/pull/472) [`6520af0`](https://github.com/moqtail/moqtail/commit/6520af00de7d587fd3ee8471782acf0a36765170) Thanks [@DenizUgur](https://github.com/DenizUgur)! - fetch messages now use the priority requested by the FETCH request
+
+- [#475](https://github.com/moqtail/moqtail/pull/475) [`9e8bf05`](https://github.com/moqtail/moqtail/commit/9e8bf05f99b6aeb27b07225fb1f5014aeb40f6ac) Thanks [@zafergurel](https://github.com/zafergurel)! - The relay names its qlog files by connection id alone (`server_conn<id>.sqlog`) and never overwrites an earlier trace: an id seen again after a restart gets a `_2`, `_3`, … suffix.
+
 ## 0.18.0
 
 ### Minor Changes

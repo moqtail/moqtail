@@ -135,6 +135,7 @@ fn input<'a>(
     sets,
     reason,
     now_ms: 0,
+    now_unix_ms: 0,
     streams,
     stream_timeouts_since_last_decision: no_timeouts(),
   }
@@ -575,15 +576,8 @@ fn one_deep_reading_inside_a_group_is_not_enough() {
   let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 24));
   assert_eq!(
     tier_of(&selection, 1),
-    1,
-    "two of them, one after another, are still the handoff window"
-  );
-
-  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 24));
-  assert_eq!(
-    tier_of(&selection, 1),
     0,
-    "the third consecutive reading is the monitor's pattern"
+    "two of them, one after another, are"
   );
   assert!(
     selection.supersede.contains_key(&1),
@@ -695,27 +689,19 @@ fn the_monitor_rearms_after_it_fires() {
   // Mid-group samples repeat the group in flight: the new group id is the
   // boundary.
   let at_two = deep_at(2);
-  let mut selection = None;
-  for _ in 0..3 {
-    selection = Some(algorithm.decide(&input(&sets, &at_two, DecisionReason::PeriodicSample, 29)));
-  }
-  assert_eq!(tier_of(&selection.unwrap(), 1), 1, "the monitor fired");
+  algorithm.decide(&input(&sets, &at_two, DecisionReason::PeriodicSample, 29));
+  let selection = algorithm.decide(&input(&sets, &at_two, DecisionReason::PeriodicSample, 29));
+  assert_eq!(tier_of(&selection, 1), 1, "the monitor fired");
 
   // The step drained the signal it was reading: those same streams are at a
   // rung the algorithm has now rejected. One fresh reading at the new tier must
   // not be enough, because a streak left standing at the threshold would make it
   // so, and the ladder would walk itself down tick by tick.
   let at_one = deep_at(1);
-  let mut selection = None;
-  for _ in 0..2 {
-    selection = Some(algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29)));
-  }
-  assert_eq!(
-    tier_of(&selection.unwrap(), 1),
-    1,
-    "the streak re-armed: two readings do not fire"
-  );
+  let selection = algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
+  assert_eq!(tier_of(&selection, 1), 1, "the streak re-armed");
 
+  algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
   let selection = algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
   assert_eq!(
     tier_of(&selection, 1),
@@ -771,6 +757,7 @@ fn a_stream_timeout_is_not_a_reading() {
     sets: &sets,
     reason: DecisionReason::StreamTimeout,
     now_ms: 0,
+    now_unix_ms: 0,
     streams: &empty,
     stream_timeouts_since_last_decision: &timeouts,
   };
@@ -1273,7 +1260,6 @@ fn a_downshift_inside_a_group_undoes_the_upshift_recorded_at_its_start() {
   // Congestion at the end of the same group: the monitor's two readings, and
   // the downshift lands on group 34 itself.
   let inside = deep_at(2);
-  algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
   algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
   let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
   assert_eq!(

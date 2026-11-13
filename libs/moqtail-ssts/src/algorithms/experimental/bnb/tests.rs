@@ -88,6 +88,7 @@ impl Scenario {
       configured_cap_kbps: 0,
       reason: DecisionReason::GroupBoundary,
       now_ms,
+      now_unix_ms: now_ms,
       sets: &self.sets,
       streams: &self.streams,
       stream_timeouts_since_last_decision: &self.timeouts,

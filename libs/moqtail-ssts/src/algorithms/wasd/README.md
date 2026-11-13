@@ -126,13 +126,17 @@ the second re-send's deadline.
 
 ## Knobs
 
-`wasd.reads` (default 3): how many consecutive congested mid-group readings
-the monitor waits for. It is worth moving when the media paces differently
-than the sample the default was tuned on: on a 25 fps stream with 100 ms
-groups the default filters a normal group tail, and on media whose groups
-are seconds long the window it takes to see real congestion inside one is
-much longer. Setting it to 1 turns the monitor into a reaction to a single
-sample, which is not a monitor; it is clamped to 1 rather than 0.
+`wasd.reads` (default 2): how many consecutive congested mid-group readings
+the monitor waits for. Two is the measured default on this testbed: on the
+same runs, a third reading bought almost no throughput, quality or stability
+back and cost latency and frozen time, because the sample clock is the objects
+sent and the wait grows exactly when the path is slow. It is worth moving when
+the media paces differently than the sample the default was tuned on: on a
+25 fps stream with 100 ms groups the default filters a normal group tail, and
+on media whose groups are seconds long the window it takes to see real
+congestion inside one is much longer. Setting it to 1 turns the monitor into
+a reaction to a single sample, which is not a monitor; it is clamped to 1
+rather than 0.
 
 `wasd.rho` (default 0.25, in `(0.01, 1]`): the probing risk tolerance, and
 the mechanism the climb is priced by. The steady climb waits

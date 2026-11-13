@@ -351,6 +351,12 @@ pub struct AbrInput<'a> {
   /// input rather than a call to the clock so that a test can hand the
   /// algorithm the elapsed time it wants to exercise a timeout.
   pub now_ms: u64,
+  /// The same instant on the Unix epoch, in ms. `now_ms` is monotonic and
+  /// means nothing outside the host; an algorithm handed an external schedule
+  /// in wall-clock terms (the oracle's trace t0) joins the two with this.
+  /// A host that has no wall clock may set it to `now_ms`; an algorithm that
+  /// needs it says so in its documentation.
+  pub now_unix_ms: u64,
   /// The live forwarding streams of every set this connection has, one entry
   /// per stream. The count of a set's streams, the age of its oldest, and
   /// which groups are in flight are all read from here; see the helpers on
@@ -611,6 +617,12 @@ impl Tuning {
       .unwrap_or(default)
   }
 
+  /// A value read as text, for an algorithm whose input is not a number: a
+  /// schedule the host resolved, a path the host chose. `None` when unset.
+  pub fn str(&self, key: &str) -> Option<&str> {
+    self.values.get(key).map(String::as_str)
+  }
+
   /// Whether the host named this key at all, for an algorithm that wants to
   /// report a knob it was handed but cannot use.
   pub fn is_set(&self, key: &str) -> bool {
@@ -659,6 +671,7 @@ mod tests {
       configured_cap_kbps: 0,
       reason: DecisionReason::GroupBoundary,
       now_ms: 1000,
+      now_unix_ms: 1000,
       sets,
       streams,
       stream_timeouts_since_last_decision: no_timeouts(),

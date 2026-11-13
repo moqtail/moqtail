@@ -45,6 +45,7 @@ fn budget_is_the_stricter_of_estimate_and_cap() {
     configured_cap_kbps: cap,
     reason: DecisionReason::GroupBoundary,
     now_ms: 0,
+    now_unix_ms: 0,
     sets: &[],
     streams: &no_streams,
     stream_timeouts_since_last_decision: &no_timeouts,

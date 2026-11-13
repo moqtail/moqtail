@@ -70,6 +70,11 @@ impl Registry {
         // v3: everything older is cancelled too and re-sent a rung below the
         // new rung — the retroactive double downshift.
         Arc::new(crate::algorithms::wasd::v3::FACTORY),
+        // The perfect-knowledge oracle: the rung each group window could
+        // simply carry, predestined from the trace. Experimental: it exists to
+        // be measured, and it is only advertised when --ssts-algorithms asks
+        // for it.
+        Arc::new(crate::algorithms::oracle::OracleAlgorithmFactory),
       ],
     }
   }

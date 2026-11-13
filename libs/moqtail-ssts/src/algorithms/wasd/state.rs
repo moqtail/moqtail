@@ -33,7 +33,13 @@ pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;
 /// group's stream opens, while the previous group's FIN-ACK is still in
 /// flight; congestion shows it on every reading until it is dealt with. The
 /// streak re-arms when it fires, so one burst cannot chain.
-pub(crate) const DOWNSHIFT_SUBGROUP_READS: u32 = 3;
+///
+/// Two, which is the value every measured run used: the October suites took
+/// it from this default, the November suites pinned `wasd.reads=2`. The draft
+/// alignment briefly raised it to three (commit ec8bcf6); that is not the
+/// configuration the results in the paper come from, so the default is back
+/// to two and the paper's numbers stay reproducible without a flag.
+pub(crate) const DOWNSHIFT_SUBGROUP_READS: u32 = 2;
 
 /// What one depth sample did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

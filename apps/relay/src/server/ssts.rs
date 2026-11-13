@@ -113,6 +113,11 @@ pub struct SstsState {
   /// decisions are differences against it, so the epoch itself never means
   /// anything and a test can start one at zero.
   started_at: std::time::Instant,
+  /// The same moment as a wall-clock timestamp in ms since the Unix epoch.
+  /// `now_ms` is monotonic and means nothing outside this process; an
+  /// algorithm handed an external schedule (the oracle's trace t0) needs the
+  /// two joined, and this is the join.
+  started_at_unix_ms: u64,
 }
 
 /// The SSTS algorithms the client's SETUP advertises; an empty list (or the
@@ -159,6 +164,10 @@ impl SstsState {
       decision_notify: Arc::new(tokio::sync::Notify::new()),
       epoch,
       started_at: std::time::Instant::now(),
+      started_at_unix_ms: std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0),
     }
   }
 
@@ -167,6 +176,14 @@ impl SstsState {
   /// move time forward instead of waiting for it.
   pub fn now_ms(&self) -> u64 {
     self.started_at.elapsed().as_millis() as u64
+  }
+
+  /// This connection's monotonic clock in ms, expressed on the Unix epoch:
+  /// `started_at_unix_ms + now_ms()`. An algorithm handed an external
+  /// schedule in wall-clock terms (the oracle's trace t0) converts it to this
+  /// process's monotonic clock with it.
+  pub fn now_unix_ms(&self) -> u64 {
+    self.started_at_unix_ms.saturating_add(self.now_ms())
   }
 
   /// SSTS was negotiated for this connection (see `negotiated_algorithms`).

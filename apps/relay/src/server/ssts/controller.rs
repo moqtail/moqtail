@@ -184,6 +184,10 @@ async fn decide(
   reason: DecisionReason,
 ) {
   let now_ms = client.ssts.now_ms();
+  // The same instant on the Unix epoch, for an algorithm handed an external
+  // schedule in wall-clock terms (the oracle's trace t0): its own now_ms is
+  // monotonic and means nothing outside this process.
+  let now_unix_ms = client.ssts.now_unix_ms();
   let (sets, streams): (Vec<SetSnapshot>, Vec<StreamSnapshot>) =
     client.ssts.decision_snapshot(now_ms).await;
   if sets.is_empty() {
@@ -226,6 +230,7 @@ async fn decide(
       configured_cap_kbps,
       reason,
       now_ms,
+      now_unix_ms,
       sets: &algorithm_sets,
       streams: &streams,
       stream_timeouts_since_last_decision: &timeouts,

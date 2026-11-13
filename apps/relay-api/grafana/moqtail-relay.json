@@ -384,7 +384,7 @@
     },
     {
       "type": "stat",
-      "title": "Processing p99",
+      "title": "Latency p99",
       "description": "Time from an object's arrival to its write to a subscriber, 99th percentile. Values are histogram bucket bounds, so they are at most twice the real value.",
       "targets": [
         {

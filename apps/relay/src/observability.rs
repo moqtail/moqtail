@@ -38,6 +38,7 @@ pub fn start(server: &mut Server) -> Result<()> {
     cors_origins: c.api_cors_origins.clone(),
     closed_connection_history: c.closed_connection_history,
     qlog_folder: c.qlog_folder.as_ref().map(Into::into),
+    upstream_timeout: c.upstream_subscribe_timeout,
   })?;
   for warning in warnings {
     warn!("{warning}");

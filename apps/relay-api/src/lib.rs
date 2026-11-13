@@ -21,17 +21,21 @@
 mod access;
 pub mod config;
 mod connections;
+mod control;
 mod error;
 mod list;
+mod overview;
 mod probe;
 mod qlog;
 mod routes;
 mod snapshot;
+mod tracks;
 
 use anyhow::{Context, Result};
 use config::{ApiConfig, Feature};
-use moqtail_probe::{ConnectionInfo, Inspect, Probe};
-use probe::ApiProbe;
+use control::ControlTracker;
+use moqtail_probe::{ConnectionInfo, Inspect, Probe, TrackInfo};
+use probe::{ApiProbe, Connection};
 use snapshot::Cached;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -42,26 +46,50 @@ pub(crate) struct ApiState {
   pub config: ApiConfig,
   pub inspect: Arc<dyn Inspect>,
   pub probe: Arc<ApiProbe>,
+  pub control: Arc<ControlTracker>,
   connections: Cached<Vec<ConnectionInfo>>,
+  tracks: Cached<Vec<TrackInfo>>,
 }
 
 impl ApiState {
   pub(crate) fn new(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Self {
+    let control = Arc::new(ControlTracker::new(config.upstream_timeout));
     let probe = Arc::new(ApiProbe::new(
       config.has(Feature::State),
       config.closed_connection_history,
+      control.clone(),
     ));
     ApiState {
       config,
       inspect,
       probe,
+      control,
       connections: Cached::new(),
+      tracks: Cached::new(),
     }
   }
 
   /// The open connections, at most a second old.
   pub async fn open_connections(&self) -> Arc<Vec<ConnectionInfo>> {
     self.connections.get(|| self.inspect.connections()).await
+  }
+
+  /// The open connections with their control message and request counts.
+  pub async fn open_connections_with_counts(&self) -> Vec<Connection> {
+    self
+      .open_connections()
+      .await
+      .iter()
+      .map(|info| Connection {
+        counts: self.control.connection(info.conn_id),
+        info: info.clone(),
+      })
+      .collect()
+  }
+
+  /// Every track, at most a second old.
+  pub async fn tracks(&self) -> Arc<Vec<TrackInfo>> {
+    self.tracks.get(|| self.inspect.tracks()).await
   }
 }
 
@@ -75,6 +103,9 @@ pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Pro
   let bind = config.bind;
   let state = Arc::new(ApiState::new(config, inspect));
   let probe: Arc<dyn Probe> = state.probe.clone();
+  if state.config.has(Feature::State) {
+    moqtail::transport::observe::set_control_observer(state.control.clone());
+  }
 
   std::thread::Builder::new()
     .name("relay-api".into())

@@ -22,8 +22,8 @@ use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use moqtail_probe::{
-  BoxFuture, CloseInfo, ConnectionInfo, ConnectionState, Inspect, Probe, QuicStats, RelayStatus,
-  Role,
+  BoxFuture, CloseInfo, ConnectionInfo, ConnectionState, Inspect, NamespaceSubscriptionInfo, Probe,
+  PublishedTrackInfo, QuicStats, RelayStatus, Role, TrackDetail, TrackInfo,
 };
 use serde_json::{Value, json};
 use std::net::SocketAddr;
@@ -55,11 +55,54 @@ impl Inspect for FakeRelay {
 
   fn connections(&self) -> BoxFuture<'_, Vec<ConnectionInfo>> {
     Box::pin(async {
-      vec![
-        connection(7, "live/room1", 10.0, 500),
-        connection(9, "vod/a", 2.0, 9000),
-      ]
+      let mut publisher = connection(7, "live/room1", 10.0, 500);
+      publisher.published_tracks.push(PublishedTrackInfo {
+        request_id: 0,
+        track: "live/room1 : video".into(),
+      });
+      vec![publisher, connection(9, "vod/a", 2.0, 9000)]
     })
+  }
+
+  fn tracks(&self) -> BoxFuture<'_, Vec<TrackInfo>> {
+    Box::pin(async { vec![track(1, "live/room1", 3), track(2, "vod/a", 40)] })
+  }
+
+  fn track(&self, track_id: u64) -> BoxFuture<'_, Option<TrackDetail>> {
+    Box::pin(async move {
+      (track_id == 1).then(|| TrackDetail {
+        track: track(1, "live/room1", 3),
+        subscriptions: vec![],
+        cached_group_ids: vec![4, 5],
+        cached_bytes: 1200,
+      })
+    })
+  }
+
+  fn namespace_subscriptions(&self) -> BoxFuture<'_, Vec<NamespaceSubscriptionInfo>> {
+    Box::pin(async {
+      vec![NamespaceSubscriptionInfo {
+        prefix: "live".into(),
+        conn_id: 9,
+        kind: "namespace".into(),
+      }]
+    })
+  }
+}
+
+fn track(track_id: u64, namespace: &str, subscribers: usize) -> TrackInfo {
+  TrackInfo {
+    track_id,
+    namespace: namespace.into(),
+    name: "video".into(),
+    origin: "publish".into(),
+    status: "confirmed".into(),
+    publishers: vec![],
+    subscribers,
+    forwarding: true,
+    largest_location: Some("12:3".into()),
+    cached_groups: 2,
+    upstream_forward: true,
   }
 }
 
@@ -357,4 +400,54 @@ async fn closed_connections_are_kept_up_to_the_history_size() {
   let (status, body) = client.get("/api/v1/connections/404").await;
   assert_eq!(status, StatusCode::NOT_FOUND);
   assert_eq!(body["error"], "unknown_connection");
+}
+
+#[tokio::test]
+async fn tracks_list_sort_and_detail() {
+  let client = Client::new(ApiSettings::default());
+  let (_, body) = client.get("/api/v1/tracks?sort=-subscribers").await;
+  assert_eq!(body["items"][0]["track_id"], 2);
+  let (_, body) = client.get("/api/v1/tracks?prefix=live").await;
+  assert_eq!(body["total"], 1);
+
+  let (status, body) = client.get("/api/v1/tracks/1").await;
+  assert_eq!(status, StatusCode::OK);
+  assert_eq!(
+    body["namespace"], "live/room1",
+    "the track's fields are flattened in"
+  );
+  assert_eq!(body["cached_group_ids"], json!([4, 5]));
+  assert_eq!(
+    client.get("/api/v1/tracks/3").await.0,
+    StatusCode::NOT_FOUND
+  );
+}
+
+#[tokio::test]
+async fn overview_namespaces_and_upstreams() {
+  let client = Client::new(ApiSettings::default());
+  let (_, body) = client.get("/api/v1/overview").await;
+  assert_eq!(body["connections"]["active"], 2);
+  assert_eq!(body["tracks"], 2);
+  assert_eq!(body["cached_groups"], 4);
+  assert_eq!(body["version"], "moqtail/test");
+
+  let (_, body) = client.get("/api/v1/namespaces").await;
+  assert_eq!(body["announced"][0]["namespace"], "live/room1");
+  assert_eq!(body["announced"][0]["announced_by"], json!([7]));
+  assert_eq!(body["subscriptions"][0]["kind"], "namespace");
+
+  let (_, body) = client.get("/api/v1/upstreams").await;
+  let ids: Vec<u64> = body
+    .as_array()
+    .unwrap()
+    .iter()
+    .map(|u| u["conn_id"].as_u64().unwrap())
+    .collect();
+  assert_eq!(
+    ids,
+    vec![7, 9],
+    "both announced a namespace, so both are sources"
+  );
+  assert_eq!(body[0]["tracks"], 1);
 }

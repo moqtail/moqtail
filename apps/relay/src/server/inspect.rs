@@ -37,9 +37,16 @@ pub(crate) use relay::RelayInspect;
 /// The `Inspect` implementation, built only with the observability layer.
 #[cfg(feature = "observability")]
 mod relay {
-  use super::{connection_info, millis_since_epoch};
+  use super::{
+    connection_info, location_text, millis_since_epoch, namespace_text, subscription_info,
+  };
   use crate::server::Server;
-  use moqtail_probe::{BoxFuture, ConnectionInfo, Inspect, RelayStatus};
+  use crate::server::track::track_manager::{SubscribeKind, TrackManager};
+  use crate::server::track::{Track, TrackOrigin, TrackStatus};
+  use moqtail_probe::{
+    BoxFuture, ConnectionInfo, Inspect, NamespaceSubscriptionInfo, RelayStatus, TrackDetail,
+    TrackInfo, TrackPublisher, TrackSubscription,
+  };
   use std::sync::atomic::Ordering;
 
   /// The relay as the observability layer sees it.
@@ -82,6 +89,103 @@ mod relay {
         connections
       })
     }
+
+    fn tracks(&self) -> BoxFuture<'_, Vec<TrackInfo>> {
+      Box::pin(async move {
+        let mut tracks = Vec::new();
+        for track in self.0.track_manager.all_tracks().await {
+          tracks.push(track_info(&track).await);
+        }
+        tracks
+      })
+    }
+
+    fn track(&self, track_id: u64) -> BoxFuture<'_, Option<TrackDetail>> {
+      Box::pin(async move {
+        let tracks = self.0.track_manager.all_tracks().await;
+        let track = tracks.iter().find(|t| t.relay_track_id == track_id)?;
+        Some(track_detail(track).await)
+      })
+    }
+
+    fn namespace_subscriptions(&self) -> BoxFuture<'_, Vec<NamespaceSubscriptionInfo>> {
+      Box::pin(namespace_subscriptions(&self.0.track_manager))
+    }
+  }
+
+  async fn track_info(track: &Track) -> TrackInfo {
+    let publishers = track
+      .publisher_aliases
+      .read()
+      .await
+      .iter()
+      .map(|(conn_id, alias)| TrackPublisher {
+        conn_id: *conn_id as u64,
+        alias: *alias,
+      })
+      .collect();
+    let status = match track.status().await {
+      TrackStatus::Pending => "pending",
+      TrackStatus::Confirmed { .. } => "confirmed",
+      TrackStatus::Rejected { .. } => "rejected",
+    };
+    let origin = match track.origin() {
+      TrackOrigin::Publish => "publish",
+      TrackOrigin::Subscribe => "subscribe",
+      TrackOrigin::CacheOnly => "cache_only",
+    };
+    TrackInfo {
+      track_id: track.relay_track_id,
+      namespace: namespace_text(&track.full_track_name.namespace),
+      name: track.full_track_name.name.to_string(),
+      origin: origin.to_string(),
+      status: status.to_string(),
+      publishers,
+      subscribers: track.subscriber_count().await,
+      forwarding: track.has_forwarding_subscriber().await,
+      largest_location: track.largest_object().await.as_ref().map(location_text),
+      cached_groups: track.cache.get_cache_stats().await.0,
+      upstream_forward: track
+        .upstream_forward
+        .load(std::sync::atomic::Ordering::Relaxed),
+    }
+  }
+
+  async fn track_detail(track: &Track) -> TrackDetail {
+    let mut subscriptions = Vec::new();
+    for subscription in track.subscription_manager.all().await {
+      let subscription = subscription.read().await;
+      subscriptions.push(TrackSubscription {
+        conn_id: subscription.subscriber().connection_id as u64,
+        subscription: subscription_info(subscription.request_id, &subscription).await,
+      });
+    }
+    subscriptions.sort_by_key(|s| (s.conn_id, s.subscription.request_id));
+    TrackDetail {
+      track: track_info(track).await,
+      subscriptions,
+      cached_group_ids: track.cache.group_ids(),
+      cached_bytes: track.cache.payload_bytes().await,
+    }
+  }
+
+  async fn namespace_subscriptions(tracks: &TrackManager) -> Vec<NamespaceSubscriptionInfo> {
+    let mut list: Vec<_> = tracks
+      .namespace_subscriptions()
+      .await
+      .into_iter()
+      .map(|(prefix, conn_id, kind)| NamespaceSubscriptionInfo {
+        prefix: namespace_text(&prefix),
+        conn_id: conn_id as u64,
+        kind: match kind {
+          SubscribeKind::Namespace => "namespace",
+          SubscribeKind::Tracks => "tracks",
+        }
+        .to_string(),
+      })
+      .collect();
+    list.sort_by(|a, b| (&a.prefix, a.conn_id).cmp(&(&b.prefix, b.conn_id)));
+    list
   }
 }
 

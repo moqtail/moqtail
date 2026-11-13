@@ -328,10 +328,34 @@ impl TrackCache {
     })
   }
 
-  /// Get cache statistics (for monitoring/debugging)
-  #[allow(dead_code)]
+  #[cfg(feature = "observability")]
+  /// The number of cached groups, and their weighted size.
   pub async fn get_cache_stats(&self) -> (u64, u64) {
     (self.cache.entry_count(), self.cache.weighted_size())
+  }
+
+  #[cfg(feature = "observability")]
+  /// Payload bytes held in the cache, for reporting. Reads every cached group, so
+  /// it is meant for one track at a time.
+  pub async fn payload_bytes(&self) -> u64 {
+    let mut total = 0;
+    for (_, objects) in self.cache.iter() {
+      total += objects
+        .read()
+        .await
+        .iter()
+        .map(|o| o.payload.len() as u64)
+        .sum::<u64>();
+    }
+    total
+  }
+
+  #[cfg(feature = "observability")]
+  /// The ids of the cached groups, in ascending order, for reporting.
+  pub fn group_ids(&self) -> Vec<u64> {
+    let mut ids: Vec<u64> = self.cache.iter().map(|(key, _)| key.group_id).collect();
+    ids.sort_unstable();
+    ids
   }
 
   /// Manually run pending tasks (for testing or maintenance)

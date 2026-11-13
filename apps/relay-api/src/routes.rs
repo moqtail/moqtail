@@ -76,6 +76,36 @@ const ENDPOINTS: &[Endpoint] = &[
   },
   Endpoint {
     method: "GET",
+    path: "/api/v1/overview",
+    feature: Feature::State,
+    route: || get(crate::overview::overview),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/tracks",
+    feature: Feature::State,
+    route: || get(crate::tracks::list),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/tracks/{track_id}",
+    feature: Feature::State,
+    route: || get(crate::tracks::detail),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/namespaces",
+    feature: Feature::State,
+    route: || get(crate::overview::namespaces),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/upstreams",
+    feature: Feature::State,
+    route: || get(crate::overview::upstreams),
+  },
+  Endpoint {
+    method: "GET",
     path: "/api/v1/qlog",
     feature: Feature::Qlog,
     route: || get(crate::qlog::index),

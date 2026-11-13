@@ -76,6 +76,12 @@ pub(crate) struct SubscriptionManager {
 }
 
 impl SubscriptionManager {
+  #[cfg(feature = "observability")]
+  /// Every subscription to the track, for reporting.
+  pub async fn all(&self) -> Vec<Arc<RwLock<Subscription>>> {
+    self.subscriptions.read().await.values().cloned().collect()
+  }
+
   pub fn new(
     relay_track_id: u64,
     full_track_name: FullTrackName,

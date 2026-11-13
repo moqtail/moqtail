@@ -70,7 +70,7 @@ pub async fn index(State(state): State<Arc<ApiState>>) -> Result<Json<Vec<TraceF
     .chain(
       closed
         .iter()
-        .map(|c| (c.conn_id, quic_file_suffix(&c.remote), false)),
+        .map(|c| (c.info.conn_id, quic_file_suffix(&c.info.remote), false)),
     )
     .collect();
 
@@ -153,7 +153,7 @@ pub async fn quic_trace(
   let closed = state.probe.closed_connections();
   let remote = open
     .iter()
-    .chain(closed.iter())
+    .chain(closed.iter().map(|c| &c.info))
     .find(|c| c.conn_id == conn_id)
     .map(|c| c.remote.clone())
     .ok_or_else(|| {

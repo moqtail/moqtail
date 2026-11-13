@@ -40,6 +40,15 @@ pub trait Inspect: Send + Sync {
 
   /// Every connection that has completed SETUP and is still open.
   fn connections(&self) -> BoxFuture<'_, Vec<ConnectionInfo>>;
+
+  /// Every track the relay knows.
+  fn tracks(&self) -> BoxFuture<'_, Vec<TrackInfo>>;
+
+  /// One track with its subscriptions and cache contents.
+  fn track(&self, track_id: u64) -> BoxFuture<'_, Option<TrackDetail>>;
+
+  /// Every SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS the relay holds.
+  fn namespace_subscriptions(&self) -> BoxFuture<'_, Vec<NamespaceSubscriptionInfo>>;
 }
 
 /// What the relay core reports as things happen. Every method has an empty default,
@@ -192,4 +201,65 @@ pub struct CloseInfo {
   /// The application or transport error code, when there was one.
   pub code: Option<u64>,
   pub reason: String,
+}
+
+/// One track, copied out of the relay.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackInfo {
+  /// The relay's own id for the track, stable for the track's life.
+  pub track_id: u64,
+  /// The namespace as `a/b/c`.
+  pub namespace: String,
+  pub name: String,
+  /// `publish` (a PUBLISH brought it), `subscribe` (a SUBSCRIBE reached a
+  /// publisher), or `cache_only` (only cached objects remain).
+  pub origin: String,
+  /// `pending`, `confirmed` or `rejected`.
+  pub status: String,
+  pub publishers: Vec<TrackPublisher>,
+  pub subscribers: usize,
+  /// True while at least one subscriber wants objects forwarded.
+  pub forwarding: bool,
+  /// The largest location received, as `group:object`.
+  pub largest_location: Option<String>,
+  pub cached_groups: u64,
+  /// True while the relay asks its publishers to forward objects.
+  pub upstream_forward: bool,
+}
+
+/// A publisher of a track, and the alias it publishes it under.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackPublisher {
+  pub conn_id: u64,
+  pub alias: u64,
+}
+
+/// A track with its subscriptions and cache contents.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackDetail {
+  #[serde(flatten)]
+  pub track: TrackInfo,
+  pub subscriptions: Vec<TrackSubscription>,
+  /// The ids of the cached groups, ascending.
+  pub cached_group_ids: Vec<u64>,
+  /// Payload bytes held in the cache for this track.
+  pub cached_bytes: u64,
+}
+
+/// A subscription to a track, and the connection holding it.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackSubscription {
+  pub conn_id: u64,
+  #[serde(flatten)]
+  pub subscription: SubscriptionInfo,
+}
+
+/// A SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS held by a connection.
+#[derive(Debug, Clone, Serialize)]
+pub struct NamespaceSubscriptionInfo {
+  /// The namespace prefix as `a/b`.
+  pub prefix: String,
+  pub conn_id: u64,
+  /// `namespace` or `tracks`.
+  pub kind: String,
 }

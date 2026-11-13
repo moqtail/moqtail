@@ -155,6 +155,7 @@ pub struct ApiSettings {
   pub cors_origins: Vec<String>,
   pub closed_connection_history: usize,
   pub qlog_folder: Option<std::path::PathBuf>,
+  pub upstream_timeout: std::time::Duration,
 }
 
 /// The API's settings after parsing and the startup checks.
@@ -172,6 +173,9 @@ pub struct ApiConfig {
   pub closed_connection_history: usize,
   /// Where the relay writes qlog traces; `None` when it writes none.
   pub qlog_folder: Option<std::path::PathBuf>,
+  /// How long the relay waits for a publisher to answer; an upstream request
+  /// unanswered for longer counts as timed out.
+  pub upstream_timeout: std::time::Duration,
 }
 
 pub const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4480);
@@ -266,6 +270,7 @@ impl ApiConfig {
         cors_origins: settings.cors_origins,
         closed_connection_history: settings.closed_connection_history,
         qlog_folder: settings.qlog_folder,
+        upstream_timeout: settings.upstream_timeout,
       },
       warnings,
     ))

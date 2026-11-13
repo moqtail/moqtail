@@ -15,8 +15,10 @@
 //! `/api/v1/connections`: who is connected, and who was.
 
 use crate::ApiState;
+use crate::control::{MessageCounts, RequestCounts};
 use crate::error::ApiError;
 use crate::list::{ListQuery, Page, SortValue, page, parse_query};
+use crate::probe::Connection;
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
@@ -63,10 +65,13 @@ pub struct ConnectionSummary {
   subscriptions: usize,
   quic: QuicStats,
   close: Option<CloseInfo>,
+  control_messages: MessageCounts,
+  requests: RequestCounts,
 }
 
-impl From<&ConnectionInfo> for ConnectionSummary {
-  fn from(c: &ConnectionInfo) -> Self {
+impl From<&Connection> for ConnectionSummary {
+  fn from(connection: &Connection) -> Self {
+    let c = &connection.info;
     ConnectionSummary {
       conn_id: c.conn_id,
       state: c.state,
@@ -80,6 +85,8 @@ impl From<&ConnectionInfo> for ConnectionSummary {
       subscriptions: c.subscriptions.len(),
       quic: c.quic.clone(),
       close: c.close.clone(),
+      control_messages: connection.counts.control_messages.clone(),
+      requests: connection.counts.requests.clone(),
     }
   }
 }
@@ -95,19 +102,20 @@ pub async fn list(
     offset: query.offset,
     prefix: query.prefix,
   };
-  let connections: Vec<ConnectionInfo> = if query.closed {
+  let connections: Vec<Connection> = if query.closed {
     state.probe.closed_connections()
   } else {
-    state.open_connections().await.as_ref().clone()
+    state.open_connections_with_counts().await
   };
-  let matching: Vec<&ConnectionInfo> = match &list.prefix {
+  let matching: Vec<&Connection> = match &list.prefix {
     Some(prefix) => connections
       .iter()
-      .filter(|c| concerns_namespace(c, prefix))
+      .filter(|c| concerns_namespace(&c.info, prefix))
       .collect(),
     None => connections.iter().collect(),
   };
   let page = page(matching, &list, SORT_KEYS, |c, key| {
+    let c = &c.info;
     Some(match key {
       "conn_id" => SortValue::Number(c.conn_id as f64),
       "connected_at" => SortValue::Number(c.connected_at_ms as f64),
@@ -135,16 +143,16 @@ pub async fn list(
 pub async fn detail(
   State(state): State<Arc<ApiState>>,
   Path(conn_id): Path<u64>,
-) -> Result<Json<ConnectionInfo>, ApiError> {
-  let open = state.open_connections().await;
-  if let Some(found) = open.iter().find(|c| c.conn_id == conn_id) {
-    return Ok(Json(found.clone()));
+) -> Result<Json<Connection>, ApiError> {
+  let open = state.open_connections_with_counts().await;
+  if let Some(found) = open.into_iter().find(|c| c.info.conn_id == conn_id) {
+    return Ok(Json(found));
   }
   state
     .probe
     .closed_connections()
     .into_iter()
-    .find(|c| c.conn_id == conn_id)
+    .find(|c| c.info.conn_id == conn_id)
     .map(Json)
     .ok_or_else(|| {
       ApiError::new(StatusCode::NOT_FOUND, "unknown_connection")

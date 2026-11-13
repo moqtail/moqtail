@@ -261,6 +261,27 @@ impl TrackManager {
     self.clean_up(full_track_name, cleanup).await;
   }
 
+  #[cfg(feature = "observability")]
+  /// Every track, for reporting.
+  pub async fn all_tracks(&self) -> Vec<Arc<Track>> {
+    self.tracks.read().await.values().cloned().collect()
+  }
+
+  #[cfg(feature = "observability")]
+  /// Every prefix subscription, as (prefix, subscriber connection id, kind), for
+  /// reporting.
+  pub async fn namespace_subscriptions(&self) -> Vec<(NamespacePrefix, usize, SubscribeKind)> {
+    let subscribers = self.namespace_subscribers.read().await;
+    subscribers
+      .iter()
+      .flat_map(|(prefix, list)| {
+        list
+          .iter()
+          .map(|(client, kind, ..)| (prefix.clone(), client.connection_id, *kind))
+      })
+      .collect()
+  }
+
   pub async fn get_track(&self, full_track_name: &FullTrackName) -> Option<Arc<Track>> {
     let tracks = self.tracks.read().await;
     tracks.get(full_track_name).cloned()

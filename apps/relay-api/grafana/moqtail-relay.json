@@ -2208,12 +2208,228 @@
     },
     {
       "type": "row",
-      "title": "Process",
+      "title": "Cluster",
       "id": 44,
       "collapsed": false,
       "gridPos": {
         "x": 0,
         "y": 99,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Peer links",
+      "description": "Each peer this relay dials, by its configured URL: up while the link is open. Empty unless the relay has a hop_id or peers.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "moqtail_cluster_peer_up{instance=~\"$instance\"}",
+          "legendFormat": "{{peer}}",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "down",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "horizontal"
+      },
+      "id": 45,
+      "gridPos": {
+        "x": 0,
+        "y": 100,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Peer links over time",
+      "description": "1 while the link to a configured peer is open, 0 while it is down.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "moqtail_cluster_peer_up{instance=~\"$instance\"}",
+          "legendFormat": "{{peer}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 46,
+      "gridPos": {
+        "x": 8,
+        "y": 100,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Peer sessions and adverts",
+      "description": "Open sessions with other relays, dialed by either side, and the namespaces this relay advertises to each peer.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "moqtail_cluster_peers{instance=~\"$instance\"}",
+          "legendFormat": "peer sessions",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (peer_hop_id) (moqtail_cluster_adverts{instance=~\"$instance\"})",
+          "legendFormat": "adverts to hop {{peer_hop_id}}",
+          "refId": "B",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 47,
+      "gridPos": {
+        "x": 16,
+        "y": 100,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "row",
+      "title": "Process",
+      "id": 48,
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 108,
         "w": 24,
         "h": 1
       },
@@ -2264,10 +2480,10 @@
           "sort": "desc"
         }
       },
-      "id": 45,
+      "id": 49,
       "gridPos": {
         "x": 0,
-        "y": 100,
+        "y": 109,
         "w": 8,
         "h": 8
       },
@@ -2321,10 +2537,10 @@
           "sort": "desc"
         }
       },
-      "id": 46,
+      "id": 50,
       "gridPos": {
         "x": 8,
-        "y": 100,
+        "y": 109,
         "w": 8,
         "h": 8
       },
@@ -2378,10 +2594,10 @@
           "sort": "desc"
         }
       },
-      "id": 47,
+      "id": 51,
       "gridPos": {
         "x": 16,
-        "y": 100,
+        "y": 109,
         "w": 8,
         "h": 8
       },

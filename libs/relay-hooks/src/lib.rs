@@ -370,7 +370,28 @@ pub struct ClusterInfo {
   pub hop_id: Option<u64>,
   /// The relays it is configured to dial.
   pub configured_peers: Vec<String>,
+  /// The link to each configured peer, up or down, in the order configured.
+  pub links: Vec<PeerLinkInfo>,
+  /// Every open session with another relay, dialed by either side.
   pub peers: Vec<ClusterPeerInfo>,
+}
+
+/// The link to one peer this relay dials.
+#[derive(Debug, Clone, Serialize)]
+pub struct PeerLinkInfo {
+  /// The peer as configured, such as `moqt://relay-2.example:4433`.
+  pub url: String,
+  /// The QUIC connection to the peer is open.
+  pub up: bool,
+  /// The peer's address while the link is up.
+  pub remote: Option<String>,
+  /// The link's connection, while it is up.
+  pub conn_id: Option<u64>,
+  /// When the link last went up or down, in milliseconds since the Unix epoch;
+  /// `None` before the first dial has finished.
+  pub since_ms: Option<u64>,
+  /// Why the link last went down, or why the last dial failed.
+  pub last_error: Option<String>,
 }
 
 /// An open link to another relay.

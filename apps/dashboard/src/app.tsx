@@ -20,6 +20,7 @@ import type { ApiIndex } from './api/types';
 import { RelayActions } from './components/Actions';
 import { ErrorNote } from './components/ui';
 import { type Dashboard, DashboardContext } from './context';
+import { Cluster } from './pages/Cluster';
 import { Connection } from './pages/Connection';
 import { Connections } from './pages/Connections';
 import { Events } from './pages/Events';
@@ -66,6 +67,7 @@ const PAGES: { page: string; label: string; feature?: string }[] = [
   { page: 'namespaces', label: 'Namespaces', feature: 'state' },
   { page: 'latency', label: 'Latency', feature: 'latency' },
   { page: 'upstreams', label: 'Upstreams', feature: 'state' },
+  { page: 'cluster', label: 'Cluster', feature: 'state' },
   { page: 'zones', label: 'Zones', feature: 'state' },
   { page: 'events', label: 'Live events', feature: 'events' },
   { page: 'actions', label: 'Actions', feature: 'actions' },
@@ -118,6 +120,9 @@ export function App() {
       break;
     case 'upstreams':
       content = <Upstreams />;
+      break;
+    case 'cluster':
+      content = <Cluster />;
       break;
     case 'zones':
       content = <Zones />;

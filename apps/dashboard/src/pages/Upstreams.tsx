@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ClusterInfo, Upstream, ZoneReport } from '../api/types';
+import type { Upstream, ZoneReport } from '../api/types';
 import { Badge, Card, ErrorNote, Loading, Table } from '../components/ui';
 import { useDashboard } from '../context';
 import { ago, bytes, count, ms } from '../lib/format';
@@ -34,18 +34,15 @@ export function Upstreams() {
   const { api, refreshMs } = useDashboard();
   const polled = usePoll(
     async signal => {
-      const [upstreams, clusterInfo] = await Promise.all([
-        api.get<Upstream[]>('/upstreams', undefined, signal),
-        api.get<ClusterInfo>('/cluster', undefined, signal),
-      ]);
-      return { upstreams, clusterInfo };
+      const upstreams = await api.get<Upstream[]>('/upstreams', undefined, signal);
+      return { upstreams };
     },
     refreshMs,
     [api],
   );
   if (polled.error && !polled.data) return <ErrorNote error={polled.error} />;
   if (!polled.data) return <Loading />;
-  const { upstreams, clusterInfo } = polled.data;
+  const { upstreams } = polled.data;
 
   return (
     <div class="space-y-4">
@@ -95,45 +92,6 @@ export function Upstreams() {
         </Table>
         {upstreams.length === 0 && <p class="mt-2 text-xs text-neutral-500">No upstreams.</p>}
       </Card>
-      {(clusterInfo.hop_id !== null || clusterInfo.peers.length > 0) && (
-        <Card
-          title={`Cluster${clusterInfo.hop_id !== null ? ` (this relay's hop id ${clusterInfo.hop_id})` : ''}`}
-        >
-          <p class="mb-2 text-xs text-neutral-500">
-            Configured peers: {clusterInfo.configured_peers.join(', ') || 'none'}
-          </p>
-          {clusterInfo.peers.map(p => (
-            <div key={p.conn_id} class="mb-3">
-              <div class="text-sm">
-                Peer <ConnLink id={p.conn_id} /> {p.remote}, hop id {p.hop_id ?? '–'}, cost{' '}
-                {p.relay_cost}
-              </div>
-              <Table>
-                <thead>
-                  <tr>
-                    <th>Namespace</th>
-                    <th>Source</th>
-                    <th>Hop path</th>
-                    <th>Cost</th>
-                    <th>Generation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {p.adverts.map(a => (
-                    <tr key={a.namespace}>
-                      <td>{a.namespace}</td>
-                      <td>{a.source_conn_id}</td>
-                      <td>{a.hop_path.join(' → ')}</td>
-                      <td>{a.cost}</td>
-                      <td>{a.generation}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
-            </div>
-          ))}
-        </Card>
-      )}
     </div>
   );
 }

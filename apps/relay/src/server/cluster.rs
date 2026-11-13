@@ -43,7 +43,7 @@ use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,6 +69,53 @@ pub(crate) struct ClusterState {
   /// Serializes `sync_tracks` the same way.
   tracks: Mutex<()>,
   next_advert: AtomicU64,
+  /// Each peer this relay dials, by its configured URL. Written only when a link
+  /// connects, drops or fails to dial.
+  links: std::sync::Mutex<HashMap<String, PeerLink>>,
+}
+
+/// Where a link this relay dials stands.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PeerLink {
+  /// The QUIC connection to the peer is open.
+  pub up: bool,
+  /// The peer's address while the link is up.
+  pub remote: Option<SocketAddr>,
+  /// When the link last went up or down.
+  pub since: Option<std::time::SystemTime>,
+  /// Why the link last went down, or why the last dial failed.
+  pub last_error: Option<String>,
+}
+
+impl ClusterState {
+  /// Every peer this relay dials and its link, by configured URL.
+  #[cfg(feature = "observability")]
+  pub(crate) fn links(&self) -> HashMap<String, PeerLink> {
+    self.links.lock().unwrap().clone()
+  }
+
+  fn link_up(&self, url: &str, remote: SocketAddr) {
+    let mut links = self.links.lock().unwrap();
+    let link = links.entry(url.to_string()).or_default();
+    *link = PeerLink {
+      up: true,
+      remote: Some(remote),
+      since: Some(std::time::SystemTime::now()),
+      last_error: link.last_error.take(),
+    };
+  }
+
+  fn link_down(&self, url: &str, error: String) {
+    let mut links = self.links.lock().unwrap();
+    let link = links.entry(url.to_string()).or_default();
+    // A failed redial of a link already down keeps the time it went down.
+    if link.up || link.since.is_none() {
+      link.since = Some(std::time::SystemTime::now());
+    }
+    link.up = false;
+    link.remote = None;
+    link.last_error = Some(error);
+  }
 }
 
 /// A SUBSCRIBE_TRACKS this relay holds on a peer; dropping it cancels the request.
@@ -152,6 +199,7 @@ pub(crate) async fn run_peer(server: Server, url: String) {
     match dial(&server, authority).await {
       Ok(connection) => {
         info!("Cluster peer {url} connected");
+        server.cluster.link_up(&url, connection.remote_address());
         let session = Session::connect_quic(
           connection.clone(),
           server.clone(),
@@ -163,8 +211,12 @@ pub(crate) async fn run_peer(server: Server, url: String) {
         }
         let reason = connection.closed().await;
         info!("Cluster peer {url} disconnected: {reason}");
+        server.cluster.link_down(&url, reason.to_string());
       }
-      Err(e) => warn!("Cluster peer {url} unreachable: {e:#}"),
+      Err(e) => {
+        warn!("Cluster peer {url} unreachable: {e:#}");
+        server.cluster.link_down(&url, format!("{e:#}"));
+      }
     }
     tokio::time::sleep(REDIAL_DELAY).await;
   }

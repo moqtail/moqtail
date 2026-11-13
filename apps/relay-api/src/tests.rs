@@ -40,6 +40,8 @@ pub(crate) struct FakeRelay {
   /// What the actions asked for, in order, such as `goaway 7 10000`.
   pub actions: Mutex<Vec<String>>,
   pub redirect_uri: Mutex<Option<String>>,
+  /// What `cluster` reports; a standalone relay when `None`.
+  pub cluster: Mutex<Option<relay_hooks::ClusterInfo>>,
 }
 
 impl FakeRelay {
@@ -131,11 +133,17 @@ impl Inspect for FakeRelay {
 
   fn cluster(&self) -> BoxFuture<'_, relay_hooks::ClusterInfo> {
     Box::pin(async {
-      relay_hooks::ClusterInfo {
-        hop_id: None,
-        configured_peers: vec![],
-        peers: vec![],
-      }
+      self
+        .cluster
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or(relay_hooks::ClusterInfo {
+          hop_id: None,
+          configured_peers: vec![],
+          links: vec![],
+          peers: vec![],
+        })
     })
   }
 
@@ -1029,4 +1037,38 @@ fn the_relay_is_named_after_its_host_unless_told_otherwise() {
     "",
     "a blank name falls back to the host name"
   );
+}
+
+#[tokio::test]
+async fn cluster_series_appear_only_on_a_clustered_relay() {
+  let client = Client::new(ApiSettings::default());
+  let (_, body) = client.get("/api/v1/metrics").await;
+  assert!(!body.as_str().unwrap().contains("moqtail_cluster"));
+
+  let link = |url: &str, up: bool| relay_hooks::PeerLinkInfo {
+    url: url.into(),
+    up,
+    remote: None,
+    conn_id: None,
+    since_ms: None,
+    last_error: None,
+  };
+  *client.relay.cluster.lock().unwrap() = Some(relay_hooks::ClusterInfo {
+    hop_id: Some(1),
+    configured_peers: vec!["moqt://b:4433".into(), "moqt://c:4433".into()],
+    links: vec![link("moqt://b:4433", true), link("moqt://c:4433", false)],
+    peers: vec![relay_hooks::ClusterPeerInfo {
+      conn_id: 9,
+      remote: "10.0.0.2:4433".into(),
+      hop_id: Some(2),
+      relay_cost: 1,
+      adverts: vec![],
+    }],
+  });
+  let (_, body) = client.get("/api/v1/metrics").await;
+  let text = body.as_str().unwrap();
+  assert!(text.contains(r#"moqtail_cluster_peer_up{peer="moqt://b:4433"} 1"#));
+  assert!(text.contains(r#"moqtail_cluster_peer_up{peer="moqt://c:4433"} 0"#));
+  assert!(text.contains("moqtail_cluster_peers 1"));
+  assert!(text.contains(r#"moqtail_cluster_adverts{peer_hop_id="2"} 0"#));
 }

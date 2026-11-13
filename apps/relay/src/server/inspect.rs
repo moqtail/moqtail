@@ -139,7 +139,7 @@ mod relay {
   use moqtail::model::error::TerminationCode;
   use relay_hooks::{
     Actions, AdvertInfo, BoxFuture, ClusterInfo, ClusterPeerInfo, ConnectionInfo, Inspect,
-    NamespaceSubscriptionInfo, RelayStatus, TrackDetail, TrackInfo, TrackPublisher,
+    NamespaceSubscriptionInfo, PeerLinkInfo, RelayStatus, TrackDetail, TrackInfo, TrackPublisher,
     TrackSubscription,
   };
   use std::sync::atomic::Ordering;
@@ -247,9 +247,33 @@ mod relay {
           });
         }
         peers.sort_by_key(|p| p.conn_id);
+        let mut links = self.0.cluster.links();
+        let links = self
+          .0
+          .app_config
+          .peers
+          .iter()
+          .map(|url| {
+            let link = links.remove(url).unwrap_or_default();
+            let remote = link.remote.map(|r| r.to_string());
+            PeerLinkInfo {
+              // The session on this link is the peer session with its address.
+              conn_id: remote
+                .as_ref()
+                .and_then(|r| peers.iter().find(|p| &p.remote == r))
+                .map(|p| p.conn_id),
+              url: url.clone(),
+              up: link.up,
+              remote,
+              since_ms: link.since.map(millis_since_epoch),
+              last_error: link.last_error,
+            }
+          })
+          .collect();
         ClusterInfo {
           hop_id: self.0.app_config.hop_id,
           configured_peers: self.0.app_config.peers.clone(),
+          links,
           peers,
         }
       })

@@ -338,6 +338,7 @@ async fn render(state: &ApiState, out: &mut Exposition) {
       .map(|c| c.subscriptions.len())
       .sum::<usize>() as f64,
   );
+  cluster(state, out).await;
   out.one(
     "moqtail_cache_groups",
     "gauge",
@@ -507,6 +508,52 @@ async fn render(state: &ApiState, out: &mut Exposition) {
     "counter",
     "qlog events dropped because the file writer fell behind.",
     moqtail::transport::qlog::dropped() as f64,
+  );
+}
+
+/// The mesh, written only for a relay that is part of one, so a standalone relay
+/// exports no cluster series.
+async fn cluster(state: &ApiState, out: &mut Exposition) {
+  const NAMES: [&str; 3] = [
+    "moqtail_cluster_peer_up",
+    "moqtail_cluster_peers",
+    "moqtail_cluster_adverts",
+  ];
+  if !NAMES.iter().any(|n| out.wanted(n)) {
+    return;
+  }
+  let cluster = state.inspect.cluster().await;
+  if cluster.hop_id.is_none() && cluster.configured_peers.is_empty() && cluster.peers.is_empty() {
+    return;
+  }
+  out.family(
+    "moqtail_cluster_peer_up",
+    "gauge",
+    "1 while the link to a configured peer is open, else 0.",
+    &cluster
+      .links
+      .iter()
+      .map(|l| (label(&[("peer", &l.url)]), if l.up { 1.0 } else { 0.0 }))
+      .collect::<Vec<_>>(),
+  );
+  out.one(
+    "moqtail_cluster_peers",
+    "gauge",
+    "Open sessions with other relays, dialed by either side.",
+    cluster.peers.len() as f64,
+  );
+  out.family(
+    "moqtail_cluster_adverts",
+    "gauge",
+    "Namespaces this relay advertises to each peer, by the peer's hop id.",
+    &cluster
+      .peers
+      .iter()
+      .map(|p| {
+        let hop = p.hop_id.map_or("none".to_string(), |h| h.to_string());
+        (label(&[("peer_hop_id", &hop)]), p.adverts.len() as f64)
+      })
+      .collect::<Vec<_>>(),
   );
 }
 

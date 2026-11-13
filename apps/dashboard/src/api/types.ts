@@ -215,9 +215,21 @@ export interface ZoneReport {
   requests_error: number;
 }
 
+/** The link to one peer this relay dials. */
+export interface PeerLink {
+  url: string;
+  up: boolean;
+  remote: string | null;
+  conn_id: number | null;
+  /** When the link last went up or down; null before the first dial finished. */
+  since_ms: number | null;
+  last_error: string | null;
+}
+
 export interface ClusterInfo {
   hop_id: number | null;
   configured_peers: string[];
+  links: PeerLink[];
   peers: {
     conn_id: number;
     remote: string;

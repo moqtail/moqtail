@@ -13,6 +13,7 @@ from the **Relay** menu at the top.
 | Requests               | Requests by type and direction, errors by code, request duration p95, requests in flight, upstream requests, limit rejections, control messages, parse errors |
 | Cache                  | Cached groups, tracks by origin, groups leaving the cache by cause                                                                                            |
 | Accounting zones       | Bytes, objects and requests per namespace prefix in `api.accounting_zones`                                                                                    |
+| Cluster                | Each configured peer's link up or down, links over time, peer sessions, namespaces advertised to each peer                                                    |
 | Process                | Resident memory and open file descriptors (Linux only), qlog events dropped                                                                                   |
 
 ## Scraping the relay
@@ -59,4 +60,5 @@ importing it again replaces it.
   9 EXCESSIVE_LOAD. The relay dashboard in `apps/dashboard` shows them by name.
 - Connection failures and limit rejections stay empty until the first one, since
   the relay only exports those series once they count something.
+- The cluster panels are empty unless the relay has a `hop_id` or `peers`.
 - The zone panels are empty unless `api.accounting_zones` is set.

@@ -22,7 +22,7 @@
 use crate::zones::Zones;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::transport::observe::ControlObserver;
-use moqtail_probe::stats::{BUCKETS, Histogram};
+use relay_hooks::stats::{BUCKETS, Histogram};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;

@@ -16,8 +16,8 @@
 //!
 //! It runs on its own small tokio runtime, so serving requests, encoding JSON and
 //! slow clients never take time from the relay's delivery threads. It reads the
-//! relay only through [`moqtail_probe::Inspect`], and changes it only through
-//! [`moqtail_probe::Actions`].
+//! relay only through [`relay_hooks::Inspect`], and changes it only through
+//! [`relay_hooks::Actions`].
 
 mod access;
 mod actions;
@@ -32,8 +32,8 @@ mod mcp;
 mod metrics;
 mod metrics_track;
 mod overview;
-mod probe;
 mod qlog;
+mod reporter;
 mod routes;
 mod snapshot;
 mod timeline;
@@ -44,8 +44,8 @@ mod zones;
 use anyhow::{Context, Result};
 use config::{ApiConfig, Feature};
 use control::ControlTracker;
-use moqtail_probe::{Actions, ConnectionInfo, Inspect, Probe, TrackInfo};
-use probe::{ApiProbe, Connection};
+use relay_hooks::{Actions, ConnectionInfo, Inspect, Reporter, TrackInfo};
+use reporter::{ApiReporter, Connection};
 use snapshot::Cached;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -57,11 +57,11 @@ pub(crate) struct ApiState {
   pub inspect: Arc<dyn Inspect>,
   /// Changes to the relay; used only by the `actions` feature.
   pub actions: Arc<dyn Actions>,
-  pub probe: Arc<ApiProbe>,
+  pub reporter: Arc<ApiReporter>,
   pub control: Arc<ControlTracker>,
   pub zones: Arc<zones::Zones>,
   /// The data path's counters; `None` unless the `metrics` feature is on.
-  pub counters: Option<Arc<moqtail_probe::stats::RelayCounters>>,
+  pub counters: Option<Arc<relay_hooks::stats::RelayCounters>>,
   connections: Cached<Vec<ConnectionInfo>>,
   tracks: Cached<Vec<TrackInfo>>,
 }
@@ -83,7 +83,7 @@ impl ApiState {
     });
     let counters =
       (config.has(Feature::Metrics) || config.metrics_track.is_some()).then(Arc::default);
-    let probe = Arc::new(ApiProbe::new(
+    let reporter = Arc::new(ApiReporter::new(
       config.has(Feature::State) || config.has(Feature::Metrics),
       config.closed_connection_history,
       control.clone(),
@@ -94,7 +94,7 @@ impl ApiState {
       config,
       inspect,
       actions,
-      probe,
+      reporter,
       control,
       zones,
       counters,
@@ -123,14 +123,14 @@ impl ApiState {
 
   /// A track's processing time over the last minute, when it is measured.
   pub fn track_processing(&self, track_id: u64) -> Option<serde_json::Value> {
-    let summary = self.probe.latency.as_ref()?.track_summary(track_id)?;
+    let summary = self.reporter.latency.as_ref()?.track_summary(track_id)?;
     serde_json::to_value(summary).ok()
   }
 
   /// Adds `processing_ms` to the JSON of subscription `request_id` of connection
   /// `conn_id`, when it is measured.
   pub fn add_subscription_processing(&self, conn_id: u64, subscription: &mut serde_json::Value) {
-    let Some(latency) = &self.probe.latency else {
+    let Some(latency) = &self.reporter.latency else {
       return;
     };
     if let Some(request_id) = subscription["request_id"].as_u64()
@@ -149,17 +149,17 @@ impl ApiState {
 
 /// Binds the API's listener and serves it from a dedicated thread. Returns once the
 /// socket is bound, so a port already in use is reported at relay startup. The
-/// returned probe is the one the relay core should report to.
+/// returned reporter is the one the relay core should report to.
 pub fn start(
   config: ApiConfig,
   inspect: Arc<dyn Inspect>,
   actions: Arc<dyn Actions>,
-) -> Result<Arc<dyn Probe>> {
+) -> Result<Arc<dyn Reporter>> {
   let main = bind_listener(config.bind)?;
   let metrics = config.metrics_bind.map(bind_listener).transpose()?;
   let (bind, metrics_bind) = (config.bind, config.metrics_bind);
   let state = Arc::new(ApiState::new(config, inspect, actions));
-  let probe: Arc<dyn Probe> = state.probe.clone();
+  let reporter: Arc<dyn Reporter> = state.reporter.clone();
   if state.config.has(Feature::State)
     || state.config.has(Feature::Metrics)
     || state.config.metrics_track.is_some()
@@ -167,7 +167,7 @@ pub fn start(
     moqtail::transport::observe::set_control_observer(state.control.clone());
   }
   if let Some(counters) = &state.counters {
-    moqtail_probe::install_counters(counters.clone());
+    relay_hooks::install_counters(counters.clone());
   }
   if state.config.has(Feature::Events) {
     // Builds events for listeners when no qlog files are written; does nothing
@@ -190,7 +190,7 @@ pub fn start(
           return;
         }
       };
-      if let Some(latency) = state.probe.latency.clone() {
+      if let Some(latency) = state.reporter.latency.clone() {
         runtime.spawn(latency::copy_periodically(latency));
       }
       if let Some((relay, resource_id)) = state.config.metrics_track.clone() {
@@ -205,7 +205,7 @@ pub fn start(
   if let Some(metrics_bind) = metrics_bind {
     info!("API metrics listening on http://{metrics_bind}/api/v1/metrics");
   }
-  Ok(probe)
+  Ok(reporter)
 }
 
 /// Binds a listener now, so a port already in use is reported at relay startup.

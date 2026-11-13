@@ -285,7 +285,7 @@ impl Session {
       Ok(client) => client,
       Err(e) => {
         context.connection.close(0u32, b"Setup failed");
-        moqtail_probe::probe().connection_failed("setup");
+        relay_hooks::reporter().connection_failed("setup");
         return Err(e);
       }
     };

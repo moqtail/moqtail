@@ -21,10 +21,10 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
-use moqtail_probe::{
+use relay_hooks::{
   Actions, BoxFuture, CloseInfo, ConnectionInfo, ConnectionState, Inspect,
-  NamespaceSubscriptionInfo, Probe, PublishedTrackInfo, QuicStats, RelayStatus, Role, TrackDetail,
-  TrackInfo,
+  NamespaceSubscriptionInfo, PublishedTrackInfo, QuicStats, RelayStatus, Reporter, Role,
+  TrackDetail, TrackInfo,
 };
 use serde_json::{Value, json};
 use std::net::SocketAddr;
@@ -129,9 +129,9 @@ impl Inspect for FakeRelay {
     })
   }
 
-  fn cluster(&self) -> BoxFuture<'_, moqtail_probe::ClusterInfo> {
+  fn cluster(&self) -> BoxFuture<'_, relay_hooks::ClusterInfo> {
     Box::pin(async {
-      moqtail_probe::ClusterInfo {
+      relay_hooks::ClusterInfo {
         hop_id: None,
         configured_peers: vec![],
         peers: vec![],
@@ -256,8 +256,8 @@ impl Client {
     (status, body, headers)
   }
 
-  pub fn probe(&self) -> &dyn Probe {
-    self.state.probe.as_ref()
+  pub fn reporter(&self) -> &dyn Reporter {
+    self.state.reporter.as_ref()
   }
 
   pub async fn get(&self, path: &str) -> (StatusCode, Value) {
@@ -455,7 +455,7 @@ async fn closed_connections_are_kept_up_to_the_history_size() {
     closed_connection_history: 2,
     ..Default::default()
   });
-  assert!(client.probe().keeps_closed_connections());
+  assert!(client.reporter().keeps_closed_connections());
   for id in [1, 2, 3] {
     let mut closed = connection(id, "live", 1.0, 1);
     closed.state = ConnectionState::Closed;
@@ -465,7 +465,7 @@ async fn closed_connections_are_kept_up_to_the_history_size() {
       code: Some(0),
       reason: "done".into(),
     });
-    client.probe().connection_closed(closed);
+    client.reporter().connection_closed(closed);
   }
   let (_, body) = client.get("/api/v1/connections?closed=true").await;
   assert_eq!(body["total"], 2, "the oldest was dropped");

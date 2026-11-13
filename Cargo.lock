@@ -1001,14 +1001,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moqtail-probe"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "moqtail-ssts"
 version = "0.15.0"
 dependencies = [
@@ -1378,11 +1370,11 @@ dependencies = [
  "humantime-serde",
  "moka",
  "moqtail",
- "moqtail-probe",
  "moqtail-ssts",
  "once_cell",
  "quinn",
  "relay-api",
+ "relay-hooks",
  "serde",
  "serde_json",
  "smart-default",
@@ -1405,8 +1397,8 @@ dependencies = [
  "http-body-util",
  "libc",
  "moqtail",
- "moqtail-probe",
  "rand",
+ "relay-hooks",
  "serde",
  "serde_json",
  "sha2",
@@ -1414,6 +1406,14 @@ dependencies = [
  "tower",
  "tracing",
  "wtransport",
+]
+
+[[package]]
+name = "relay-hooks"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

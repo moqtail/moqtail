@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The API's side of [`moqtail_probe::Probe`]: what it keeps of the events the
+//! The API's side of [`relay_hooks::Reporter`]: what it keeps of the events the
 //! relay core reports.
 
 use crate::control::{ConnectionCounts, ControlTracker};
 use crate::latency::Latency;
 use crate::zones::Zones;
-use moqtail_probe::stats::{SubscriptionStats, ZoneCounters};
-use moqtail_probe::{ConnectionInfo, Probe};
+use relay_hooks::stats::{SubscriptionStats, ZoneCounters};
+use relay_hooks::{ConnectionInfo, Reporter};
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,7 @@ pub struct Connection {
   pub counts: ConnectionCounts,
 }
 
-pub(crate) struct ApiProbe {
+pub(crate) struct ApiReporter {
   /// Whether the `state` feature is on; without it nothing here is ever read.
   keep_state: bool,
   closed_capacity: usize,
@@ -50,7 +50,7 @@ pub(crate) struct ApiProbe {
   zones: Arc<Zones>,
 }
 
-impl ApiProbe {
+impl ApiReporter {
   pub fn new(
     keep_state: bool,
     closed_capacity: usize,
@@ -58,7 +58,7 @@ impl ApiProbe {
     latency: Option<Arc<Latency>>,
     zones: Arc<Zones>,
   ) -> Self {
-    ApiProbe {
+    ApiReporter {
       keep_state,
       closed_capacity,
       closed: Mutex::new(VecDeque::new()),
@@ -77,7 +77,7 @@ impl ApiProbe {
   }
 }
 
-impl Probe for ApiProbe {
+impl Reporter for ApiReporter {
   fn keeps_closed_connections(&self) -> bool {
     // Also when no history is kept: the control counts of a closed connection are
     // released here.

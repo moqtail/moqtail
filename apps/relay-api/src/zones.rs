@@ -19,7 +19,7 @@
 use crate::ApiState;
 use axum::Json;
 use axum::extract::State;
-use moqtail_probe::stats::ZoneCounters;
+use relay_hooks::stats::ZoneCounters;
 use serde::Serialize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -128,7 +128,7 @@ impl ZoneReport {
   }
 }
 
-pub fn reports(zones: &Zones, tracks: &[moqtail_probe::TrackInfo]) -> Vec<ZoneReport> {
+pub fn reports(zones: &Zones, tracks: &[relay_hooks::TrackInfo]) -> Vec<ZoneReport> {
   if zones.is_empty() {
     return Vec::new();
   }

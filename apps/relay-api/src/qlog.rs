@@ -63,7 +63,7 @@ pub struct TraceQuery {
 pub async fn index(State(state): State<Arc<ApiState>>) -> Result<Json<Vec<TraceFile>>, ApiError> {
   let folder = folder(&state)?;
   let open = state.open_connections().await;
-  let closed = state.probe.closed_connections();
+  let closed = state.reporter.closed_connections();
   let remotes: Vec<(u64, String, bool)> = open
     .iter()
     .map(|c| (c.conn_id, quic_file_suffix(&c.remote), true))
@@ -150,7 +150,7 @@ pub async fn quic_trace(
 ) -> Result<Response, ApiError> {
   let folder = folder(&state)?;
   let open = state.open_connections().await;
-  let closed = state.probe.closed_connections();
+  let closed = state.reporter.closed_connections();
   let remote = open
     .iter()
     .chain(closed.iter().map(|c| &c.info))

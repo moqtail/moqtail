@@ -1,5 +1,5 @@
 [package]
-name = "moqtail-probe"
+name = "relay-hooks"
 description = "The interface between the MOQtail relay core and its observability layer"
 version = "0.1.0"
 edition = "2024"

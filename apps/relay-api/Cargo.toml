@@ -16,7 +16,7 @@ bytes.workspace = true
 futures-util = "0.3"
 libc = "0.2"
 moqtail.workspace = true
-moqtail-probe = { path = "../../libs/moqtail-probe" }
+relay-hooks = { path = "../../libs/relay-hooks" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true

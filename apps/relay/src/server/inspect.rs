@@ -15,7 +15,7 @@
 //! Where the relay meets the observability layer.
 //!
 //! Two kinds of code live here. Snapshot functions copy the relay's state into the
-//! plain types of `moqtail_probe` for the API; each holds a core lock only while it
+//! plain types of `relay_hooks` for the API; each holds a core lock only while it
 //! copies. Helpers such as [`counters`] and [`arrival_time`] are called from the
 //! delivery path to count and time objects; in a build without the `observability`
 //! feature they return `None`, and the compiler removes the code that uses them.
@@ -29,7 +29,7 @@ use moqtail::model::common::tuple::Tuple;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::parameter::constant::SetupOptionType;
 use moqtail::transport::connection::TransportConnection;
-use moqtail_probe::{
+use relay_hooks::{
   CloseInfo, ConnectionInfo, ConnectionState, PublishedTrackInfo, QuicStats, Role, SetupOptionInfo,
   SubscriptionInfo,
 };
@@ -46,9 +46,9 @@ pub(crate) use relay::RelayInspect;
 /// `metrics` feature nor the metrics track is on. Always `None` in a build without
 /// the `observability` feature, so the counting code at each call site is removed.
 #[inline]
-pub(crate) fn counters() -> Option<&'static moqtail_probe::stats::RelayCounters> {
+pub(crate) fn counters() -> Option<&'static relay_hooks::stats::RelayCounters> {
   #[cfg(feature = "observability")]
-  return moqtail_probe::counters();
+  return relay_hooks::counters();
   #[cfg(not(feature = "observability"))]
   None
 }
@@ -71,9 +71,9 @@ pub(crate) fn count_cache_removal(cause: moka::notification::RemovalCause) {
 /// configured, and always in a build without the `observability` feature.
 pub(crate) fn zone_for(
   name: &FullTrackName,
-) -> Option<std::sync::Arc<moqtail_probe::stats::ZoneCounters>> {
+) -> Option<std::sync::Arc<relay_hooks::stats::ZoneCounters>> {
   #[cfg(feature = "observability")]
-  return moqtail_probe::probe().zone(&namespace_text(&name.namespace));
+  return relay_hooks::reporter().zone(&namespace_text(&name.namespace));
   #[cfg(not(feature = "observability"))]
   {
     let _ = name;
@@ -96,7 +96,7 @@ struct LogFilter {
 static LOG_FILTER: std::sync::OnceLock<LogFilter> = std::sync::OnceLock::new();
 
 /// Stores the handle that swaps the log filter, so the API can read and replace it
-/// through [`moqtail_probe::Actions`].
+/// through [`relay_hooks::Actions`].
 #[cfg(feature = "observability")]
 pub(crate) fn keep_log_filter<S: 'static>(
   handle: tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, S>,
@@ -121,8 +121,8 @@ pub(crate) fn arrival_time() -> Option<std::time::Instant> {
   None
 }
 
-/// How the API reads the relay ([`moqtail_probe::Inspect`]) and changes it
-/// ([`moqtail_probe::Actions`]). Built
+/// How the API reads the relay ([`relay_hooks::Inspect`]) and changes it
+/// ([`relay_hooks::Actions`]). Built
 /// only with the `observability` feature.
 #[cfg(feature = "observability")]
 mod relay {
@@ -137,7 +137,7 @@ mod relay {
   use moqtail::model::control::control_message::ControlMessage;
   use moqtail::model::control::goaway::GoAway;
   use moqtail::model::error::TerminationCode;
-  use moqtail_probe::{
+  use relay_hooks::{
     Actions, AdvertInfo, BoxFuture, ClusterInfo, ClusterPeerInfo, ConnectionInfo, Inspect,
     NamespaceSubscriptionInfo, RelayStatus, TrackDetail, TrackInfo, TrackPublisher,
     TrackSubscription,
@@ -434,18 +434,18 @@ mod relay {
   }
 }
 
-/// Hands a closing connection to the probe, as it was at the moment it closed, so
+/// Hands a closing connection to the reporter, as it was at the moment it closed, so
 /// the API can list it among closed connections. Call it before the session's
 /// state is cleaned up, while there is still something to copy.
 pub(crate) async fn report_closed(context: &SessionContext) {
-  let probe = moqtail_probe::probe();
-  if !probe.keeps_closed_connections() {
+  let reporter = relay_hooks::reporter();
+  if !reporter.keeps_closed_connections() {
     return;
   }
   if let Some(client) = context.get_client().await {
     let close = close_info(&context.connection);
     let info = connection_info(&client, false, Some(close)).await;
-    probe.connection_closed(info);
+    reporter.connection_closed(info);
   }
 }
 

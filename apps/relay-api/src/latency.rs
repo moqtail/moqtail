@@ -23,7 +23,7 @@ use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use moqtail_probe::stats::{
+use relay_hooks::stats::{
   BUCKETS, ObjectTimes, RelayStats, SlowObjects, SubscriptionStats, TrackStats,
   bucket_bounds_micros,
 };
@@ -473,7 +473,7 @@ struct SlowSubscription {
 }
 
 fn latency_of(state: &ApiState) -> Result<&Arc<Latency>, ApiError> {
-  state.probe.latency.as_ref().ok_or_else(|| {
+  state.reporter.latency.as_ref().ok_or_else(|| {
     ApiError::new(StatusCode::NOT_FOUND, "feature_off")
       .detail("add `latency` to api_features to turn this endpoint on")
   })

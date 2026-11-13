@@ -12,12 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The interface between the relay core and its observability layer.
+//! The hooks between the relay core and its observability layer.
 //!
-//! The core implements [`Inspect`] so the observability layer can read its state as
-//! plain copies, without touching the core's locks. Everything that serves or
-//! exports that state lives in the observability crate, which the core never
-//! imports.
+//! There are three, one per direction of travel:
+//!
+//! - [`Inspect`]: the core implements it so the observability layer can read the
+//!   relay's state as plain copies, without holding the core's locks.
+//! - [`Actions`]: the core implements it so an operator can change the running
+//!   relay, such as sending GOAWAY or replacing the log filter.
+//! - [`Reporter`]: the observability layer implements it, and the core calls it as
+//!   things happen, such as a connection closing or a request being refused.
+//!
+//! Everything that serves or exports this data lives in the observability crate,
+//! `relay-api`, which the core never imports.
 
 pub mod stats;
 
@@ -88,10 +95,10 @@ pub trait Actions: Send + Sync {
 }
 
 /// What the relay core reports as things happen. Every method has an empty default,
-/// so the core can always call them, and [`NoProbe`] is the probe when nothing
+/// so the core can always call them, and [`NoReporter`] is the reporter when nothing
 /// observes the relay.
-pub trait Probe: Send + Sync {
-  /// True when [`Probe::connection_closed`] keeps what it is given. The core builds a
+pub trait Reporter: Send + Sync {
+  /// True when [`Reporter::connection_closed`] keeps what it is given. The core builds a
   /// closing connection's summary only then.
   fn keeps_closed_connections(&self) -> bool {
     false
@@ -127,17 +134,17 @@ pub trait Probe: Send + Sync {
   fn limit_rejected(&self, _limit: &'static str) {}
 }
 
-/// The probe that ignores everything.
-pub struct NoProbe;
+/// The reporter that ignores everything.
+pub struct NoReporter;
 
-impl Probe for NoProbe {}
+impl Reporter for NoReporter {}
 
-static PROBE: OnceLock<Arc<dyn Probe>> = OnceLock::new();
+static REPORTER: OnceLock<Arc<dyn Reporter>> = OnceLock::new();
 
-/// Installs the probe the relay core reports to, once, before the relay serves
+/// Installs the reporter the relay core reports to, once, before the relay serves
 /// anything. Later calls are ignored.
-pub fn install(probe: Arc<dyn Probe>) {
-  let _ = PROBE.set(probe);
+pub fn install(reporter: Arc<dyn Reporter>) {
+  let _ = REPORTER.set(reporter);
 }
 
 static COUNTERS: OnceLock<Arc<RelayCounters>> = OnceLock::new();
@@ -154,10 +161,12 @@ pub fn counters() -> Option<&'static RelayCounters> {
   COUNTERS.get().map(|c| c.as_ref())
 }
 
-/// The installed probe, or [`NoProbe`] when none is.
-pub fn probe() -> &'static dyn Probe {
-  static NONE: NoProbe = NoProbe;
-  PROBE.get().map_or(&NONE as &dyn Probe, |p| p.as_ref())
+/// The installed reporter, or [`NoReporter`] when none is.
+pub fn reporter() -> &'static dyn Reporter {
+  static NONE: NoReporter = NoReporter;
+  REPORTER
+    .get()
+    .map_or(&NONE as &dyn Reporter, |p| p.as_ref())
 }
 
 /// The relay's identity and lifecycle state.

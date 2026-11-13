@@ -21,7 +21,7 @@ use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use moqtail_probe::TrackInfo;
+use relay_hooks::TrackInfo;
 use serde_json::{Value, json};
 use std::sync::Arc;
 

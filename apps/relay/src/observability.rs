@@ -57,11 +57,11 @@ pub fn start(server: &Server) -> Result<()> {
   for warning in warnings {
     warn!("{warning}");
   }
-  let probe = {
+  let reporter = {
     let relay = Arc::new(RelayInspect(server.clone()));
     relay_api::start(config, relay.clone(), relay)?
   };
-  moqtail_probe::install(probe);
+  relay_hooks::install(reporter);
   Ok(())
 }
 
@@ -106,7 +106,7 @@ pub fn api_token_command() -> Result<bool> {
 mod tests {
   use std::path::Path;
 
-  /// The relay core reaches the observability layer only through `moqtail_probe`.
+  /// The relay core reaches the observability layer only through `relay_hooks`.
   /// Everything under `src/server` is core, so none of it may name the API crate or
   /// the libraries it is built on.
   #[test]
@@ -130,7 +130,7 @@ mod tests {
         assert!(
           !text.contains(forbidden),
           "{} mentions `{forbidden}`; core files must reach the observability layer \
-           only through moqtail_probe",
+           only through relay_hooks",
           file.display()
         );
       }

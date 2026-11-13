@@ -102,9 +102,9 @@ pub struct Subscription {
   /// Where this subscription records its processing time. `None` when processing
   /// time is not measured: the API's `latency` feature and the metrics track are
   /// both off, or the relay is built without the `observability` feature.
-  stats: Option<Arc<moqtail_probe::stats::SubscriptionStats>>,
+  stats: Option<Arc<relay_hooks::stats::SubscriptionStats>>,
   /// The traffic counters of its track's accounting zone, if any.
-  zone: Option<Arc<moqtail_probe::stats::ZoneCounters>>,
+  zone: Option<Arc<relay_hooks::stats::ZoneCounters>>,
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
@@ -167,7 +167,7 @@ impl Subscription {
     config: &'static AppConfig,
     active_subgroup_headers: ActiveSubgroupHeaderMap,
   ) -> Self {
-    let stats = moqtail_probe::probe().subscription_stats(
+    let stats = relay_hooks::reporter().subscription_stats(
       relay_track_id,
       client_connection_id as u64,
       request_id,

@@ -18,12 +18,12 @@ use crate::ApiState;
 use crate::control::{MessageCounts, RequestCounts};
 use crate::error::ApiError;
 use crate::list::{ListQuery, Page, SortValue, page, parse_query};
-use crate::probe::Connection;
+use crate::reporter::Connection;
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use moqtail_probe::{CloseInfo, ConnectionInfo, ConnectionState, QuicStats, Role};
+use relay_hooks::{CloseInfo, ConnectionInfo, ConnectionState, QuicStats, Role};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -103,7 +103,7 @@ pub async fn list(
     prefix: query.prefix,
   };
   let connections: Vec<Connection> = if query.closed {
-    state.probe.closed_connections()
+    state.reporter.closed_connections()
   } else {
     state.open_connections_with_counts().await
   };
@@ -155,7 +155,7 @@ pub async fn detail(
     return Ok(Json(body));
   }
   state
-    .probe
+    .reporter
     .closed_connections()
     .into_iter()
     .find(|c| c.info.conn_id == conn_id)

@@ -19,7 +19,7 @@ use crate::ApiState;
 use crate::control::{ResultCounts, UpstreamCounts};
 use axum::Json;
 use axum::extract::State;
-use moqtail_probe::{ClusterInfo, ConnectionState, NamespaceSubscriptionInfo, RelayStatus, Role};
+use relay_hooks::{ClusterInfo, ConnectionState, NamespaceSubscriptionInfo, RelayStatus, Role};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -70,7 +70,7 @@ pub async fn overview(State(state): State<Arc<ApiState>>) -> Json<Overview> {
     status: state.inspect.status(),
     features: state.config.features.iter().map(|f| f.name()).collect(),
     connections: by_state,
-    closed_connections_kept: state.probe.closed_connections().len(),
+    closed_connections_kept: state.reporter.closed_connections().len(),
     tracks: tracks.len(),
     subscriptions: connections.iter().map(|c| c.subscriptions.len()).sum(),
     cached_groups: tracks.iter().map(|t| t.cached_groups).sum(),

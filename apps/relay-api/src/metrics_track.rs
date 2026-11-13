@@ -254,7 +254,7 @@ async fn take_sample(state: &ApiState) -> Sample {
     ]
   });
   let window = HEADLINE.every.max(Duration::from_secs(10));
-  let latency = state.probe.latency.as_ref();
+  let latency = state.reporter.latency.as_ref();
   let stage_p99 = |stage| latency.and_then(|l| l.stage_summary(stage, window).p99);
   let (mut ok, mut error) = (0, 0);
   for (_, _, results) in state.control.results_by_kind() {

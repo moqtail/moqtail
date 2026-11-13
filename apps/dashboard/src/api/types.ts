@@ -15,7 +15,7 @@
  */
 
 // The shapes of the relay API's responses under /api/v1. They follow the Rust
-// types in apps/relay-api and libs/moqtail-probe; a field added there is added here.
+// types in apps/relay-api and libs/relay-hooks; a field added there is added here.
 
 export interface ApiErrorBody {
   error: string;

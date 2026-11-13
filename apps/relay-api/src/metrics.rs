@@ -23,8 +23,8 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::http::header;
 use axum::response::IntoResponse;
-use moqtail_probe::stats::{BUCKETS, bucket_bounds_micros};
-use moqtail_probe::{ConnectionState, Role};
+use relay_hooks::stats::{BUCKETS, bucket_bounds_micros};
+use relay_hooks::{ConnectionState, Role};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -215,7 +215,7 @@ async fn render(state: &ApiState, out: &mut Exposition) {
   );
 
   let closes: Vec<(String, f64)> = state
-    .probe
+    .reporter
     .closes
     .lock()
     .unwrap()
@@ -228,14 +228,14 @@ async fn render(state: &ApiState, out: &mut Exposition) {
     "Closed connections, by who closed them and the code.",
     &closes,
   );
-  let failures = counted(&state.probe.failures, "reason");
+  let failures = counted(&state.reporter.failures, "reason");
   out.family(
     "moqtail_connection_failures_total",
     "counter",
     "Connections that failed before becoming a session.",
     &failures,
   );
-  let limits = counted(&state.probe.limit_rejections, "limit");
+  let limits = counted(&state.reporter.limit_rejections, "limit");
   out.family(
     "moqtail_limit_rejections_total",
     "counter",
@@ -431,7 +431,7 @@ async fn render(state: &ApiState, out: &mut Exposition) {
     );
   }
 
-  if let Some(latency) = &state.probe.latency {
+  if let Some(latency) = &state.reporter.latency {
     let r = &latency.relay;
     out.histogram(
       "moqtail_object_processing_seconds",

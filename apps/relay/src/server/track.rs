@@ -227,7 +227,7 @@ pub struct Track {
   /// since been raised, so it is raised only once.
   pub upstream_forward: Arc<AtomicBool>,
   /// The traffic counters of the accounting zone this track falls in, if any.
-  pub zone: Option<Arc<moqtail_probe::stats::ZoneCounters>>,
+  pub zone: Option<Arc<relay_hooks::stats::ZoneCounters>>,
 }
 
 // TODO: this track implementation should be static? At least

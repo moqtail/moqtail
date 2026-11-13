@@ -16,7 +16,8 @@
 //! startup rules that refuse configurations which would expose the API.
 
 use crate::latency::{LatencyDetail, SlowlogConfig};
-use anyhow::{Result, bail};
+use crate::token::TokenHash;
+use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -37,10 +38,12 @@ pub enum Feature {
   Events,
   /// Endpoints that change the relay, such as GOAWAY and drain.
   Actions,
+  /// The MCP server for AI agents at `/api/v1/mcp`.
+  Mcp,
 }
 
 impl Feature {
-  pub const ALL: [Feature; 7] = [
+  pub const ALL: [Feature; 8] = [
     Feature::Health,
     Feature::State,
     Feature::Metrics,
@@ -48,6 +51,7 @@ impl Feature {
     Feature::Qlog,
     Feature::Events,
     Feature::Actions,
+    Feature::Mcp,
   ];
 
   /// The features that run when `api_features` is not set.
@@ -68,6 +72,7 @@ impl Feature {
       Feature::Qlog => "qlog",
       Feature::Events => "events",
       Feature::Actions => "actions",
+      Feature::Mcp => "mcp",
     }
   }
 
@@ -155,6 +160,10 @@ pub struct ApiSettings {
   pub write_token: Option<String>,
   pub metrics_bind: Option<SocketAddr>,
   pub metrics_token: Option<String>,
+  /// The MCP token's salted hash, as `relay api-token` prints it.
+  pub mcp_token_hash: Option<String>,
+  /// Lets MCP clients use the write tools; needs the `actions` feature too.
+  pub mcp_write: bool,
   pub cors_origins: Vec<String>,
   pub closed_connection_history: usize,
   pub qlog_folder: Option<std::path::PathBuf>,
@@ -196,6 +205,10 @@ pub struct ApiConfig {
   pub metrics_allow: Option<Vec<Cidr>>,
   /// A token that reads `/api/v1/metrics` and nothing else.
   pub metrics_token: Option<String>,
+  /// The only credential `/api/v1/mcp` accepts; no other endpoint accepts it.
+  pub mcp_token: Option<TokenHash>,
+  /// MCP clients may use the write tools.
+  pub mcp_write: bool,
   pub cors_origins: Vec<String>,
   /// How many closed connections to keep for `/connections?closed=true`.
   pub closed_connection_history: usize,
@@ -317,6 +330,17 @@ impl ApiConfig {
     if features.contains(&Feature::Actions) && write_token.is_none() {
       bail!("the `actions` API feature needs `api_write_token`");
     }
+    let mcp_token = match settings.mcp_token_hash.as_deref().filter(|h| !h.is_empty()) {
+      Some(hash) => Some(TokenHash::parse(hash).context("api_mcp_token_hash")?),
+      None => None,
+    };
+    if features.contains(&Feature::Mcp) && mcp_token.is_none() {
+      bail!("the `mcp` API feature needs `api_mcp_token_hash`; make one with `relay api-token`");
+    }
+    let mcp_write = settings.mcp_write && features.contains(&Feature::Actions);
+    if settings.mcp_write && !mcp_write {
+      warnings.push("api_mcp_write has no effect without the `actions` API feature".into());
+    }
 
     let allow = listener_allow(
       "api_bind",
@@ -349,6 +373,8 @@ impl ApiConfig {
         metrics_bind: settings.metrics_bind,
         metrics_allow,
         metrics_token,
+        mcp_token,
+        mcp_write,
         cors_origins: settings.cors_origins,
         closed_connection_history: settings.closed_connection_history,
         qlog_folder: settings.qlog_folder,

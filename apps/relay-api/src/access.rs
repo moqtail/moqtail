@@ -27,6 +27,7 @@ use std::sync::Arc;
 /// Paths a load balancer probes without credentials. The address check still applies.
 const TOKEN_EXEMPT: [&str; 2] = ["/api/v1/health", "/api/v1/ready"];
 const METRICS_PATH: &str = "/api/v1/metrics";
+pub(crate) const MCP_PATH: &str = "/api/v1/mcp";
 
 /// The checks of the main listener.
 pub async fn check(
@@ -68,6 +69,17 @@ async fn check_with(
   }
 
   let origin = allowed_origin(request.headers(), &config.cors_origins).cloned();
+
+  // A web page could reach a local MCP server through DNS rebinding, so MCP
+  // refuses any browser origin not listed. Command-line clients send no Origin.
+  if request.uri().path() == MCP_PATH
+    && request.headers().contains_key(header::ORIGIN)
+    && origin.is_none()
+  {
+    return ApiError::new(StatusCode::FORBIDDEN, "origin_not_allowed")
+      .detail("this Origin is not in api_cors_origins")
+      .into_response();
+  }
 
   // A browser asks before sending a request with an Authorization header. The
   // question itself carries no token, so it is answered before the token check.
@@ -119,6 +131,20 @@ fn check_token(
     (Some(expected), Some(given)) => constant_time_eq(expected.as_bytes(), given.as_bytes()),
     _ => false,
   };
+
+  // MCP takes its own token and nothing else; no other path accepts that token.
+  if path == MCP_PATH {
+    return match (&config.mcp_token, presented) {
+      (Some(hash), Some(given)) if hash.verify(given) => Ok(()),
+      (_, None) => Err(
+        ApiError::new(StatusCode::UNAUTHORIZED, "token_required").detail(
+          "send the MCP token as `Authorization: Bearer <token>`; the relay issues \
+           its own tokens with `relay api-token` and does not use OAuth",
+        ),
+      ),
+      _ => Err(ApiError::new(StatusCode::FORBIDDEN, "token_rejected")),
+    };
+  }
 
   let is_read = matches!(*method, Method::GET | Method::HEAD);
   let allowed = if is_read {

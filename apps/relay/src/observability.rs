@@ -37,6 +37,8 @@ pub fn start(server: &Server) -> Result<()> {
     write_token: c.api_write_token.clone(),
     metrics_bind: c.api_metrics_bind,
     metrics_token: c.api_metrics_token.clone(),
+    mcp_token_hash: c.api_mcp_token_hash.clone(),
+    mcp_write: c.api_mcp_write,
     cors_origins: c.api_cors_origins.clone(),
     closed_connection_history: c.closed_connection_history,
     qlog_folder: c.qlog_folder.as_ref().map(Into::into),
@@ -70,6 +72,33 @@ fn loopback_of(bind: std::net::SocketAddr) -> std::net::SocketAddr {
     bind.ip()
   };
   std::net::SocketAddr::new(ip, bind.port())
+}
+
+/// `relay api-token`: prints a new MCP token and the config line holding its hash.
+/// `relay api-token --hash` hashes a token read from standard input instead.
+/// Returns `false` when the command line is not this command.
+pub fn api_token_command() -> Result<bool> {
+  let args: Vec<String> = std::env::args().skip(1).collect();
+  let token = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+    ["api-token"] => {
+      let token = relay_api::token::new_token();
+      println!("Token (shown once; give it to the MCP client): {token}");
+      token
+    }
+    ["api-token", "--hash"] => {
+      let mut token = String::new();
+      std::io::stdin().read_line(&mut token)?;
+      let token = token.trim().to_string();
+      anyhow::ensure!(!token.is_empty(), "no token on standard input");
+      token
+    }
+    _ => return Ok(false),
+  };
+  println!(
+    "api_mcp_token_hash: \"{}\"",
+    relay_api::token::TokenHash::new(&token)
+  );
+  Ok(true)
 }
 
 #[cfg(test)]

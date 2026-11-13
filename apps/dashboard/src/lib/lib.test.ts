@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { QlogEvent } from '../api/types';
 import { bytes, duration, ms } from './format';
@@ -99,5 +100,31 @@ describe('buildTimeline', () => {
         groups: { first: 7, last: 8, distinct: 2 },
       },
     ]);
+  });
+});
+
+/** The timeline with snake_case keys, as the relay's Rust port writes it. */
+export function snakeKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(snakeKeys);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        k.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`),
+        snakeKeys(v),
+      ]),
+    );
+  }
+  return value;
+}
+
+describe('the trace shared with the relay', () => {
+  it("gives the timeline the relay's port expects", () => {
+    // The relay's Rust test reads the same two files, so the two stay in step.
+    const text = readFileSync('../relay-api/testdata/timeline.sqlog', 'utf8');
+    const events = new JsonSeqParser().push(text) as QlogEvent[];
+    const expected: unknown = JSON.parse(
+      readFileSync('../relay-api/testdata/timeline.expected.json', 'utf8'),
+    );
+    expect(snakeKeys(buildTimeline(events))).toEqual(expected);
   });
 });

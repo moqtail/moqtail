@@ -20,6 +20,10 @@ use server::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+  #[cfg(feature = "observability")]
+  if observability::api_token_command()? {
+    return Ok(());
+  }
   let mut server = Server::new();
   #[cfg(feature = "observability")]
   observability::start(&server)?;

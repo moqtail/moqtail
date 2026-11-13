@@ -90,6 +90,7 @@ api_enable: false
 # Parts that run; unset means [health, state, metrics, latency, qlog].
 # Also available: events, actions (actions needs api_write_token).
 # api_features: [health, state, metrics, latency, qlog]
+# (also available: events, actions, mcp)
 # Client ranges allowed when api_bind is a network address; unset means loopback
 # only. Ignored on a loopback api_bind, where only local programs can connect.
 # api_allow: [127.0.0.1/32, ::1/128, 10.0.0.0/8]
@@ -102,6 +103,13 @@ api_cors_origins: []
 # metrics and nothing else (for Prometheus).
 # api_metrics_bind: 0.0.0.0:4481
 # api_metrics_token: ""
+# MCP server for AI agents at /api/v1/mcp (add `mcp` to api_features). It
+# accepts only this token, stored as a salted hash: run `relay api-token` and
+# paste the line it prints. Agents see namespaces, track names and whatever peers
+# send in control messages, which goes to the agent's model provider.
+# api_mcp_token_hash: ""
+# Lets MCP clients use the write tools; needs the `actions` feature too.
+api_mcp_write: false
 # Closed connections the API keeps a summary of (a few hundred bytes each).
 closed_connection_history: 10000
 # How finely object processing time is kept: relay, track or subscription.

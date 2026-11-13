@@ -263,7 +263,7 @@ pub struct AppConfig {
   /// Address of the API. Unset means `127.0.0.1:4480`.
   pub api_bind: Option<SocketAddr>,
   /// Parts of the API that run: health, state, metrics, latency, qlog, events,
-  /// actions. Unset means health, state, metrics, latency and qlog.
+  /// actions, mcp. Unset means health, state, metrics, latency and qlog.
   pub api_features: Option<Vec<String>>,
   /// Client address ranges allowed on a network `api_bind`. Unset means loopback
   /// only; ignored on a loopback `api_bind`.
@@ -282,6 +282,13 @@ pub struct AppConfig {
   /// A token that reads `/api/v1/metrics` and nothing else, for Prometheus.
   #[serde(skip_serializing)]
   pub api_metrics_token: Option<String>,
+  /// The MCP token's salted hash (`sha256d$...`), as `relay api-token` prints it.
+  /// The only credential `/api/v1/mcp` accepts. Shown in `/api/v1/config`, since
+  /// the hash does not let anyone in.
+  pub api_mcp_token_hash: Option<String>,
+  /// Lets MCP clients use the write tools (GOAWAY, close, drain, log filter,
+  /// redirect URI). Needs the `actions` feature too.
+  pub api_mcp_write: bool,
   /// Closed connections the API keeps a summary of, oldest dropped first.
   #[default(10_000)]
   pub closed_connection_history: usize,

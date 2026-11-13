@@ -710,3 +710,285 @@ async fn actions_need_the_write_token_and_reach_the_relay() {
     ]
   );
 }
+
+const MCP_TOKEN: &str = "mcp_test_token";
+
+fn mcp_client(write: bool) -> Client {
+  Client::new(ApiSettings {
+    features: Some(vec![
+      "state".into(),
+      "latency".into(),
+      "actions".into(),
+      "mcp".into(),
+    ]),
+    read_token: Some("r3ad".into()),
+    write_token: Some("wr1te".into()),
+    mcp_token_hash: Some(crate::token::TokenHash::new(MCP_TOKEN).to_string()),
+    mcp_write: write,
+    ..Default::default()
+  })
+}
+
+impl Client {
+  /// Sends one MCP message with the MCP token and, when given, the version header.
+  async fn mcp(&self, version: Option<&str>, message: Value) -> (StatusCode, Value) {
+    let auth = format!("Bearer {MCP_TOKEN}");
+    let mut headers = vec![("authorization", auth.as_str())];
+    if let Some(version) = version {
+      headers.push(("mcp-protocol-version", version));
+    }
+    let (status, body, _) = self
+      .send_json(
+        Method::POST,
+        "/api/v1/mcp",
+        "127.0.0.1:5000",
+        &headers,
+        Some(message),
+      )
+      .await;
+    (status, body)
+  }
+}
+
+/// A 2026-07-28 request, with the version in `_meta`.
+fn modern(method: &str, params: Value) -> Value {
+  let mut params = params;
+  params["_meta"] = json!({
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {},
+  });
+  json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+}
+
+fn legacy(method: &str, params: Value) -> Value {
+  json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+}
+
+#[tokio::test]
+async fn mcp_takes_only_its_own_token_and_refuses_foreign_origins() {
+  let client = mcp_client(false);
+  let local = "127.0.0.1:5000";
+  let ping = Some(legacy("ping", json!({})));
+  let (status, ..) = client
+    .send_json(Method::POST, "/api/v1/mcp", local, &[], ping.clone())
+    .await;
+  assert_eq!(status, StatusCode::UNAUTHORIZED);
+  for token in ["Bearer r3ad", "Bearer wr1te"] {
+    let (status, ..) = client
+      .send_json(
+        Method::POST,
+        "/api/v1/mcp",
+        local,
+        &[("authorization", token)],
+        ping.clone(),
+      )
+      .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{token} does not open MCP");
+  }
+  let mcp = format!("Bearer {MCP_TOKEN}");
+  let (status, ..) = client
+    .send(
+      Method::GET,
+      "/api/v1/config",
+      local,
+      &[("authorization", &mcp)],
+    )
+    .await;
+  assert_eq!(
+    status,
+    StatusCode::FORBIDDEN,
+    "the MCP token opens nothing else"
+  );
+  let (status, ..) = client
+    .send_json(
+      Method::POST,
+      "/api/v1/mcp",
+      local,
+      &[("authorization", &mcp), ("origin", "https://evil.example")],
+      ping.clone(),
+    )
+    .await;
+  assert_eq!(status, StatusCode::FORBIDDEN);
+  let (status, ..) = client
+    .send(
+      Method::GET,
+      "/api/v1/mcp",
+      local,
+      &[("authorization", &mcp)],
+    )
+    .await;
+  assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+  assert_eq!(client.mcp(None, ping.unwrap()).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mcp_speaks_the_2025_revisions_after_initialize() {
+  let client = mcp_client(false);
+  let (status, body) = client
+    .mcp(
+      None,
+      legacy("initialize", json!({ "protocolVersion": "2025-06-18" })),
+    )
+    .await;
+  assert_eq!(status, StatusCode::OK);
+  assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
+  assert_eq!(body["result"]["serverInfo"]["name"], "moqtail-relay");
+  let (_, body) = client
+    .mcp(
+      None,
+      legacy("initialize", json!({ "protocolVersion": "1999-01-01" })),
+    )
+    .await;
+  assert_eq!(body["result"]["protocolVersion"], "2025-11-25");
+
+  let initialized = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+  assert_eq!(
+    client.mcp(Some("2025-06-18"), initialized).await.0,
+    StatusCode::ACCEPTED
+  );
+
+  let (_, body) = client
+    .mcp(Some("2025-06-18"), legacy("tools/list", json!({})))
+    .await;
+  let tools = body["result"]["tools"].as_array().unwrap();
+  assert_eq!(tools[0]["name"], "relay_overview");
+  assert_eq!(tools[0]["annotations"]["readOnlyHint"], true);
+  assert!(
+    tools
+      .iter()
+      .all(|t| t["annotations"]["readOnlyHint"] == true)
+  );
+  assert!(
+    body["result"].get("ttlMs").is_none(),
+    "only 2026-07-28 has ttlMs"
+  );
+
+  let call = legacy(
+    "tools/call",
+    json!({ "name": "get_connection", "arguments": { "conn_id": 7 } }),
+  );
+  let (_, body) = client.mcp(Some("2025-06-18"), call).await;
+  assert_eq!(body["result"]["structuredContent"]["conn_id"], 7);
+  let text = body["result"]["content"][0]["text"].as_str().unwrap();
+  assert_eq!(
+    serde_json::from_str::<Value>(text).unwrap(),
+    body["result"]["structuredContent"]
+  );
+
+  let call = legacy(
+    "tools/call",
+    json!({ "name": "get_connection", "arguments": { "conn_id": "seven" } }),
+  );
+  let (_, body) = client.mcp(Some("2025-06-18"), call).await;
+  assert_eq!(body["result"]["isError"], true);
+
+  let call = legacy("tools/call", json!({ "name": "send_goaway" }));
+  let (_, body) = client.mcp(Some("2025-06-18"), call).await;
+  assert_eq!(body["error"]["code"], -32602, "write tools are not offered");
+
+  let (status, body) = client
+    .mcp(Some("2025-06-18"), legacy("resources/list", json!({})))
+    .await;
+  assert_eq!(
+    (status, body["error"]["code"].as_i64()),
+    (StatusCode::OK, Some(-32601))
+  );
+  let (status, body) = client
+    .mcp(Some("2024-01-01"), legacy("tools/list", json!({})))
+    .await;
+  assert_eq!(
+    (status, body["error"]["code"].as_i64()),
+    (StatusCode::BAD_REQUEST, Some(-32022))
+  );
+  let (status, _) = client.mcp(None, json!([legacy("ping", json!({}))])).await;
+  assert_eq!(status, StatusCode::BAD_REQUEST, "batches are refused");
+}
+
+#[tokio::test]
+async fn mcp_speaks_the_2026_revision_without_a_handshake() {
+  let client = mcp_client(true);
+  let v = Some("2026-07-28");
+  let (status, body) = client.mcp(v, modern("server/discover", json!({}))).await;
+  assert_eq!(status, StatusCode::OK);
+  let result = &body["result"];
+  assert_eq!(result["resultType"], "complete");
+  assert_eq!(result["supportedVersions"][0], "2026-07-28");
+  assert!(result["ttlMs"].is_u64() && result["instructions"].is_string());
+  assert_eq!(
+    result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+    "moqtail-relay"
+  );
+
+  let (_, body) = client.mcp(v, modern("tools/list", json!({}))).await;
+  assert_eq!(body["result"]["cacheScope"], "private");
+  let tools = body["result"]["tools"].as_array().unwrap();
+  let goaway = tools.iter().find(|t| t["name"] == "send_goaway").unwrap();
+  assert_eq!(goaway["annotations"]["destructiveHint"], true);
+  assert!(
+    !tools.iter().any(|t| t["name"] == "connection_timeline"),
+    "no qlog folder, no timeline"
+  );
+
+  let call = modern(
+    "tools/call",
+    json!({ "name": "send_goaway", "arguments": { "conn_id": 7, "timeout_ms": 500 } }),
+  );
+  let (_, body) = client.mcp(v, call).await;
+  assert_eq!(body["result"]["resultType"], "complete");
+  assert_eq!(body["result"]["structuredContent"]["sent"], true);
+  assert_eq!(*client.relay.actions.lock().unwrap(), ["goaway 7 500"]);
+
+  let (status, body) = client.mcp(v, modern("ping", json!({}))).await;
+  assert_eq!(
+    (status, body["error"]["code"].as_i64()),
+    (StatusCode::NOT_FOUND, Some(-32601))
+  );
+  let (status, body) = client
+    .mcp(Some("2025-11-25"), modern("tools/list", json!({})))
+    .await;
+  assert_eq!(
+    (status, body["error"]["code"].as_i64()),
+    (StatusCode::BAD_REQUEST, Some(-32020))
+  );
+  let mut no_capabilities = modern("tools/list", json!({}));
+  no_capabilities["params"]["_meta"]
+    .as_object_mut()
+    .unwrap()
+    .remove("io.modelcontextprotocol/clientCapabilities");
+  let (status, body) = client.mcp(v, no_capabilities).await;
+  assert_eq!(
+    (status, body["error"]["code"].as_i64()),
+    (StatusCode::BAD_REQUEST, Some(-32602))
+  );
+  let (status, _) = client.mcp(v, legacy("tools/list", json!({}))).await;
+  assert_eq!(
+    status,
+    StatusCode::BAD_REQUEST,
+    "a 2026 header needs the version in _meta"
+  );
+}
+
+#[test]
+fn mcp_needs_a_token_hash_to_start() {
+  let error = ApiConfig::from_settings(ApiSettings {
+    features: Some(vec!["mcp".into()]),
+    ..Default::default()
+  })
+  .unwrap_err();
+  assert!(error.to_string().contains("api_mcp_token_hash"));
+  let error = ApiConfig::from_settings(ApiSettings {
+    features: Some(vec!["mcp".into()]),
+    mcp_token_hash: Some("plain-token".into()),
+    ..Default::default()
+  })
+  .unwrap_err();
+  assert!(format!("{error:#}").contains("sha256d"));
+  let (_, warnings) = ApiConfig::from_settings(ApiSettings {
+    features: Some(vec!["mcp".into()]),
+    mcp_token_hash: Some(crate::token::TokenHash::new("t").to_string()),
+    mcp_write: true,
+    ..Default::default()
+  })
+  .unwrap();
+  assert!(warnings.iter().any(|w| w.contains("api_mcp_write")));
+}

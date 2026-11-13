@@ -185,6 +185,12 @@ const ENDPOINTS: &[Endpoint] = &[
     route: || get(crate::metrics::metrics),
   },
   Endpoint {
+    method: "POST",
+    path: "/api/v1/mcp",
+    feature: Feature::Mcp,
+    route: || post(crate::mcp::handle),
+  },
+  Endpoint {
     method: "GET",
     path: "/api/v1/qlog",
     feature: Feature::Qlog,

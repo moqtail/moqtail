@@ -1,0 +1,56 @@
+{
+  "peer_setup": {
+    "at": 0,
+    "direction": "<-",
+    "stream_id": 6,
+    "type": "setup",
+    "text": "SETUP (no options)",
+    "hex": "af000000"
+  },
+  "entries": [
+    {
+      "kind": "request",
+      "request": {
+        "at": 0.000912109375,
+        "direction": "<-",
+        "stream_id": 4,
+        "type": "subscribe",
+        "text": "SUBSCRIBE live/news : video request_id=0 params[forward=1, subscriber_priority=128, subscription_filter=filter_type=5, group_order=1]",
+        "hex": "03001b0002046c697665046e65777305766964656f041001108001050101"
+      },
+      "responses": [
+        {
+          "at": 0.00153125,
+          "direction": "->",
+          "stream_id": 4,
+          "type": "subscribe_ok",
+          "text": "SUBSCRIBE_OK track_alias=0 params[largest_object=2:8]",
+          "hex": "0400050001090208"
+        }
+      ]
+    },
+    {
+      "kind": "message",
+      "message": {
+        "at": 8.548295166015626,
+        "direction": "->",
+        "stream_id": 7,
+        "type": "goaway",
+        "text": "GOAWAY",
+        "hex": "10001d1a6d6f71743a2f2f6261636b75702e6578616d706c653a343433338bb8"
+      }
+    }
+  ],
+  "data": [
+    {
+      "direction": "->",
+      "label": "track_alias=0",
+      "streams": 4,
+      "groups": {
+        "first": 2,
+        "last": 5,
+        "distinct": 4
+      }
+    }
+  ]
+}

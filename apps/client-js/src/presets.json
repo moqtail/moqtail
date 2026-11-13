@@ -39,6 +39,18 @@
           "features": ["CMAF", "VOD"]
         }
       ]
+    },
+    {
+      "url": "moqt://moqlivemock.demo.osaas.io/moq",
+      "namespaces": [
+        {
+          "name": "mlm/cmsf/clear",
+          "label": "Eyevinn Test Source",
+          "videoTracks": 9,
+          "audioTracks": 6,
+          "features": ["LOCMAF", "AVC", "HEVC", "AV1"]
+        }
+      ]
     }
   ]
 }

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ClusterInfo, Namespaces, Upstream, ZoneReport } from '../api/types';
+import type { ClusterInfo, Upstream, ZoneReport } from '../api/types';
 import { Badge, Card, ErrorNote, Loading, Table } from '../components/ui';
 import { useDashboard } from '../context';
 import { ago, bytes, count, ms } from '../lib/format';
@@ -33,19 +33,18 @@ export function Upstreams() {
   const { api, refreshMs } = useDashboard();
   const polled = usePoll(
     async signal => {
-      const [upstreams, namespaces, clusterInfo] = await Promise.all([
+      const [upstreams, clusterInfo] = await Promise.all([
         api.get<Upstream[]>('/upstreams', undefined, signal),
-        api.get<Namespaces>('/namespaces', undefined, signal),
         api.get<ClusterInfo>('/cluster', undefined, signal),
       ]);
-      return { upstreams, namespaces, clusterInfo };
+      return { upstreams, clusterInfo };
     },
     refreshMs,
     [api],
   );
   if (polled.error && !polled.data) return <ErrorNote error={polled.error} />;
   if (!polled.data) return <Loading />;
-  const { upstreams, namespaces, clusterInfo } = polled.data;
+  const { upstreams, clusterInfo } = polled.data;
 
   return (
     <div class="space-y-4">
@@ -95,55 +94,6 @@ export function Upstreams() {
         </Table>
         {upstreams.length === 0 && <p class="mt-2 text-xs text-neutral-500">No upstreams.</p>}
       </Card>
-      <div class="grid gap-4 lg:grid-cols-2">
-        <Card title="Announced namespaces">
-          <Table>
-            <thead>
-              <tr>
-                <th>Namespace</th>
-                <th>Announced by</th>
-              </tr>
-            </thead>
-            <tbody>
-              {namespaces.announced.map(n => (
-                <tr key={n.namespace}>
-                  <td>{n.namespace}</td>
-                  <td>
-                    {n.announced_by.map((id, i) => (
-                      <span key={id}>
-                        {i > 0 && ', '}
-                        <ConnLink id={id} />
-                      </span>
-                    ))}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </Table>
-        </Card>
-        <Card title="Namespace subscriptions">
-          <Table>
-            <thead>
-              <tr>
-                <th>Prefix</th>
-                <th>Connection</th>
-                <th>Kind</th>
-              </tr>
-            </thead>
-            <tbody>
-              {namespaces.subscriptions.map(s => (
-                <tr key={`${s.conn_id}-${s.prefix}-${s.kind}`}>
-                  <td>{s.prefix}</td>
-                  <td>
-                    <ConnLink id={s.conn_id} />
-                  </td>
-                  <td>{s.kind}</td>
-                </tr>
-              ))}
-            </tbody>
-          </Table>
-        </Card>
-      </div>
       {(clusterInfo.hop_id !== null || clusterInfo.peers.length > 0) && (
         <Card
           title={`Cluster${clusterInfo.hop_id !== null ? ` (this relay's hop id ${clusterInfo.hop_id})` : ''}`}

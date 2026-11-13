@@ -23,6 +23,7 @@ import { Connection } from './pages/Connection';
 import { Connections } from './pages/Connections';
 import { Events } from './pages/Events';
 import { Latency } from './pages/Latency';
+import { Namespaces } from './pages/Namespaces';
 import { Overview } from './pages/Overview';
 import { Settings } from './pages/Settings';
 import { Track, Tracks } from './pages/Tracks';
@@ -61,6 +62,7 @@ const PAGES: { page: string; label: string; feature?: string }[] = [
   { page: 'overview', label: 'Overview', feature: 'state' },
   { page: 'connections', label: 'Connections', feature: 'state' },
   { page: 'tracks', label: 'Tracks', feature: 'state' },
+  { page: 'namespaces', label: 'Namespaces', feature: 'state' },
   { page: 'latency', label: 'Latency', feature: 'latency' },
   { page: 'upstreams', label: 'Upstreams', feature: 'state' },
   { page: 'zones', label: 'Zones', feature: 'state' },
@@ -105,6 +107,9 @@ export function App() {
       break;
     case 'tracks':
       content = route.id ? <Track key={route.id} id={route.id} /> : <Tracks />;
+      break;
+    case 'namespaces':
+      content = <Namespaces />;
       break;
     case 'latency':
       content = <Latency />;

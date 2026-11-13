@@ -20,6 +20,7 @@ import type { QlogEvent } from '../api/types';
 import { bytes, duration, ms } from './format';
 import { JsonSeqParser, SseParser } from './stream';
 import { buildTimeline } from './timeline';
+import { namespaceRows, underPrefix } from '../pages/Namespaces';
 
 describe('JsonSeqParser', () => {
   it('returns records only once they are complete, across pieces', () => {
@@ -126,5 +127,29 @@ describe('the trace shared with the relay', () => {
       readFileSync('../relay-api/testdata/timeline.expected.json', 'utf8'),
     );
     expect(snakeKeys(buildTimeline(events))).toEqual(expected);
+  });
+});
+
+describe('namespaces', () => {
+  it('matches prefixes field by field', () => {
+    expect(underPrefix('live/sports', 'live')).toBe(true);
+    expect(underPrefix('live', 'live')).toBe(true);
+    expect(underPrefix('livestream', 'live')).toBe(false);
+    expect(underPrefix('anything', '')).toBe(true);
+  });
+
+  it('joins announcements, tracks and namespace subscriptions', () => {
+    const track = { namespace: 'live/a', name: 'v', track_id: 1, subscribers: 3 } as never;
+    const rows = namespaceRows(
+      {
+        announced: [{ namespace: 'live/b', announced_by: [7] }],
+        subscriptions: [{ prefix: 'live', conn_id: 9, kind: 'namespace' }],
+      },
+      [track],
+    );
+    expect(rows.map(r => [r.namespace, r.announcedBy, r.tracks.length, r.watchedBy])).toEqual([
+      ['live/a', [], 1, [9]],
+      ['live/b', [7], 0, [9]],
+    ]);
   });
 });

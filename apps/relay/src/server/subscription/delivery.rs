@@ -17,6 +17,7 @@
 use super::stream_writer::for_mid_subgroup_stream;
 use super::subscription_manager::EventTimes;
 use super::{DEFAULT_PUBLISHER_PRIORITY, Subscription};
+use crate::server::inspect;
 use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::stream_id::StreamId;
 use crate::server::track::TrackEvent;
@@ -53,7 +54,7 @@ impl Subscription {
     if waited <= timeout {
       return false;
     }
-    if let Some(c) = crate::server::inspect::counters() {
+    if let Some(c) = inspect::counters() {
       c.dropped_delivery_timeout.add(1);
     }
     if self.queue.skip_group(group) {
@@ -74,7 +75,7 @@ impl Subscription {
     location: &Location,
     payload_bytes: usize,
   ) {
-    if let Some(c) = crate::server::inspect::counters() {
+    if let Some(c) = inspect::counters() {
       c.object_sent(payload_bytes);
     }
     if let Some(zone) = &self.zone {

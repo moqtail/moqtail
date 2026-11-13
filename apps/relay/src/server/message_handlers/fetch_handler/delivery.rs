@@ -16,6 +16,7 @@
 
 use super::upstream::{handle_malformed_upstream_fetch, send_upstream_fetch_for_range};
 use super::{FetchStop, PendingUpstreamFetch};
+use crate::server::inspect;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::{SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
@@ -442,7 +443,7 @@ pub(crate) async fn serve_fetch_stream(
         );
         TerminationCode::InternalError
       })?;
-    if let Some(c) = crate::server::inspect::counters() {
+    if let Some(c) = inspect::counters() {
       c.fetch_object_sent(payload_bytes);
     }
 

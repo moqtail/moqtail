@@ -19,6 +19,7 @@ pub(crate) mod track_cache;
 pub(crate) mod track_manager;
 mod upstream_requests;
 
+use crate::server::inspect;
 pub use publisher_streams::{DatagramArrivals, PublisherStreamProgress, await_publisher_streams};
 use upstream_requests::UpstreamRequests;
 pub(crate) use upstream_requests::{UpstreamRequestCancellation, UpstreamRequestKind};
@@ -262,7 +263,7 @@ impl Track {
     origin: TrackOrigin,
   ) -> Self {
     Track {
-      zone: crate::server::inspect::zone_for(&full_track_name),
+      zone: inspect::zone_for(&full_track_name),
       relay_track_id,
       full_track_name: full_track_name.clone(),
       origin: Arc::new(AtomicU8::new(origin as u8)),

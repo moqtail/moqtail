@@ -16,6 +16,7 @@ pub(crate) mod request_subscription_map;
 pub(crate) mod switch_context;
 
 use crate::server::cluster;
+use crate::server::inspect;
 use crate::server::{
   config::{AppConfig, TrackAliasMode},
   requests::DownstreamRequests,
@@ -465,7 +466,7 @@ impl MOQTClient {
             "open_stream | added send_stream to send streams ({}) connection_id: {}",
             stream_key, self.connection_id
           );
-          if let Some(c) = crate::server::inspect::counters() {
+          if let Some(c) = inspect::counters() {
             c.streams_opened.add(1);
           }
           (s, true)

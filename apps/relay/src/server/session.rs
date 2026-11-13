@@ -19,6 +19,7 @@ pub(crate) mod session_context;
 
 use crate::server::cluster;
 use crate::server::config::AppConfig;
+use crate::server::inspect;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
@@ -501,9 +502,9 @@ impl Session {
       context.connection_id
     );
     context.connection.closed().await;
-    super::inspect::report_closed(&context).await;
+    inspect::report_closed(&context).await;
     if qlog::enabled() {
-      let close = super::inspect::close_info(&context.connection);
+      let close = inspect::close_info(&context.connection);
       qlog::connection_closed(context.connection_id, &close.by, close.code, &close.reason);
     }
     qlog::close(context.connection_id);
@@ -593,7 +594,7 @@ impl Session {
     stream: TransportRecvStream,
   ) -> Result<()> {
     trace!("accepted unidirectional stream");
-    if let Some(c) = super::inspect::counters() {
+    if let Some(c) = inspect::counters() {
       c.streams_accepted.add(1);
     }
     let client = context.get_client().await;

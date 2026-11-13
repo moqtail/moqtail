@@ -142,12 +142,14 @@ pub fn install(probe: Arc<dyn Probe>) {
 
 static COUNTERS: OnceLock<Arc<RelayCounters>> = OnceLock::new();
 
-/// Installs the counters the data path adds to. Later calls are ignored.
+/// Installs the relay-wide traffic counters that the delivery path adds to. Later
+/// calls are ignored.
 pub fn install_counters(counters: Arc<RelayCounters>) {
   let _ = COUNTERS.set(counters);
 }
 
-/// The installed counters; `None` when nothing counts, so the data path skips them.
+/// The installed traffic counters; `None` when none were installed, and the
+/// delivery path then skips counting.
 pub fn counters() -> Option<&'static RelayCounters> {
   COUNTERS.get().map(|c| c.as_ref())
 }

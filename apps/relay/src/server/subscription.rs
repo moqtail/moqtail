@@ -21,6 +21,7 @@ pub(crate) mod subscription_manager;
 pub(crate) mod subscription_state;
 mod switch;
 
+use crate::server::inspect;
 use stream_writer::for_mid_subgroup_stream;
 
 use crate::server::config::AppConfig;
@@ -169,7 +170,7 @@ impl Subscription {
       client_connection_id as u64,
       request_id,
     );
-    let zone = crate::server::inspect::zone_for(&full_track_name);
+    let zone = inspect::zone_for(&full_track_name);
     Self {
       ssts_gate: Arc::new(ForwardGate::new(full_track_name.clone(), relay_track_id)),
       relay_track_id,
@@ -573,7 +574,7 @@ impl Subscription {
       );
       event_rx_guard.take();
       drop(event_rx_guard);
-      if let Some(c) = crate::server::inspect::counters() {
+      if let Some(c) = inspect::counters() {
         c.subscriptions_too_far_behind.add(1);
       }
       self

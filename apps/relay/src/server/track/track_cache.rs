@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::inspect;
 use moka::future::Cache;
 use moka::notification::RemovalCause;
 use moqtail::model::common::location::Location;
@@ -143,7 +144,7 @@ impl TrackCache {
     let cache_builder = Cache::builder()
       .max_capacity(cache_size as u64)
       .eviction_listener(move |key: Arc<CacheKey>, value: GroupObjects, cause| {
-        crate::server::inspect::count_cache_removal(cause);
+        inspect::count_cache_removal(cause);
         let relay_track_id = key.relay_track_id;
         let group_id = key.group_id;
         let log_folder = log_folder_for_listener.clone();

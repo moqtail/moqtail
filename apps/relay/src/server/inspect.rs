@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Copies of the relay's state for the observability layer, in the plain types of
-//! `moqtail_probe`. Each function holds a core lock only while it copies from it.
+//! Where the relay meets the observability layer.
+//!
+//! Two kinds of code live here. Snapshot functions copy the relay's state into the
+//! plain types of `moqtail_probe` for the API; each holds a core lock only while it
+//! copies. Helpers such as [`counters`] and [`arrival_time`] are called from the
+//! delivery path to count and time objects; in a build without the `observability`
+//! feature they return `None`, and the compiler removes the code that uses them.
 
 use super::session::client::MOQTClient;
 use super::session::session_context::SessionContext;
@@ -34,8 +39,12 @@ use wtransport::quinn::ConnectionError;
 #[cfg(feature = "observability")]
 pub(crate) use relay::RelayInspect;
 
-/// The counters the data path adds to; `None` when nothing counts. Builds without
-/// the observability layer compile every use of it away.
+/// The relay-wide traffic counters: objects and bytes received and sent, drops,
+/// and cache removals. The delivery path adds to them as objects move.
+///
+/// `None` when the API did not install them, which happens when neither its
+/// `metrics` feature nor the metrics track is on. Always `None` in a build without
+/// the `observability` feature, so the counting code at each call site is removed.
 #[inline]
 pub(crate) fn counters() -> Option<&'static moqtail_probe::stats::RelayCounters> {
   #[cfg(feature = "observability")]
@@ -44,7 +53,8 @@ pub(crate) fn counters() -> Option<&'static moqtail_probe::stats::RelayCounters>
   None
 }
 
-/// Counts a cached group leaving the cache.
+/// Counts a group leaving the cache, by why it left: it expired, it was evicted to
+/// make room, or it was removed or replaced.
 pub(crate) fn count_cache_removal(cause: moka::notification::RemovalCause) {
   use moka::notification::RemovalCause;
   if let Some(c) = counters() {
@@ -56,8 +66,9 @@ pub(crate) fn count_cache_removal(cause: moka::notification::RemovalCause) {
   }
 }
 
-/// The counters of the accounting zone a track falls in; `None` when no zones are
-/// configured, and always in builds without the observability layer.
+/// The traffic counters of the accounting zone a track's namespace falls under:
+/// the longest prefix listed in `accounting_zones`. `None` when no zones are
+/// configured, and always in a build without the `observability` feature.
 pub(crate) fn zone_for(
   name: &FullTrackName,
 ) -> Option<std::sync::Arc<moqtail_probe::stats::ZoneCounters>> {
@@ -70,8 +81,8 @@ pub(crate) fn zone_for(
   }
 }
 
-/// Reads and replaces the log filter; kept at startup when the API's `actions`
-/// feature is on.
+/// Reads and replaces the relay's log filter while it runs. Set once at startup,
+/// and only when the API's `actions` feature is on; otherwise the filter is fixed.
 #[cfg(feature = "observability")]
 type SetLogFilter = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
@@ -84,7 +95,8 @@ struct LogFilter {
 #[cfg(feature = "observability")]
 static LOG_FILTER: std::sync::OnceLock<LogFilter> = std::sync::OnceLock::new();
 
-/// Keeps the handle that changes the log filter, for [`moqtail_probe::Actions`].
+/// Stores the handle that swaps the log filter, so the API can read and replace it
+/// through [`moqtail_probe::Actions`].
 #[cfg(feature = "observability")]
 pub(crate) fn keep_log_filter<S: 'static>(
   handle: tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, S>,
@@ -99,8 +111,9 @@ pub(crate) fn keep_log_filter<S: 'static>(
   });
 }
 
-/// When an object arrived from its publisher, for measuring its processing time.
-/// Builds without the observability layer read no clock.
+/// The moment an object arrived from its publisher. Its processing time is
+/// measured from here to when it is written to each subscriber. `None` in a build
+/// without the `observability` feature, so the delivery path reads no clock.
 pub(crate) fn arrival_time() -> Option<std::time::Instant> {
   #[cfg(feature = "observability")]
   return Some(std::time::Instant::now());
@@ -108,7 +121,9 @@ pub(crate) fn arrival_time() -> Option<std::time::Instant> {
   None
 }
 
-/// The `Inspect` implementation, built only with the observability layer.
+/// How the API reads the relay ([`moqtail_probe::Inspect`]) and changes it
+/// ([`moqtail_probe::Actions`]). Built
+/// only with the `observability` feature.
 #[cfg(feature = "observability")]
 mod relay {
   use super::LOG_FILTER;
@@ -129,7 +144,7 @@ mod relay {
   };
   use std::sync::atomic::Ordering;
 
-  /// The relay as the observability layer sees it.
+  /// A handle on the server, through which the API reads and changes the relay.
   pub(crate) struct RelayInspect(pub Server);
 
   impl Inspect for RelayInspect {
@@ -292,7 +307,8 @@ mod relay {
         let Some(client) = self.client(conn_id).await else {
           return false;
         };
-        // The session sees the closed connection and cleans up as for any close.
+        // The session task notices the closed connection and cleans up as it does
+        // for any other close.
         client
           .connection
           .close(TerminationCode::NoError as u32, b"closed by the operator");
@@ -418,8 +434,9 @@ mod relay {
   }
 }
 
-/// Reports a closing session's connection to the probe, as it was when it closed.
-/// Called before the session's state is cleaned up.
+/// Hands a closing connection to the probe, as it was at the moment it closed, so
+/// the API can list it among closed connections. Call it before the session's
+/// state is cleaned up, while there is still something to copy.
 pub(crate) async fn report_closed(context: &SessionContext) {
   let probe = moqtail_probe::probe();
   if !probe.keeps_closed_connections() {
@@ -614,8 +631,9 @@ fn namespace_text(namespace: &Tuple) -> String {
   fields.join("/")
 }
 
-/// A field as text. Readable rather than escaped, so `metrics.moq.arpa` stays as it
-/// is; bytes that are not UTF-8 show as the replacement character.
+/// A namespace or name field as text, shown as written rather than escaped, so
+/// `metrics.moq.arpa` reads as is. Bytes that are not valid UTF-8 show as the
+/// replacement character.
 fn field_text(field: &moqtail::model::common::tuple::TupleField) -> String {
   String::from_utf8_lossy(field.as_bytes()).into_owned()
 }

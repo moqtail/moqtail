@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::inspect;
 use crate::server::{subscription::SubscriptionOrigin, track::ActiveSubgroupHeaderMap};
 
 use crate::server::config::AppConfig;
@@ -87,7 +88,7 @@ pub(crate) struct SubscriptionManager {
 
 /// Counts an object not queued for a subscriber that had too much waiting.
 fn count_queue_drop() {
-  if let Some(c) = crate::server::inspect::counters() {
+  if let Some(c) = inspect::counters() {
     c.dropped_queue_full.add(1);
   }
 }

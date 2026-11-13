@@ -15,6 +15,7 @@
 //! Objects arriving from a publisher: deduplicated, cached, counted in the Largest Location, then fanned out.
 
 use super::{Track, TrackEvent};
+use crate::server::inspect;
 use crate::server::stream_id::StreamId;
 use crate::server::utils;
 use anyhow::Result;
@@ -112,9 +113,9 @@ impl Track {
     object: &Object,
     header_info: Option<&HeaderInfo>,
   ) -> Result<()> {
-    let arrived = crate::server::inspect::arrival_time();
+    let arrived = inspect::arrival_time();
     let payload_bytes = object.payload.as_ref().map_or(0, |p| p.len());
-    if let Some(c) = crate::server::inspect::counters() {
+    if let Some(c) = inspect::counters() {
       c.object_received(payload_bytes);
     }
     if let Some(zone) = &self.zone {
@@ -181,9 +182,9 @@ impl Track {
   }
 
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
-    let arrived = crate::server::inspect::arrival_time();
+    let arrived = inspect::arrival_time();
     let payload_bytes = datagram.payload.as_ref().map_or(0, |p| p.len());
-    if let Some(c) = crate::server::inspect::counters() {
+    if let Some(c) = inspect::counters() {
       c.object_received(payload_bytes);
     }
     if let Some(zone) = &self.zone {

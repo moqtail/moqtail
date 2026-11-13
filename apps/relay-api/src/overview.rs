@@ -38,6 +38,19 @@ pub struct Overview {
   cached_groups: u64,
   /// Request results by `type/direction`.
   requests: BTreeMap<String, ResultCounts>,
+  /// Running totals of the data path, when the `metrics` feature counts them.
+  /// Rates are the difference between two reads.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  traffic: Option<Traffic>,
+}
+
+#[derive(Serialize)]
+pub struct Traffic {
+  objects_received: u64,
+  bytes_received: u64,
+  objects_sent: u64,
+  bytes_sent: u64,
+  objects_dropped: u64,
 }
 
 pub async fn overview(State(state): State<Arc<ApiState>>) -> Json<Overview> {
@@ -62,6 +75,13 @@ pub async fn overview(State(state): State<Arc<ApiState>>) -> Json<Overview> {
     subscriptions: connections.iter().map(|c| c.subscriptions.len()).sum(),
     cached_groups: tracks.iter().map(|t| t.cached_groups).sum(),
     requests: state.control.results(),
+    traffic: state.counters.as_deref().map(|c| Traffic {
+      objects_received: c.objects_received.get(),
+      bytes_received: c.bytes_received.get(),
+      objects_sent: c.objects_sent.get() + c.fetch_objects_sent.get(),
+      bytes_sent: c.bytes_sent.get() + c.fetch_bytes_sent.get(),
+      objects_dropped: c.dropped_queue_full.get() + c.dropped_delivery_timeout.get(),
+    }),
   })
 }
 

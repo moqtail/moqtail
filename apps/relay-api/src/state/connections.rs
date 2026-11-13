@@ -15,10 +15,10 @@
 //! `/api/v1/connections`: who is connected, and who was.
 
 use crate::ApiState;
-use crate::control::{MessageCounts, RequestCounts};
-use crate::error::ApiError;
-use crate::list::{ListQuery, Page, SortValue, page, parse_query};
-use crate::reporter::Connection;
+use crate::collect::control::{MessageCounts, RequestCounts};
+use crate::collect::reporter::Connection;
+use crate::http::error::ApiError;
+use crate::http::list::{ListQuery, Page, SortValue, page, parse_query};
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};

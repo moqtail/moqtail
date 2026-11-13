@@ -22,10 +22,12 @@
 //! header. The tools call the same handlers as the HTTP endpoints, so they read
 //! the relay through the same one-second snapshots.
 
+pub mod token;
+
 use crate::ApiState;
 use crate::config::Feature;
-use crate::error::ApiError;
-use crate::list::ListQuery;
+use crate::http::error::ApiError;
+use crate::http::list::ListQuery;
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -616,10 +618,10 @@ fn api_error(error: ApiError) -> String {
 async fn call(state: &Arc<ApiState>, name: &str, args: Value) -> Result<Value, String> {
   let st = || State(state.clone());
   match name {
-    "relay_overview" => to_value(crate::overview::overview(st()).await.0),
+    "relay_overview" => to_value(crate::state::overview::overview(st()).await.0),
     "list_connections" => {
       let query = arguments(capped(args))?;
-      let page = crate::connections::list(st(), Ok(Query(query)))
+      let page = crate::state::connections::list(st(), Ok(Query(query)))
         .await
         .map_err(api_error)?;
       to_value(page.0)
@@ -627,7 +629,7 @@ async fn call(state: &Arc<ApiState>, name: &str, args: Value) -> Result<Value, S
     "get_connection" => {
       let id = conn_id(&args)?;
       to_value(
-        crate::connections::detail(st(), Path(id))
+        crate::state::connections::detail(st(), Path(id))
           .await
           .map_err(api_error)?
           .0,
@@ -653,12 +655,12 @@ async fn call(state: &Arc<ApiState>, name: &str, args: Value) -> Result<Value, S
           serde_json::from_slice(line).ok()
         })
         .collect();
-      Ok(crate::timeline::build(&events, limit))
+      Ok(crate::qlog::timeline::build(&events, limit))
     }
     "list_tracks" => {
       let query: ListQuery = arguments(capped(args))?;
       to_value(
-        crate::tracks::list(st(), Ok(Query(query)))
+        crate::state::tracks::list(st(), Ok(Query(query)))
           .await
           .map_err(api_error)?
           .0,
@@ -669,16 +671,16 @@ async fn call(state: &Arc<ApiState>, name: &str, args: Value) -> Result<Value, S
         .as_u64()
         .ok_or("track_id must be a non-negative integer")?;
       to_value(
-        crate::tracks::detail(st(), Path(id))
+        crate::state::tracks::detail(st(), Path(id))
           .await
           .map_err(api_error)?
           .0,
       )
     }
-    "namespaces" => to_value(crate::overview::namespaces(st()).await.0),
-    "upstreams" => to_value(crate::overview::upstreams(st()).await.0),
-    "zones" => to_value(crate::zones::list(st()).await.0),
-    "cluster" => to_value(crate::overview::cluster(st()).await.0),
+    "namespaces" => to_value(crate::state::overview::namespaces(st()).await.0),
+    "upstreams" => to_value(crate::state::overview::upstreams(st()).await.0),
+    "zones" => to_value(crate::state::zones::list(st()).await.0),
+    "cluster" => to_value(crate::state::overview::cluster(st()).await.0),
     "latency_report" => {
       let query = arguments(args)?;
       to_value(

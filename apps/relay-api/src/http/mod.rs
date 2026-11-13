@@ -15,9 +15,14 @@
 //! The endpoint table and the handlers for the index, health, readiness and
 //! configuration.
 
+pub mod access;
+pub mod error;
+pub mod list;
+pub mod snapshot;
+
 use crate::ApiState;
 use crate::config::Feature;
-use crate::error::ApiError;
+use crate::http::error::ApiError;
 use axum::extract::State;
 use axum::http::Method;
 use axum::http::StatusCode;
@@ -68,13 +73,13 @@ const ENDPOINTS: &[Endpoint] = &[
     method: "GET",
     path: "/api/v1/connections",
     feature: Feature::State,
-    route: || get(crate::connections::list),
+    route: || get(crate::state::connections::list),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/connections/{conn_id}",
     feature: Feature::State,
-    route: || get(crate::connections::detail),
+    route: || get(crate::state::connections::detail),
   },
   Endpoint {
     method: "DELETE",
@@ -122,31 +127,31 @@ const ENDPOINTS: &[Endpoint] = &[
     method: "GET",
     path: "/api/v1/overview",
     feature: Feature::State,
-    route: || get(crate::overview::overview),
+    route: || get(crate::state::overview::overview),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/tracks",
     feature: Feature::State,
-    route: || get(crate::tracks::list),
+    route: || get(crate::state::tracks::list),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/tracks/{track_id}",
     feature: Feature::State,
-    route: || get(crate::tracks::detail),
+    route: || get(crate::state::tracks::detail),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/namespaces",
     feature: Feature::State,
-    route: || get(crate::overview::namespaces),
+    route: || get(crate::state::overview::namespaces),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/upstreams",
     feature: Feature::State,
-    route: || get(crate::overview::upstreams),
+    route: || get(crate::state::overview::upstreams),
   },
   Endpoint {
     method: "GET",
@@ -164,19 +169,19 @@ const ENDPOINTS: &[Endpoint] = &[
     method: "GET",
     path: "/api/v1/zones",
     feature: Feature::State,
-    route: || get(crate::zones::list),
+    route: || get(crate::state::zones::list),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/cluster",
     feature: Feature::State,
-    route: || get(crate::overview::cluster),
+    route: || get(crate::state::overview::cluster),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/events",
     feature: Feature::Events,
-    route: || get(crate::events::events),
+    route: || get(crate::qlog::events::events),
   },
   Endpoint {
     method: "GET",
@@ -238,7 +243,7 @@ pub fn router(state: Arc<ApiState>) -> Router {
     .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not_found").into_response() })
     .layer(middleware::from_fn_with_state(
       state.clone(),
-      crate::access::check,
+      crate::http::access::check,
     ))
     .with_state(state)
 }
@@ -255,7 +260,7 @@ pub fn metrics_router(state: Arc<ApiState>) -> Router {
     .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not_found").into_response() })
     .layer(middleware::from_fn_with_state(
       state.clone(),
-      crate::access::check_metrics_listener,
+      crate::http::access::check_metrics_listener,
     ))
     .with_state(state)
 }

@@ -13,12 +13,12 @@
 // limitations under the License.
 
 //! The `actions` feature: changes to the running relay. Every handler here needs
-//! the write token (see `access`), and every change is logged with the address
+//! the write token (see `http::access`), and every change is logged with the address
 //! that asked for it.
 
 use crate::ApiState;
-use crate::error::ApiError;
-use crate::list::parse_query;
+use crate::http::error::ApiError;
+use crate::http::list::parse_query;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{ConnectInfo, Path, Query, State};

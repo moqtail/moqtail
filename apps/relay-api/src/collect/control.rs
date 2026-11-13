@@ -19,7 +19,7 @@
 //! A request the relay sent goes upstream, to a publisher or a cluster peer; a
 //! request the relay received comes from downstream.
 
-use crate::zones::Zones;
+use crate::state::zones::Zones;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::transport::observe::ControlObserver;
 use relay_hooks::stats::{BUCKETS, Histogram};

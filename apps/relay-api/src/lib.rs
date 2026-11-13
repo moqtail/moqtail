@@ -19,34 +19,25 @@
 //! relay only through [`relay_hooks::Inspect`], and changes it only through
 //! [`relay_hooks::Actions`].
 
-mod access;
 mod actions;
+mod collect;
 pub mod config;
-mod connections;
-mod control;
-mod error;
-mod events;
+mod http;
 mod latency;
-mod list;
 mod mcp;
 mod metrics;
-mod metrics_track;
-mod overview;
 mod qlog;
-mod reporter;
-mod routes;
-mod snapshot;
-mod timeline;
-pub mod token;
-mod tracks;
-mod zones;
+mod state;
+
+/// MCP tokens, for the relay's `relay api-token` command.
+pub use mcp::token;
 
 use anyhow::{Context, Result};
+use collect::control::ControlTracker;
+use collect::reporter::{ApiReporter, Connection};
 use config::{ApiConfig, Feature};
-use control::ControlTracker;
+use http::snapshot::Cached;
 use relay_hooks::{Actions, ConnectionInfo, Inspect, Reporter, TrackInfo};
-use reporter::{ApiReporter, Connection};
-use snapshot::Cached;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -59,7 +50,7 @@ pub(crate) struct ApiState {
   pub actions: Arc<dyn Actions>,
   pub reporter: Arc<ApiReporter>,
   pub control: Arc<ControlTracker>,
-  pub zones: Arc<zones::Zones>,
+  pub zones: Arc<state::zones::Zones>,
   /// The data path's counters; `None` unless the `metrics` feature is on.
   pub counters: Option<Arc<relay_hooks::stats::RelayCounters>>,
   connections: Cached<Vec<ConnectionInfo>>,
@@ -72,7 +63,7 @@ impl ApiState {
     inspect: Arc<dyn Inspect>,
     actions: Arc<dyn Actions>,
   ) -> Self {
-    let zones = Arc::new(zones::Zones::new(&config.accounting_zones));
+    let zones = Arc::new(state::zones::Zones::new(&config.accounting_zones));
     let control = Arc::new(ControlTracker::new(config.upstream_timeout, zones.clone()));
     let latency = (config.has(Feature::Latency) || config.metrics_track.is_some()).then(|| {
       Arc::new(latency::Latency::new(
@@ -194,12 +185,12 @@ pub fn start(
         runtime.spawn(latency::copy_periodically(latency));
       }
       if let Some((relay, resource_id)) = state.config.metrics_track.clone() {
-        runtime.spawn(metrics_track::run(state.clone(), relay, resource_id));
+        runtime.spawn(metrics::track::run(state.clone(), relay, resource_id));
       }
       if let Some(listener) = metrics {
-        runtime.spawn(serve(listener, routes::metrics_router(state.clone())));
+        runtime.spawn(serve(listener, http::metrics_router(state.clone())));
       }
-      runtime.block_on(serve(main, routes::router(state)));
+      runtime.block_on(serve(main, http::router(state)));
     })?;
   info!("API listening on http://{bind}/api/v1");
   if let Some(metrics_bind) = metrics_bind {

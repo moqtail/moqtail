@@ -16,7 +16,7 @@
 //! assembled from the connection and track snapshots.
 
 use crate::ApiState;
-use crate::control::{ResultCounts, UpstreamCounts};
+use crate::collect::control::{ResultCounts, UpstreamCounts};
 use axum::Json;
 use axum::extract::State;
 use relay_hooks::{ClusterInfo, ConnectionState, NamespaceSubscriptionInfo, RelayStatus, Role};

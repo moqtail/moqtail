@@ -15,7 +15,7 @@
 //! Sorting and paging of list endpoints. The relay answers with one page, so a
 //! client asking for "the top 20 by bytes out" on a busy relay gets 20 entries.
 
-use crate::error::ApiError;
+use crate::http::error::ApiError;
 use axum::extract::Query;
 use axum::extract::rejection::QueryRejection;
 use axum::http::StatusCode;

@@ -17,8 +17,10 @@
 //! Per-connection and per-track numbers are left out on purpose: their number has no
 //! bound, which Prometheus handles badly. They are in `/connections` and `/tracks`.
 
+pub mod track;
+
 use crate::ApiState;
-use crate::list::parse_query;
+use crate::http::list::parse_query;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::http::header;
@@ -41,7 +43,7 @@ pub struct MetricsQuery {
 pub async fn metrics(
   State(state): State<Arc<ApiState>>,
   query: Result<Query<MetricsQuery>, QueryRejection>,
-) -> Result<impl IntoResponse, crate::error::ApiError> {
+) -> Result<impl IntoResponse, crate::http::error::ApiError> {
   let query = parse_query(query)?;
   let mut out = Exposition::new(query.filter);
   render(&state, &mut out).await;
@@ -450,8 +452,8 @@ async fn render(state: &ApiState, out: &mut Exposition) {
     );
   }
 
-  let zones = crate::zones::reports(&state.zones, &tracks);
-  let traffic = |pick: fn(&crate::zones::ZoneReport) -> (u64, u64)| -> Vec<(String, f64)> {
+  let zones = crate::state::zones::reports(&state.zones, &tracks);
+  let traffic = |pick: fn(&crate::state::zones::ZoneReport) -> (u64, u64)| -> Vec<(String, f64)> {
     zones
       .iter()
       .flat_map(|z| {

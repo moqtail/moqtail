@@ -17,8 +17,8 @@
 //! slowlog; and `/api/v1/latency`.
 
 use crate::ApiState;
-use crate::error::ApiError;
-use crate::list::parse_query;
+use crate::http::error::ApiError;
+use crate::http::list::parse_query;
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};

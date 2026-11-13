@@ -16,7 +16,7 @@
 //! startup rules that refuse configurations which would expose the API.
 
 use crate::latency::{LatencyDetail, SlowlogConfig};
-use crate::token::TokenHash;
+use crate::mcp::token::TokenHash;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -339,7 +339,7 @@ impl ApiConfig {
     let metrics_track = match (settings.metrics_track_enable, settings.relay_addr) {
       (true, Some(addr)) => Some((
         addr,
-        crate::metrics_track::resource_id(settings.metrics_resource_id.as_deref())?,
+        crate::metrics::track::resource_id(settings.metrics_resource_id.as_deref())?,
       )),
       (true, None) => bail!("metrics_track_enable needs the relay's address"),
       (false, _) => None,

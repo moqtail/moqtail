@@ -357,12 +357,12 @@ mod tests {
 
   #[test]
   fn the_shared_trace_gives_the_same_timeline_as_the_dashboard() {
-    let events: Vec<Value> = include_str!("../testdata/timeline.sqlog")
+    let events: Vec<Value> = include_str!("../../testdata/timeline.sqlog")
       .lines()
       .filter_map(|l| serde_json::from_str(l.trim_start_matches('\u{1e}')).ok())
       .collect();
     let expected: Value =
-      serde_json::from_str(include_str!("../testdata/timeline.expected.json")).unwrap();
+      serde_json::from_str(include_str!("../../testdata/timeline.expected.json")).unwrap();
     let mut timeline = build(&events, 100);
     timeline.as_object_mut().unwrap().remove("truncated");
     assert_eq!(as_floats(timeline), as_floats(expected));

@@ -16,7 +16,7 @@
 //! including the access checks, as a client at a given address would.
 
 use crate::config::{ApiConfig, ApiSettings};
-use crate::{ApiState, routes};
+use crate::{ApiState, http as routes};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
@@ -723,7 +723,7 @@ fn mcp_client(write: bool) -> Client {
     ]),
     read_token: Some("r3ad".into()),
     write_token: Some("wr1te".into()),
-    mcp_token_hash: Some(crate::token::TokenHash::new(MCP_TOKEN).to_string()),
+    mcp_token_hash: Some(crate::mcp::token::TokenHash::new(MCP_TOKEN).to_string()),
     mcp_write: write,
     mcp_name: Some("interop-paris".into()),
     ..Default::default()
@@ -994,7 +994,7 @@ fn mcp_needs_a_token_hash_to_start() {
   assert!(format!("{error:#}").contains("sha256d"));
   let (_, warnings) = ApiConfig::from_settings(ApiSettings {
     features: Some(vec!["mcp".into()]),
-    mcp_token_hash: Some(crate::token::TokenHash::new("t").to_string()),
+    mcp_token_hash: Some(crate::mcp::token::TokenHash::new("t").to_string()),
     mcp_write: true,
     ..Default::default()
   })

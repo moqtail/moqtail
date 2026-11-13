@@ -20,8 +20,8 @@
 //! events are built only while someone listens.
 
 use crate::ApiState;
-use crate::error::ApiError;
-use crate::list::parse_query;
+use crate::http::error::ApiError;
+use crate::http::list::parse_query;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;

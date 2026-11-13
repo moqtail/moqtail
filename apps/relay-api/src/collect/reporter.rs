@@ -15,9 +15,9 @@
 //! The API's side of [`relay_hooks::Reporter`]: what it keeps of the events the
 //! relay core reports.
 
-use crate::control::{ConnectionCounts, ControlTracker};
+use crate::collect::control::{ConnectionCounts, ControlTracker};
 use crate::latency::Latency;
-use crate::zones::Zones;
+use crate::state::zones::Zones;
 use relay_hooks::stats::{SubscriptionStats, ZoneCounters};
 use relay_hooks::{ConnectionInfo, Reporter};
 use serde::Serialize;

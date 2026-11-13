@@ -15,9 +15,12 @@
 //! `/api/v1/qlog`: the relay's qlog trace files, served as written, and followed
 //! live while their connection is open.
 
+pub mod events;
+pub mod timeline;
+
 use crate::ApiState;
-use crate::error::ApiError;
-use crate::list::parse_query;
+use crate::http::error::ApiError;
+use crate::http::list::parse_query;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::rejection::QueryRejection;

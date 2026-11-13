@@ -16,7 +16,7 @@
 //! the token, and the browser's cross-origin rules.
 
 use crate::ApiState;
-use crate::error::ApiError;
+use crate::http::error::ApiError;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;

@@ -14,16 +14,19 @@
  * limitations under the License.
  */
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError } from '../api/client';
 import type { QlogEvent } from '../api/types';
 import { Card, ErrorNote } from '../components/ui';
 import { useDashboard } from '../context';
-import { SseParser } from '../lib/stream';
 import { href } from '../lib/route';
+import { SseParser } from '../lib/stream';
 
 /** Lines kept on screen; older ones are dropped so a busy relay cannot fill memory. */
 const MAX_LINES = 1000;
+/** How often new lines are drawn. Events can arrive hundreds of times a second;
+ *  drawing each one would keep the page too busy to type in. */
+const FLUSH_MS = 500;
 
 interface Line {
   key: number;
@@ -32,37 +35,63 @@ interface Line {
   text?: string;
 }
 
+interface Filter {
+  conn: string;
+  name: string;
+}
+
+/** Data stream headers: one per stream, so they far outnumber control messages. */
+export function isStreamHeader(name: string): boolean {
+  return name.startsWith('moqt:subgroup_header') || name.startsWith('moqt:fetch_header');
+}
+
 export function Events() {
   const { api } = useDashboard();
-  const [conn, setConn] = useState('');
-  const [name, setName] = useState('');
+  // What is typed, and what is applied: the stream restarts only on Apply.
+  const [draft, setDraft] = useState<Filter>({ conn: '', name: '' });
+  const [filter, setFilter] = useState<Filter>({ conn: '', name: '' });
+  const [streams, setStreams] = useState(false);
   const [paused, setPaused] = useState(false);
   const [lines, setLines] = useState<Line[]>([]);
   const [error, setError] = useState<ApiError>();
+  const streamsRef = useRef(streams);
+  streamsRef.current = streams;
 
   useEffect(() => {
     if (paused) return;
     const controller = new AbortController();
     const parser = new SseParser();
     let key = 0;
+    let pending: Line[] = [];
+    const flush = setInterval(() => {
+      if (pending.length === 0) return;
+      const added = pending.reverse();
+      pending = [];
+      setLines(previous => [...added, ...previous].slice(0, MAX_LINES));
+    }, FLUSH_MS);
     setError(undefined);
     api
       .stream(
         '/events',
-        { conn: conn || undefined, name: name || undefined },
+        { conn: filter.conn || undefined, name: filter.name || undefined },
         text => {
-          const added: Line[] = parser.push(text).map(m => {
+          for (const m of parser.push(text)) {
             if (m.event === 'qlog') {
+              let event: QlogEvent;
               try {
-                return { key: key++, kind: m.event, event: JSON.parse(m.data) as QlogEvent };
+                event = JSON.parse(m.data) as QlogEvent;
               } catch {
-                // An unreadable event is shown as text.
+                pending.push({ key: key++, kind: m.event, text: m.data });
+                continue;
               }
+              if (!streamsRef.current && isStreamHeader(event.name)) continue;
+              pending.push({ key: key++, kind: m.event, event });
+            } else {
+              pending.push({ key: key++, kind: m.event, text: m.data });
             }
-            return { key: key++, kind: m.event, text: m.data };
-          });
-          if (added.length)
-            setLines(previous => [...added.reverse(), ...previous].slice(0, MAX_LINES));
+          }
+          // Only the newest lines can be shown, so a burst is cut early.
+          if (pending.length > MAX_LINES) pending = pending.slice(-MAX_LINES);
         },
         controller.signal,
       )
@@ -71,31 +100,53 @@ export function Events() {
           setError(e instanceof ApiError ? e : new ApiError(0, 'error', String(e)));
         }
       });
-    return () => controller.abort();
-  }, [api, conn, name, paused]);
+    return () => {
+      clearInterval(flush);
+      controller.abort();
+    };
+  }, [api, filter, paused]);
+
+  const changed = draft.conn !== filter.conn || draft.name !== filter.name;
 
   return (
     <Card
       title="Live events"
       actions={
-        <div class="flex flex-wrap items-center gap-2 text-sm">
+        <form
+          class="flex flex-wrap items-center gap-2 text-xs text-neutral-400"
+          onSubmit={e => {
+            e.preventDefault();
+            setFilter({ conn: draft.conn.trim(), name: draft.name.trim() });
+            setLines([]);
+          }}
+        >
           <label>
             Connection{' '}
             <input
-              class="w-20"
+              class="w-28"
               inputMode="numeric"
-              value={conn}
-              onChange={e => setConn(e.currentTarget.value.trim())}
+              placeholder="any"
+              value={draft.conn}
+              onInput={e => setDraft({ ...draft, conn: e.currentTarget.value })}
             />
           </label>
           <label>
-            Event name{' '}
+            Event name starts with{' '}
             <input
               class="w-48"
               placeholder="moqt:control_message"
-              value={name}
-              onChange={e => setName(e.currentTarget.value.trim())}
+              value={draft.name}
+              onInput={e => setDraft({ ...draft, name: e.currentTarget.value })}
             />
+          </label>
+          <button class={changed ? 'btn btn-primary' : 'btn'}>Apply</button>
+          <label class="flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={streams}
+              onChange={e => setStreams(e.currentTarget.checked)}
+            />
+            Data stream headers
           </label>
           <button type="button" class="btn" onClick={() => setPaused(!paused)}>
             {paused ? 'Resume' : 'Pause'}
@@ -103,13 +154,14 @@ export function Events() {
           <button type="button" class="btn" onClick={() => setLines([])}>
             Clear
           </button>
-        </div>
+        </form>
       }
     >
       {error && <ErrorNote error={error} />}
       <p class="mb-2 text-xs text-neutral-500">
-        Newest first, the last {MAX_LINES} kept.{' '}
+        Newest first, the last {MAX_LINES} kept, updated twice a second.{' '}
         {paused ? 'Paused: nothing is received.' : 'Receiving.'}
+        {!streams && ' Data stream headers are hidden.'}
       </p>
       <ol class="max-h-[70vh] overflow-auto font-mono text-xs" aria-live="off">
         {lines.map(line => (
@@ -119,8 +171,8 @@ export function Events() {
                 <a class="link" href={href('connections', line.event.conn_id)}>
                   [{line.event.conn_id}]
                 </a>{' '}
-                <span class="font-semibold">{line.event.name}</span>{' '}
-                {JSON.stringify(line.event.data)}
+                <span class="font-semibold text-neutral-100">{line.event.name}</span>{' '}
+                <span class="text-neutral-400">{JSON.stringify(line.event.data)}</span>
               </>
             ) : (
               <span class="text-neutral-500">

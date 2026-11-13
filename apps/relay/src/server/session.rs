@@ -502,6 +502,10 @@ impl Session {
     );
     context.connection.closed().await;
     super::inspect::report_closed(&context).await;
+    if qlog::enabled() {
+      let close = super::inspect::close_info(&context.connection);
+      qlog::connection_closed(context.connection_id, &close.by, close.code, &close.reason);
+    }
     qlog::close(context.connection_id);
 
     // set the connection closed flag

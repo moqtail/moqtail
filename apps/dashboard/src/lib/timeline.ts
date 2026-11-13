@@ -50,13 +50,30 @@ export interface TimelineMessage {
 export type TimelineEntry =
   | { kind: 'request'; request: TimelineMessage; responses: TimelineMessage[] }
   | { kind: 'message'; message: TimelineMessage }
-  | { kind: 'error'; at: number; message: string; hex: string };
+  | { kind: 'error'; at: number; message: string; hex: string }
+  /** A data stream cut short: RESET_STREAM or STOP_SENDING, with its error code. */
+  | {
+      kind: 'stream_end';
+      at: number;
+      direction: Direction;
+      streamId: number;
+      end: 'reset' | 'stop_sending';
+      errorCode: number;
+      /** The track or fetch the stream carried, when its header was seen. */
+      label: string | null;
+    }
+  /** How the connection ended. */
+  | { kind: 'close'; at: number; by: string; errorCode: number | null; reason: string };
 
 export interface DataStreams {
   direction: Direction;
   /** `track_alias=N` or `fetch request_id=N`. */
   label: string;
   streams: number;
+  /** Streams that ended with FIN. */
+  fin: number;
+  /** Streams cut short with RESET_STREAM or STOP_SENDING. */
+  cut: number;
   groups?: { first: number; last: number; distinct: number };
 }
 
@@ -132,6 +149,8 @@ export function buildTimeline(events: QlogEvent[]): Timeline {
   const entries: TimelineEntry[] = [];
   const openRequests = new Map<number, Extract<TimelineEntry, { kind: 'request' }>>();
   const data = new Map<string, DataStreams & { groupIds?: Set<number> }>();
+  // Which data group each stream belongs to, from its header.
+  const streamKeys = new Map<string, string>();
 
   for (const event of timed) {
     const at = (event.time - start) / 1000;
@@ -167,9 +186,12 @@ export function buildTimeline(events: QlogEvent[]): Timeline {
         direction,
         label: `track_alias=${String(d.track_alias)}`,
         streams: 0,
+        fin: 0,
+        cut: 0,
         groupIds: new Set<number>(),
       };
       entry.streams += 1;
+      streamKeys.set(`${direction} ${String(d.stream_id)}`, key);
       entry.groupIds!.add(Number(d.group_id));
       data.set(key, entry);
     } else if (event.name.startsWith('moqt:fetch_header')) {
@@ -178,9 +200,42 @@ export function buildTimeline(events: QlogEvent[]): Timeline {
         direction,
         label: `fetch request_id=${String(d.request_id)}`,
         streams: 0,
+        fin: 0,
+        cut: 0,
       };
       entry.streams += 1;
+      streamKeys.set(`${direction} ${String(d.stream_id)}`, key);
       data.set(key, entry);
+    } else if (event.name.startsWith('moqtail:stream_end')) {
+      // STOP_SENDING travels against the data: the stream it names is the other
+      // side's, so its header was seen in the opposite direction.
+      const end = String(d.end);
+      const dataDirection: Direction =
+        end === 'stop_sending' ? (direction === '->' ? '<-' : '->') : direction;
+      const key = streamKeys.get(`${dataDirection} ${String(d.stream_id)}`);
+      const group = key === undefined ? undefined : data.get(key);
+      if (end === 'fin') {
+        if (group) group.fin += 1;
+      } else {
+        if (group) group.cut += 1;
+        entries.push({
+          kind: 'stream_end',
+          at,
+          direction,
+          streamId: Number(d.stream_id),
+          end: end === 'reset' ? 'reset' : 'stop_sending',
+          errorCode: Number(d.error_code),
+          label: group?.label ?? null,
+        });
+      }
+    } else if (event.name === 'moqtail:connection_closed') {
+      entries.push({
+        kind: 'close',
+        at,
+        by: String(d.by),
+        errorCode: typeof d.error_code === 'number' ? d.error_code : null,
+        reason: String(d.reason ?? ''),
+      });
     } else if (event.name === 'loglevel:error') {
       entries.push({
         kind: 'error',

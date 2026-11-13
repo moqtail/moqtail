@@ -234,6 +234,43 @@ fn stream_header_json(stream_id: u64, raw: &[u8]) -> Option<(&'static str, Value
   Some((name, data))
 }
 
+/// How a data stream ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+  /// FIN: the sender finished the stream after its last byte.
+  Fin,
+  /// RESET_STREAM with this code: the sender abandoned the stream.
+  Reset(u64),
+  /// STOP_SENDING with this code: the receiver asked the sender to stop.
+  StopSending(u64),
+}
+
+/// Records how a data stream ended: `created` for an end this side sent (FIN,
+/// RESET_STREAM, STOP_SENDING), otherwise one the peer sent. These are QUIC frames,
+/// but they carry MoQ meaning, such as a subgroup that was cut short.
+pub fn stream_end(conn: usize, stream_id: u64, created: bool, end: StreamEnd) {
+  let Some(q) = active() else { return };
+  let data = match end {
+    StreamEnd::Fin => json!({ "stream_id": stream_id, "end": "fin" }),
+    StreamEnd::Reset(code) => {
+      json!({ "stream_id": stream_id, "end": "reset", "error_code": code })
+    }
+    StreamEnd::StopSending(code) => {
+      json!({ "stream_id": stream_id, "end": "stop_sending", "error_code": code })
+    }
+  };
+  let suffix = if created { "created" } else { "parsed" };
+  q.emit(conn, event(&format!("moqtail:stream_end_{suffix}"), data));
+}
+
+/// Records why the connection closed: `by` is `peer`, `relay` or `network`, with
+/// the error code when one was sent.
+pub fn connection_closed(conn: usize, by: &str, error_code: Option<u64>, reason: &str) {
+  let Some(q) = active() else { return };
+  let data = json!({ "by": by, "error_code": error_code, "reason": reason });
+  q.emit(conn, event("moqtail:connection_closed", data));
+}
+
 /// Records bytes on a control or request stream that did not parse.
 pub(crate) fn parse_error(conn: usize, stream_id: u64, raw: &[u8]) {
   let Some(q) = active() else { return };

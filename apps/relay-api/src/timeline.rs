@@ -163,6 +163,10 @@ struct Streams {
   direction: &'static str,
   label: String,
   streams: u64,
+  /// Streams that ended with FIN.
+  fin: u64,
+  /// Streams cut short with RESET_STREAM or STOP_SENDING.
+  cut: u64,
   groups: Option<BTreeSet<u64>>,
 }
 
@@ -194,6 +198,8 @@ pub fn build(events: &[Value], limit: usize) -> Value {
   // Data streams in the order their first stream appeared, found by key.
   let mut data: Vec<Streams> = Vec::new();
   let mut data_index: HashMap<String, usize> = HashMap::new();
+  // Which data group each stream belongs to, from its header.
+  let mut stream_keys: HashMap<String, String> = HashMap::new();
 
   for event in timed {
     let at = (event["time"].as_f64().unwrap_or(0.0) - start) / 1000.0;
@@ -237,35 +243,79 @@ pub fn build(events: &[Value], limit: usize) -> Value {
       }
     } else if name.starts_with("moqt:subgroup_header") {
       let alias = plain(&d["track_alias"]);
-      let entry = streams_entry(
-        &mut data,
-        &mut data_index,
-        format!("{direction} alias {alias}"),
-        || Streams {
-          direction,
-          label: format!("track_alias={alias}"),
-          streams: 0,
-          groups: Some(BTreeSet::new()),
-        },
+      let key = format!("{direction} alias {alias}");
+      stream_keys.insert(
+        format!("{direction} {}", plain(&d["stream_id"])),
+        key.clone(),
       );
+      let entry = streams_entry(&mut data, &mut data_index, key, || Streams {
+        direction,
+        label: format!("track_alias={alias}"),
+        streams: 0,
+        fin: 0,
+        cut: 0,
+        groups: Some(BTreeSet::new()),
+      });
       entry.streams += 1;
       if let (Some(groups), Some(group)) = (&mut entry.groups, d["group_id"].as_u64()) {
         groups.insert(group);
       }
     } else if name.starts_with("moqt:fetch_header") {
       let request = plain(&d["request_id"]);
-      let entry = streams_entry(
-        &mut data,
-        &mut data_index,
-        format!("{direction} fetch {request}"),
-        || Streams {
-          direction,
-          label: format!("fetch request_id={request}"),
-          streams: 0,
-          groups: None,
-        },
+      let key = format!("{direction} fetch {request}");
+      stream_keys.insert(
+        format!("{direction} {}", plain(&d["stream_id"])),
+        key.clone(),
       );
+      let entry = streams_entry(&mut data, &mut data_index, key, || Streams {
+        direction,
+        label: format!("fetch request_id={request}"),
+        streams: 0,
+        fin: 0,
+        cut: 0,
+        groups: None,
+      });
       entry.streams += 1;
+    } else if name.starts_with("moqtail:stream_end") {
+      // STOP_SENDING travels against the data: the stream it names is the other
+      // side's, so its header was seen in the opposite direction.
+      let end = d["end"].as_str().unwrap_or("");
+      let data_direction = match (end, direction) {
+        ("stop_sending", "->") => "<-",
+        ("stop_sending", _) => "->",
+        _ => direction,
+      };
+      let group = stream_keys
+        .get(&format!("{data_direction} {}", plain(&d["stream_id"])))
+        .and_then(|key| data_index.get(key))
+        .map(|&i| &mut data[i]);
+      if end == "fin" {
+        if let Some(group) = group {
+          group.fin += 1;
+        }
+      } else {
+        let label = group.map(|g| {
+          g.cut += 1;
+          g.label.clone()
+        });
+        entries.push(json!({
+          "kind": "stream_end",
+          "at": at,
+          "direction": direction,
+          "stream_id": d["stream_id"],
+          "end": if end == "reset" { "reset" } else { "stop_sending" },
+          "error_code": d["error_code"],
+          "label": label,
+        }));
+      }
+    } else if name == "moqtail:connection_closed" {
+      entries.push(json!({
+        "kind": "close",
+        "at": at,
+        "by": plain(&d["by"]),
+        "error_code": if d["error_code"].is_number() { d["error_code"].clone() } else { Value::Null },
+        "reason": d["reason"].as_str().unwrap_or(""),
+      }));
     } else if name == "loglevel:error" {
       entries.push(json!({
         "kind": "error",
@@ -279,7 +329,13 @@ pub fn build(events: &[Value], limit: usize) -> Value {
   let data: Vec<Value> = data
     .into_iter()
     .map(|s| {
-      let mut entry = json!({ "direction": s.direction, "label": s.label, "streams": s.streams });
+      let mut entry = json!({
+        "direction": s.direction,
+        "label": s.label,
+        "streams": s.streams,
+        "fin": s.fin,
+        "cut": s.cut,
+      });
       if let Some(groups) = s.groups.filter(|g| !g.is_empty()) {
         entry["groups"] = json!({
           "first": groups.first(),

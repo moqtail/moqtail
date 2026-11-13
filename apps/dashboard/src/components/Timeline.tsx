@@ -121,7 +121,7 @@ export function Timeline(props: { connId: number; open: boolean }) {
     >
       {error && <ErrorNote error={error} />}
       {timeline.peerSetup && (
-        <p class="mb-2 text-sm">
+        <p class="mb-2 text-xs">
           <span class="text-neutral-500">Peer SETUP:</span> {timeline.peerSetup.text}
         </p>
       )}
@@ -133,6 +133,32 @@ export function Timeline(props: { connId: number; open: boolean }) {
                 <span class="inline-block w-20 text-right">{entry.at.toFixed(3)}s</span> !!{' '}
                 {entry.message}
                 <div class="ml-24 break-all">{entry.hex}</div>
+              </li>
+            );
+          }
+          if (entry.kind === 'stream_end') {
+            const text = `${entry.end === 'reset' ? 'RESET_STREAM' : 'STOP_SENDING'} stream ${entry.streamId}${entry.label ? ` (${entry.label})` : ''} error_code=${entry.errorCode}`;
+            return matches(text) ? (
+              <li key={i} class="text-amber-300">
+                <span class="inline-block w-20 text-right text-neutral-500">
+                  {entry.at.toFixed(3)}s
+                </span>{' '}
+                <span aria-label={entry.direction === '<-' ? 'received' : 'sent'}>
+                  {entry.direction}
+                </span>{' '}
+                {text}
+              </li>
+            ) : null;
+          }
+          if (entry.kind === 'close') {
+            return (
+              <li key={i} class="mt-1 border-t border-white/6 pt-1 text-red-300">
+                <span class="inline-block w-20 text-right text-neutral-500">
+                  {entry.at.toFixed(3)}s
+                </span>{' '}
+                CONNECTION CLOSED by {entry.by}
+                {entry.errorCode !== null && ` error_code=${entry.errorCode}`}
+                {entry.reason && ` '${entry.reason}'`}
               </li>
             );
           }
@@ -155,13 +181,15 @@ export function Timeline(props: { connId: number; open: boolean }) {
         })}
       </ol>
       {timeline.data.length > 0 && (
-        <ul class="mt-3 text-sm">
+        <ul class="mt-3 text-xs text-neutral-300">
           {timeline.data.map(d => (
             <li key={`${d.direction}${d.label}`}>
               data {d.direction === '<-' ? 'from peer' : 'to peer'}: {d.label}: {d.streams}{' '}
               stream(s)
               {d.groups &&
                 `, groups ${d.groups.first}..${d.groups.last} (${d.groups.distinct} distinct)`}
+              {`; ${d.fin} ended with FIN`}
+              {d.cut > 0 && <span class="text-amber-300">, {d.cut} cut short</span>}
             </li>
           ))}
         </ul>

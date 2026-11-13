@@ -39,6 +39,31 @@
         "text": "GOAWAY",
         "hex": "10001d1a6d6f71743a2f2f6261636b75702e6578616d706c653a343433338bb8"
       }
+    },
+    {
+      "kind": "stream_end",
+      "at": 8.551295166015626,
+      "direction": "->",
+      "stream_id": 19,
+      "end": "reset",
+      "error_code": 3,
+      "label": "track_alias=0"
+    },
+    {
+      "kind": "stream_end",
+      "at": 8.552295166015625,
+      "direction": "<-",
+      "stream_id": 23,
+      "end": "stop_sending",
+      "error_code": 2,
+      "label": "track_alias=0"
+    },
+    {
+      "kind": "close",
+      "at": 8.553295166015625,
+      "by": "peer",
+      "error_code": 0,
+      "reason": "bye"
     }
   ],
   "data": [
@@ -46,6 +71,8 @@
       "direction": "->",
       "label": "track_alias=0",
       "streams": 4,
+      "fin": 2,
+      "cut": 2,
       "groups": {
         "first": 2,
         "last": 5,

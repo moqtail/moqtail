@@ -86,8 +86,11 @@ impl From<quinn::SendDatagramError> for TransportConnectionError {
 
 #[derive(Debug, Error)]
 pub enum TransportWriteError {
-  #[error("stream closed or stopped")]
+  #[error("stream closed")]
   ClosedOrStopped,
+  /// The peer asked us to stop with STOP_SENDING and this application error code.
+  #[error("stream stopped by the peer with code {0:#x}")]
+  Stopped(u64),
   #[error("{0}")]
   Other(String),
 }
@@ -96,7 +99,8 @@ impl From<wtransport::error::StreamWriteError> for TransportWriteError {
   fn from(e: wtransport::error::StreamWriteError) -> Self {
     use wtransport::error::StreamWriteError as E;
     match e {
-      E::Closed | E::Stopped(_) => Self::ClosedOrStopped,
+      E::Closed => Self::ClosedOrStopped,
+      E::Stopped(code) => Self::Stopped(code.into_inner()),
       other => Self::Other(format!("{other:?}")),
     }
   }
@@ -106,7 +110,8 @@ impl From<quinn::WriteError> for TransportWriteError {
   fn from(e: quinn::WriteError) -> Self {
     use quinn::WriteError as E;
     match e {
-      E::ClosedStream | E::Stopped(_) => Self::ClosedOrStopped,
+      E::ClosedStream => Self::ClosedOrStopped,
+      E::Stopped(code) => Self::Stopped(code.into_inner()),
       other => Self::Other(format!("{other:?}")),
     }
   }

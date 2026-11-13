@@ -8,3 +8,8 @@
 {"time":1794569280235.037,"name":"moqt:subgroup_header_created","data":{"stream_id":19,"track_alias":0,"group_id":4,"subgroup_id_mode":2,"contains_end_of_group":true,"properties_present":true,"subgroup_id":0,"publisher_priority":128}}
 {"time":1794569280581.0781,"name":"moqt:subgroup_header_created","data":{"stream_id":23,"track_alias":0,"group_id":5,"subgroup_id_mode":2,"contains_end_of_group":true,"properties_present":true,"subgroup_id":0,"publisher_priority":128}}
 {"time":1794569288383.343,"name":"moqt:control_message_created","data":{"stream_id":7,"length":32,"message":{"new_session_uri":{"length":26,"data":"6d6f71743a2f2f6261636b75702e6578616d706c653a34343333"},"timeout":3000,"type":"goaway"},"raw":{"length":32,"data":"10001d1a6d6f71743a2f2f6261636b75702e6578616d706c653a343433338bb8"}}}
+{"time":1794569288384.343,"name":"moqtail:stream_end_created","data":{"stream_id":11,"end":"fin"}}
+{"time":1794569288385.343,"name":"moqtail:stream_end_created","data":{"stream_id":15,"end":"fin"}}
+{"time":1794569288386.343,"name":"moqtail:stream_end_created","data":{"stream_id":19,"end":"reset","error_code":3}}
+{"time":1794569288387.343,"name":"moqtail:stream_end_parsed","data":{"stream_id":23,"end":"stop_sending","error_code":2}}
+{"time":1794569288388.343,"name":"moqtail:connection_closed","data":{"by":"peer","error_code":0,"reason":"bye"}}

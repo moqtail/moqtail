@@ -98,6 +98,8 @@ describe('buildTimeline', () => {
         direction: '->',
         label: 'track_alias=5',
         streams: 2,
+        fin: 0,
+        cut: 0,
         groups: { first: 7, last: 8, distinct: 2 },
       },
     ]);

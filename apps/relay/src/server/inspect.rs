@@ -573,7 +573,7 @@ fn quic_stats(connection: &TransportConnection) -> QuicStats {
   }
 }
 
-fn close_info(connection: &TransportConnection) -> CloseInfo {
+pub(crate) fn close_info(connection: &TransportConnection) -> CloseInfo {
   let at_ms = millis_since_epoch(SystemTime::now());
   let (by, code, reason) = match connection.close_reason() {
     Some(ConnectionError::ApplicationClosed(close)) => (

@@ -572,7 +572,7 @@ impl MOQTClient {
           );
           anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_key, e)
         })?;
-        qlog::stream_end(self.connection_id, quic_stream_id, true, StreamEnd::Fin);
+        self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
         self
           .ssts
           .on_stream_closed(stream_key.stream_id.relay_track_id)
@@ -584,7 +584,7 @@ impl MOQTClient {
         finish_result = stream.finish() => {
             self.ssts.on_stream_closed(stream_key.stream_id.relay_track_id).await;
             if finish_result.is_ok() {
-              qlog::stream_end(self.connection_id, quic_stream_id, true, StreamEnd::Fin);
+              self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
             }
             finish_result.map_err(|e| anyhow::anyhow!(
                 "close_stream | Failed to finish ({}): {:?}", stream_key, e
@@ -602,7 +602,7 @@ impl MOQTClient {
             // late delivery apart from a cancelled or failed one.
             let code = StreamResetCode::DeliveryTimeout.to_u64();
             if stream.reset(code).is_ok() {
-              qlog::stream_end(self.connection_id, quic_stream_id, true, StreamEnd::Reset(code));
+              self.record_stream_end(quic_stream_id, true, StreamEnd::Reset(code));
             }
             let _ = self.ssts.abr_tx.try_send(ssts::AbrMessage::StreamTimeout {
                 group_id,
@@ -618,6 +618,15 @@ impl MOQTClient {
         stream_key, self.connection_id
       );
       Ok(false)
+    }
+  }
+
+  /// Records how one of this client's data streams ended. Nothing is recorded once
+  /// the connection has closed: a FIN or RESET_STREAM then never reaches the peer,
+  /// and it would land after the trace's close.
+  fn record_stream_end(&self, stream_id: u64, created: bool, end: StreamEnd) {
+    if qlog::enabled() && self.connection.close_reason().is_none() {
+      qlog::stream_end(self.connection_id, stream_id, created, end);
     }
   }
 
@@ -660,12 +669,7 @@ impl MOQTClient {
     if let Some(stream) = self.release_stream(stream_key).await {
       let mut stream = stream.lock().await;
       match stream.reset(code) {
-        Ok(()) => qlog::stream_end(
-          self.connection_id,
-          stream.id(),
-          true,
-          StreamEnd::Reset(code),
-        ),
+        Ok(()) => self.record_stream_end(stream.id(), true, StreamEnd::Reset(code)),
         Err(e) => warn!("Error resetting data stream {}: {:?}", stream_key, e),
       }
     }
@@ -709,12 +713,7 @@ impl MOQTClient {
         Ok(..) => {}
         Err(e) => {
           if let TransportWriteError::Stopped(code) = &e {
-            qlog::stream_end(
-              self.connection_id,
-              stream.id(),
-              false,
-              StreamEnd::StopSending(*code),
-            );
+            self.record_stream_end(stream.id(), false, StreamEnd::StopSending(*code));
           }
           if matches!(
             e,

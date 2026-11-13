@@ -23,6 +23,8 @@
 use super::session::client::MOQTClient;
 use super::session::session_context::SessionContext;
 use super::subscription::Subscription;
+#[cfg(feature = "observability")]
+use super::track::track_manager::TrackManager;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::Tuple;
@@ -33,7 +35,11 @@ use relay_hooks::{
   CloseInfo, ConnectionInfo, ConnectionState, PublishedTrackInfo, QuicStats, Role, SetupOptionInfo,
   SubscriptionInfo,
 };
+#[cfg(feature = "observability")]
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 use wtransport::quinn::ConnectionError;
 
 #[cfg(feature = "observability")]
@@ -129,6 +135,7 @@ mod relay {
   use super::LOG_FILTER;
   use super::{
     connection_info, location_text, millis_since_epoch, namespace_text, subscription_info,
+    subscriptions_by_connection,
   };
   use crate::server::Server;
   use crate::server::session::client::MOQTClient;
@@ -177,9 +184,13 @@ mod relay {
           .cloned()
           .collect();
         let draining = self.0.draining.load(Ordering::Relaxed);
+        let mut by_connection = subscriptions_by_connection(&self.0.track_manager).await;
         let mut connections = Vec::with_capacity(clients.len());
         for client in clients {
-          connections.push(connection_info(&client, draining, None).await);
+          let on_tracks = by_connection
+            .remove(&client.connection_id)
+            .unwrap_or_default();
+          connections.push(connection_info(&client, &on_tracks, draining, None).await);
         }
         connections
       })
@@ -468,13 +479,38 @@ pub(crate) async fn report_closed(context: &SessionContext) {
   }
   if let Some(client) = context.get_client().await {
     let close = close_info(&context.connection);
-    let info = connection_info(&client, false, Some(close)).await;
+    #[cfg(feature = "observability")]
+    let on_tracks = subscriptions_by_connection(&context.track_manager)
+      .await
+      .remove(&client.connection_id)
+      .unwrap_or_default();
+    #[cfg(not(feature = "observability"))]
+    let on_tracks = Vec::new();
+    let info = connection_info(&client, &on_tracks, false, Some(close)).await;
     reporter.connection_closed(info);
   }
 }
 
+#[cfg(feature = "observability")]
+/// Every track's subscriptions, by subscriber connection. A track holds both the
+/// subscriptions a SUBSCRIBE made and those the relay opened by pushing a PUBLISH
+/// for a SUBSCRIBE_TRACKS; the connection itself only lists the first kind.
+async fn subscriptions_by_connection(
+  tracks: &TrackManager,
+) -> HashMap<usize, Vec<Arc<RwLock<Subscription>>>> {
+  let mut map: HashMap<usize, Vec<_>> = HashMap::new();
+  for track in tracks.all_tracks().await {
+    for subscription in track.subscription_manager.all().await {
+      let conn = subscription.read().await.subscriber().connection_id;
+      map.entry(conn).or_default().push(subscription);
+    }
+  }
+  map
+}
+
 async fn connection_info(
   client: &MOQTClient,
+  on_tracks: &[Arc<RwLock<Subscription>>],
   draining: bool,
   close: Option<CloseInfo>,
 ) -> ConnectionInfo {
@@ -498,7 +534,15 @@ async fn connection_info(
   published_tracks.sort_by_key(|t| t.request_id);
 
   let mut subscriptions = Vec::new();
+  for subscription in on_tracks {
+    let subscription = subscription.read().await;
+    subscriptions.push(subscription_info(subscription.request_id, &subscription).await);
+  }
+  // One still waiting for its track, such as a SUBSCRIBE forwarded upstream.
   for (request_id, subscription) in client.subscriptions.all().await {
+    if subscriptions.iter().any(|s| s.request_id == request_id) {
+      continue;
+    }
     if let Some(subscription) = subscription.upgrade() {
       subscriptions.push(subscription_info(request_id, &*subscription.read().await).await);
     }

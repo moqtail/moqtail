@@ -27,9 +27,11 @@ async fn main() -> Result<(), anyhow::Error> {
   let mut server = Server::new();
   #[cfg(feature = "observability")]
   observability::start(&server)?;
-  let _ = server
+  // An error here, such as a port already in use, ends the relay with a failure
+  // status and the reason, rather than a silent success.
+  server
     .start()
     .instrument(tracing::trace_span!("server"))
-    .await;
-  Ok(())
+    .await
+    .inspect_err(|e| tracing::error!("Relay stopped: {e:#}"))
 }

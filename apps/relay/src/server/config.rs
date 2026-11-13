@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use figment::Figment;
 use figment::providers::{Format, Yaml};
@@ -495,7 +495,9 @@ fn bind_udp_socket(addr: SocketAddr, reuse_port: bool, buffer_bytes: usize) -> R
   if reuse_port {
     socket.set_reuse_port(true)?;
   }
-  socket.bind(&addr.into())?;
+  socket
+    .bind(&addr.into())
+    .with_context(|| format!("cannot listen on UDP {addr}; is another program using it?"))?;
   socket.set_nonblocking(true)?;
   if buffer_bytes > 0 {
     request_buffer_sizes(&socket, buffer_bytes);

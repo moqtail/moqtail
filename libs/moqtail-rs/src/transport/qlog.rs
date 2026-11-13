@@ -22,6 +22,8 @@ use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::control::control_message::ControlMessage;
+use crate::model::data::fetch_header::FetchHeader;
+use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::parameter::authorization_token::AuthorizationToken;
 use crate::model::parameter::location_filter::LocationFilter;
 use crate::model::parameter::message_parameter::MessageParameter;
@@ -131,6 +133,47 @@ pub fn control_message(
     "raw": raw_info(raw),
   });
   q.send(event(conn, name, data));
+}
+
+/// Records the header a data stream begins with, sent (`created`) or received, from
+/// its wire bytes: a subgroup or a fetch header. One event per stream, not per object.
+pub fn data_stream_header(conn: usize, stream_id: u64, created: bool, raw: &[u8]) {
+  let Some(q) = QLOG.get() else { return };
+  let Some((name, data)) = stream_header_json(stream_id, raw) else {
+    return;
+  };
+  let suffix = if created { "created" } else { "parsed" };
+  q.send(event(conn, &format!("moqt:{name}_{suffix}"), data));
+}
+
+fn stream_header_json(stream_id: u64, raw: &[u8]) -> Option<(&'static str, Value)> {
+  let mut bytes = bytes::Bytes::copy_from_slice(raw);
+  let (name, data) = if let Ok(h) = SubgroupHeader::deserialize(&mut bytes.clone()) {
+    let ty = h.header_type;
+    let mut data = json!({
+      "stream_id": stream_id,
+      "track_alias": h.track_alias,
+      "group_id": h.group_id,
+      "subgroup_id_mode": (ty.value() & 0x06) >> 1,
+      "contains_end_of_group": ty.contains_end_of_group(),
+      "properties_present": ty.has_properties(),
+    });
+    if let Some(id) = h.subgroup_id {
+      data["subgroup_id"] = json!(id);
+    }
+    if let Some(p) = h.publisher_priority {
+      data["publisher_priority"] = json!(p);
+    }
+    ("subgroup_header", data)
+  } else if let Ok(h) = FetchHeader::deserialize(&mut bytes) {
+    (
+      "fetch_header",
+      json!({ "stream_id": stream_id, "request_id": h.request_id }),
+    )
+  } else {
+    return None;
+  };
+  Some((name, data))
 }
 
 /// Records bytes on a control or request stream that did not parse.
@@ -586,6 +629,26 @@ mod tests {
         ],
       })
     );
+  }
+
+  #[test]
+  fn stream_headers_map_to_qlog_fields() {
+    let subgroup = SubgroupHeader::new_with_explicit_id(9, 3, 2, Some(7), true, false, false);
+    let raw = subgroup.serialize(None).unwrap();
+    let (name, data) = stream_header_json(5, &raw).unwrap();
+    assert_eq!(name, "subgroup_header");
+    assert_eq!(data["stream_id"], 5);
+    assert_eq!(data["track_alias"], 9);
+    assert_eq!(data["group_id"], 3);
+    assert_eq!(data["subgroup_id"], 2);
+    assert_eq!(data["publisher_priority"], 7);
+
+    let raw = FetchHeader::new(11).serialize().unwrap();
+    let (name, data) = stream_header_json(8, &raw).unwrap();
+    assert_eq!(name, "fetch_header");
+    assert_eq!(data, json!({ "stream_id": 8, "request_id": 11 }));
+
+    assert!(stream_header_json(1, &[0xff]).is_none());
   }
 
   #[test]

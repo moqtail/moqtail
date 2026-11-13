@@ -595,7 +595,8 @@ impl Session {
 
     trace!("client is {}", client.connection_id);
 
-    let mut stream_handler = &RecvDataStream::new(stream, client.outgoing_fetch_requests.clone());
+    let mut stream_handler = &RecvDataStream::new(stream, client.outgoing_fetch_requests.clone())
+      .with_peer_id(client.connection_id);
 
     let mut first_object = true;
     let mut track_alias = 0u64;

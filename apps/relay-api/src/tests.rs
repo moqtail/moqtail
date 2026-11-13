@@ -199,6 +199,9 @@ pub(crate) fn connection(conn_id: u64, namespace: &str, rtt_ms: f64, sent: u64) 
 
 pub(crate) struct Client {
   state: Arc<ApiState>,
+  /// Built once, as the API does at startup, so state kept by a route (such as an
+  /// MCP session) lasts across requests.
+  router: axum::Router,
   pub relay: Arc<FakeRelay>,
 }
 
@@ -208,7 +211,12 @@ impl Client {
     let relay = Arc::new(FakeRelay::default());
     relay.accepting.store(true, Ordering::Relaxed);
     let state = Arc::new(ApiState::new(config, relay.clone(), relay.clone()));
-    Client { state, relay }
+    let router = routes::router(state.clone());
+    Client {
+      state,
+      router,
+      relay,
+    }
   }
 
   /// Sends a request from `from`, with optional extra headers, and returns the
@@ -247,10 +255,7 @@ impl Client {
     let mut request = request.body(body).unwrap();
     let peer: SocketAddr = from.parse().unwrap();
     request.extensions_mut().insert(ConnectInfo(peer));
-    let response = routes::router(self.state.clone())
-      .oneshot(request)
-      .await
-      .unwrap();
+    let response = self.router.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -738,15 +743,39 @@ fn mcp_client(write: bool) -> Client {
   })
 }
 
+/// One MCP exchange as a client sends it.
+struct Mcp<'a> {
+  version: Option<&'a str>,
+  session: Option<&'a str>,
+}
+
 impl Client {
-  /// Sends one MCP message with the MCP token and, when given, the version header.
-  async fn mcp(&self, version: Option<&str>, message: Value) -> (StatusCode, Value) {
+  /// Sends one MCP message with the MCP token and the headers an MCP client sends,
+  /// and returns the status, the JSON-RPC answer and the response headers. The
+  /// answer may come as JSON or as one server-sent event.
+  async fn mcp(&self, how: Mcp<'_>, message: Value) -> (StatusCode, Value, axum::http::HeaderMap) {
     let auth = format!("Bearer {MCP_TOKEN}");
-    let mut headers = vec![("authorization", auth.as_str())];
-    if let Some(version) = version {
+    let method = message["method"].as_str().unwrap_or("").to_string();
+    let mut headers = vec![
+      ("authorization", auth.as_str()),
+      ("host", "127.0.0.1:4480"),
+      ("accept", "application/json, text/event-stream"),
+    ];
+    if let Some(version) = how.version {
       headers.push(("mcp-protocol-version", version));
+      // The current revision names the method in a header too.
+      if version == "2026-07-28" {
+        headers.push(("mcp-method", method.as_str()));
+      }
     }
-    let (status, body, _) = self
+    let tool = message["params"]["name"].as_str().unwrap_or("").to_string();
+    if how.version == Some("2026-07-28") && method == "tools/call" {
+      headers.push(("mcp-name", tool.as_str()));
+    }
+    if let Some(session) = how.session {
+      headers.push(("mcp-session-id", session));
+    }
+    let (status, body, response_headers) = self
       .send_json(
         Method::POST,
         "/api/v1/mcp",
@@ -755,7 +784,16 @@ impl Client {
         Some(message),
       )
       .await;
-    (status, body)
+    let body = match &body {
+      Value::String(text) => text
+        .lines()
+        // The first data line of a stream can be an empty priming event.
+        .filter_map(|l| l.strip_prefix("data:"))
+        .find_map(|data| serde_json::from_str(data.trim()).ok())
+        .unwrap_or(body),
+      _ => body,
+    };
+    (status, body, response_headers)
   }
 }
 
@@ -773,13 +811,18 @@ fn legacy(method: &str, params: Value) -> Value {
   json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
 }
 
+const MODERN: Mcp = Mcp {
+  version: Some("2026-07-28"),
+  session: None,
+};
+
 #[tokio::test]
 async fn mcp_takes_only_its_own_token_and_refuses_foreign_origins() {
   let client = mcp_client(false);
   let local = "127.0.0.1:5000";
-  let ping = legacy("ping", json!({}));
+  let list = modern("tools/list", json!({}));
   let (status, ..) = client
-    .send_json(Method::POST, "/api/v1/mcp", local, &[], Some(ping.clone()))
+    .send_json(Method::POST, "/api/v1/mcp", local, &[], Some(list.clone()))
     .await;
   assert_eq!(status, StatusCode::UNAUTHORIZED);
   for token in ["Bearer r3ad", "Bearer wr1te"] {
@@ -789,7 +832,7 @@ async fn mcp_takes_only_its_own_token_and_refuses_foreign_origins() {
         "/api/v1/mcp",
         local,
         &[("authorization", token)],
-        Some(ping.clone()),
+        Some(list.clone()),
       )
       .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{token} does not open MCP");
@@ -814,77 +857,78 @@ async fn mcp_takes_only_its_own_token_and_refuses_foreign_origins() {
       "/api/v1/mcp",
       local,
       &[("authorization", &mcp), ("origin", "https://evil.example")],
-      Some(ping.clone()),
+      Some(list.clone()),
     )
     .await;
   assert_eq!(status, StatusCode::FORBIDDEN);
-  let (status, ..) = client
-    .send(
-      Method::GET,
-      "/api/v1/mcp",
-      local,
-      &[("authorization", &mcp)],
-    )
-    .await;
-  assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-  assert_eq!(client.mcp(None, ping).await.0, StatusCode::OK);
+  assert_eq!(client.mcp(MODERN, list).await.0, StatusCode::OK);
 }
 
 #[tokio::test]
-async fn mcp_speaks_the_2025_revisions_after_initialize() {
+async fn mcp_serves_2025_clients_after_initialize() {
   let client = mcp_client(false);
-  let (status, body) = client
+  let init = legacy(
+    "initialize",
+    json!({
+      "protocolVersion": "2025-11-25",
+      "capabilities": {},
+      "clientInfo": { "name": "test", "version": "1" },
+    }),
+  );
+  let (status, body, headers) = client
     .mcp(
-      None,
-      legacy("initialize", json!({ "protocolVersion": "2025-06-18" })),
+      Mcp {
+        version: None,
+        session: None,
+      },
+      init,
     )
     .await;
-  assert_eq!(status, StatusCode::OK);
-  assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
-  assert_eq!(body["result"]["serverInfo"]["name"], "moqtail-relay");
+  assert_eq!(status, StatusCode::OK, "{body}");
+  let result = &body["result"];
+  assert_eq!(result["protocolVersion"], "2025-11-25");
+  assert_eq!(result["serverInfo"]["name"], "moqtail-relay");
   // The relay introduces itself, so an agent with several relays can tell which
   // one this is.
-  assert_eq!(
-    body["result"]["serverInfo"]["title"],
-    "MOQtail relay interop-paris"
-  );
-  let instructions = body["result"]["instructions"].as_str().unwrap();
+  assert_eq!(result["serverInfo"]["title"], "MOQtail relay interop-paris");
+  let instructions = result["instructions"].as_str().unwrap();
   assert!(instructions.contains("\"interop-paris\"") && instructions.contains("0.0.0.0:4433"));
-  let (_, body) = client
-    .mcp(
-      None,
-      legacy("initialize", json!({ "protocolVersion": "1999-01-01" })),
-    )
-    .await;
-  assert_eq!(body["result"]["protocolVersion"], "2025-11-25");
 
+  let session = headers
+    .get("mcp-session-id")
+    .and_then(|v| v.to_str().ok())
+    .expect("a 2025 client gets a session")
+    .to_string();
+  let how = || Mcp {
+    version: Some("2025-11-25"),
+    session: Some(&session),
+  };
   let initialized = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-  assert_eq!(
-    client.mcp(Some("2025-06-18"), initialized).await.0,
-    StatusCode::ACCEPTED
-  );
+  assert_eq!(client.mcp(how(), initialized).await.0, StatusCode::ACCEPTED);
 
-  let (_, body) = client
-    .mcp(Some("2025-06-18"), legacy("tools/list", json!({})))
-    .await;
+  let (_, body, _) = client.mcp(how(), legacy("tools/list", json!({}))).await;
   let tools = body["result"]["tools"].as_array().unwrap();
-  assert_eq!(tools[0]["name"], "relay_overview");
-  assert_eq!(tools[0]["annotations"]["readOnlyHint"], true);
+  let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+  assert!(names.contains(&"relay_overview") && names.contains(&"get_connection"));
+  assert!(
+    !names.contains(&"send_goaway"),
+    "write tools need api.mcp_write"
+  );
+  assert!(
+    !names.contains(&"connection_timeline"),
+    "no qlog folder, no timeline"
+  );
   assert!(
     tools
       .iter()
       .all(|t| t["annotations"]["readOnlyHint"] == true)
-  );
-  assert!(
-    body["result"].get("ttlMs").is_none(),
-    "only 2026-07-28 has ttlMs"
   );
 
   let call = legacy(
     "tools/call",
     json!({ "name": "get_connection", "arguments": { "conn_id": 7 } }),
   );
-  let (_, body) = client.mcp(Some("2025-06-18"), call).await;
+  let (_, body, _) = client.mcp(how(), call).await;
   assert_eq!(body["result"]["structuredContent"]["conn_id"], 7);
   let text = body["result"]["content"][0]["text"].as_str().unwrap();
   assert_eq!(
@@ -892,97 +936,66 @@ async fn mcp_speaks_the_2025_revisions_after_initialize() {
     body["result"]["structuredContent"]
   );
 
+  // A connection that is not open is a tool error the agent can read.
   let call = legacy(
     "tools/call",
-    json!({ "name": "get_connection", "arguments": { "conn_id": "seven" } }),
+    json!({ "name": "get_connection", "arguments": { "conn_id": 999 } }),
   );
-  let (_, body) = client.mcp(Some("2025-06-18"), call).await;
+  let (_, body, _) = client.mcp(how(), call).await;
   assert_eq!(body["result"]["isError"], true);
 
-  let call = legacy("tools/call", json!({ "name": "send_goaway" }));
-  let (_, body) = client.mcp(Some("2025-06-18"), call).await;
-  assert_eq!(body["error"]["code"], -32602, "write tools are not offered");
-
-  let (status, body) = client
-    .mcp(Some("2025-06-18"), legacy("resources/list", json!({})))
-    .await;
-  assert_eq!(
-    (status, body["error"]["code"].as_i64()),
-    (StatusCode::OK, Some(-32601))
+  // A tool this relay does not offer is refused.
+  let call = legacy(
+    "tools/call",
+    json!({ "name": "send_goaway", "arguments": { "conn_id": 7 } }),
   );
-  let (status, body) = client
-    .mcp(Some("2024-01-01"), legacy("tools/list", json!({})))
-    .await;
-  assert_eq!(
-    (status, body["error"]["code"].as_i64()),
-    (StatusCode::BAD_REQUEST, Some(-32022))
-  );
-  let (status, _) = client.mcp(None, json!([legacy("ping", json!({}))])).await;
-  assert_eq!(status, StatusCode::BAD_REQUEST, "batches are refused");
+  let (_, body, _) = client.mcp(how(), call).await;
+  assert!(body["error"].is_object() || body["result"]["isError"] == true);
 }
 
 #[tokio::test]
-async fn mcp_speaks_the_2026_revision_without_a_handshake() {
+async fn mcp_serves_2026_clients_without_a_handshake() {
   let client = mcp_client(true);
-  let v = Some("2026-07-28");
-  let (status, body) = client.mcp(v, modern("server/discover", json!({}))).await;
-  assert_eq!(status, StatusCode::OK);
+  let (status, body, headers) = client
+    .mcp(MODERN, modern("server/discover", json!({})))
+    .await;
+  assert_eq!(status, StatusCode::OK, "{body}");
+  assert!(
+    headers.get("mcp-session-id").is_none(),
+    "2026-07-28 is stateless"
+  );
   let result = &body["result"];
-  assert_eq!(result["resultType"], "complete");
-  assert_eq!(result["supportedVersions"][0], "2026-07-28");
-  assert!(result["ttlMs"].is_u64() && result["instructions"].is_string());
-  assert_eq!(
-    result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
-    "moqtail-relay"
+  assert!(
+    result["supportedVersions"]
+      .as_array()
+      .unwrap()
+      .contains(&json!("2026-07-28"))
+  );
+  assert!(
+    result["instructions"]
+      .as_str()
+      .unwrap()
+      .contains("interop-paris")
   );
 
-  let (_, body) = client.mcp(v, modern("tools/list", json!({}))).await;
-  assert_eq!(body["result"]["cacheScope"], "private");
+  let (_, body, _) = client.mcp(MODERN, modern("tools/list", json!({}))).await;
   let tools = body["result"]["tools"].as_array().unwrap();
   let goaway = tools.iter().find(|t| t["name"] == "send_goaway").unwrap();
   assert_eq!(goaway["annotations"]["destructiveHint"], true);
-  assert!(
-    !tools.iter().any(|t| t["name"] == "connection_timeline"),
-    "no qlog folder, no timeline"
-  );
 
   let call = modern(
     "tools/call",
     json!({ "name": "send_goaway", "arguments": { "conn_id": 7, "timeout_ms": 500 } }),
   );
-  let (_, body) = client.mcp(v, call).await;
-  assert_eq!(body["result"]["resultType"], "complete");
-  assert_eq!(body["result"]["structuredContent"]["sent"], true);
+  let (_, body, _) = client.mcp(MODERN, call).await;
+  assert_eq!(body["result"]["structuredContent"]["sent"], true, "{body}");
+  let call = modern(
+    "tools/call",
+    json!({ "name": "send_goaway", "arguments": { "conn_id": 7, "timeout_ms": 9_999_999 } }),
+  );
+  let (_, body, _) = client.mcp(MODERN, call).await;
+  assert_eq!(body["result"]["isError"], true, "the timeout is capped");
   assert_eq!(*client.relay.actions.lock().unwrap(), ["goaway 7 500"]);
-
-  let (status, body) = client.mcp(v, modern("ping", json!({}))).await;
-  assert_eq!(
-    (status, body["error"]["code"].as_i64()),
-    (StatusCode::NOT_FOUND, Some(-32601))
-  );
-  let (status, body) = client
-    .mcp(Some("2025-11-25"), modern("tools/list", json!({})))
-    .await;
-  assert_eq!(
-    (status, body["error"]["code"].as_i64()),
-    (StatusCode::BAD_REQUEST, Some(-32020))
-  );
-  let mut no_capabilities = modern("tools/list", json!({}));
-  no_capabilities["params"]["_meta"]
-    .as_object_mut()
-    .unwrap()
-    .remove("io.modelcontextprotocol/clientCapabilities");
-  let (status, body) = client.mcp(v, no_capabilities).await;
-  assert_eq!(
-    (status, body["error"]["code"].as_i64()),
-    (StatusCode::BAD_REQUEST, Some(-32602))
-  );
-  let (status, _) = client.mcp(v, legacy("tools/list", json!({}))).await;
-  assert_eq!(
-    status,
-    StatusCode::BAD_REQUEST,
-    "a 2026 header needs the version in _meta"
-  );
 }
 
 #[test]

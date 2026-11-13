@@ -39,7 +39,8 @@ struct Endpoint {
   method: &'static str,
   path: &'static str,
   feature: Feature,
-  route: fn() -> MethodRouter<Arc<ApiState>>,
+  /// Builds the route; the state is there for routes that need it at build time.
+  route: fn(&Arc<ApiState>) -> MethodRouter<Arc<ApiState>>,
 }
 
 /// Every endpoint the API serves. The index is built from this table, so it cannot
@@ -49,169 +50,169 @@ const ENDPOINTS: &[Endpoint] = &[
     method: "GET",
     path: "/api/v1",
     feature: Feature::Health,
-    route: || get(index),
+    route: |_| get(index),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/health",
     feature: Feature::Health,
-    route: || get(health),
+    route: |_| get(health),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/ready",
     feature: Feature::Health,
-    route: || get(ready),
+    route: |_| get(ready),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/config",
     feature: Feature::State,
-    route: || get(config),
+    route: |_| get(config),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/connections",
     feature: Feature::State,
-    route: || get(crate::state::connections::list),
+    route: |_| get(crate::state::connections::list),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/connections/{conn_id}",
     feature: Feature::State,
-    route: || get(crate::state::connections::detail),
+    route: |_| get(crate::state::connections::detail),
   },
   Endpoint {
     method: "DELETE",
     path: "/api/v1/connections/{conn_id}",
     feature: Feature::Actions,
-    route: || delete(crate::actions::close),
+    route: |_| delete(crate::actions::close),
   },
   Endpoint {
     method: "POST",
     path: "/api/v1/connections/{conn_id}/goaway",
     feature: Feature::Actions,
-    route: || post(crate::actions::goaway),
+    route: |_| post(crate::actions::goaway),
   },
   Endpoint {
     method: "POST",
     path: "/api/v1/drain",
     feature: Feature::Actions,
-    route: || post(crate::actions::drain),
+    route: |_| post(crate::actions::drain),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/config/redirect_uri",
     feature: Feature::Actions,
-    route: || get(crate::actions::redirect_uri),
+    route: |_| get(crate::actions::redirect_uri),
   },
   Endpoint {
     method: "PUT",
     path: "/api/v1/config/redirect_uri",
     feature: Feature::Actions,
-    route: || put(crate::actions::set_redirect_uri),
+    route: |_| put(crate::actions::set_redirect_uri),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/logging",
     feature: Feature::Actions,
-    route: || get(crate::actions::logging),
+    route: |_| get(crate::actions::logging),
   },
   Endpoint {
     method: "PUT",
     path: "/api/v1/logging",
     feature: Feature::Actions,
-    route: || put(crate::actions::set_logging),
+    route: |_| put(crate::actions::set_logging),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/overview",
     feature: Feature::State,
-    route: || get(crate::state::overview::overview),
+    route: |_| get(crate::state::overview::overview),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/tracks",
     feature: Feature::State,
-    route: || get(crate::state::tracks::list),
+    route: |_| get(crate::state::tracks::list),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/tracks/{track_id}",
     feature: Feature::State,
-    route: || get(crate::state::tracks::detail),
+    route: |_| get(crate::state::tracks::detail),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/namespaces",
     feature: Feature::State,
-    route: || get(crate::state::overview::namespaces),
+    route: |_| get(crate::state::overview::namespaces),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/upstreams",
     feature: Feature::State,
-    route: || get(crate::state::overview::upstreams),
+    route: |_| get(crate::state::overview::upstreams),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/latency",
     feature: Feature::Latency,
-    route: || get(crate::latency::report),
+    route: |_| get(crate::latency::report),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/latency/slow",
     feature: Feature::Latency,
-    route: || get(crate::latency::slowlog),
+    route: |_| get(crate::latency::slowlog),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/zones",
     feature: Feature::State,
-    route: || get(crate::state::zones::list),
+    route: |_| get(crate::state::zones::list),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/cluster",
     feature: Feature::State,
-    route: || get(crate::state::overview::cluster),
+    route: |_| get(crate::state::overview::cluster),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/events",
     feature: Feature::Events,
-    route: || get(crate::qlog::events::events),
+    route: |_| get(crate::qlog::events::events),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/metrics",
     feature: Feature::Metrics,
-    route: || get(crate::metrics::metrics),
+    route: |_| get(crate::metrics::metrics),
   },
   Endpoint {
     method: "POST",
     path: "/api/v1/mcp",
     feature: Feature::Mcp,
-    route: || post(crate::mcp::handle),
+    route: |state| axum::routing::any_service(crate::mcp::service(state.clone())),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/qlog",
     feature: Feature::Qlog,
-    route: || get(crate::qlog::index),
+    route: |_| get(crate::qlog::index),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/qlog/{conn_id}",
     feature: Feature::Qlog,
-    route: || get(crate::qlog::trace),
+    route: |_| get(crate::qlog::trace),
   },
   Endpoint {
     method: "GET",
     path: "/api/v1/qlog/{conn_id}/quic",
     feature: Feature::Qlog,
-    route: || get(crate::qlog::quic_trace),
+    route: |_| get(crate::qlog::quic_trace),
   },
 ];
 
@@ -220,7 +221,7 @@ pub fn router(state: Arc<ApiState>) -> Router {
   let mut paths: BTreeMap<&str, MethodRouter<Arc<ApiState>>> = BTreeMap::new();
   for endpoint in ENDPOINTS {
     let route = if state.config.has(endpoint.feature) {
-      (endpoint.route)()
+      (endpoint.route)(&state)
     } else {
       let feature = endpoint.feature;
       let method = Method::from_bytes(endpoint.method.as_bytes()).expect("a known method");

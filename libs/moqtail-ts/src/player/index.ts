@@ -30,6 +30,8 @@ export {
   type AbrController,
 } from './plugin'
 export { MSE } from '@/player/elements/mse'
+export { rangeAt } from '@/player/elements/mse/gaps'
+export { eachClient, followData } from '@/player/follow'
 export { liveBuffer, type LiveBufferConfig } from '@/player/plugins/buffer'
 export { abr, DefaultAbrController } from '@/player/plugins/abr'
 export { ssts, SstsSource, SSTS_ALGORITHMS, type SstsConfig } from '@/player/plugins/ssts'

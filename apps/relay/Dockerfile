@@ -1,8 +1,25 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:1.94-bookworm AS builder
+FROM rust:1.94-bookworm AS chef
+
+RUN cargo install cargo-chef --locked --version 0.1.78
 
 WORKDIR /workspace
+
+FROM chef AS planner
+
+COPY Cargo.toml ./
+COPY Cargo.lock ./
+COPY apps ./apps
+COPY libs ./libs
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+
+# Downloads and compiles dependencies only; this layer stays cached until a manifest or Cargo.lock changes.
+COPY --from=planner /workspace/recipe.json ./
+RUN cargo chef cook -p relay --release --recipe-path recipe.json
 
 COPY Cargo.toml ./
 COPY Cargo.lock ./

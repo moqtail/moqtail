@@ -127,6 +127,10 @@ pub struct AppConfig {
   /// Folder for qlog traces of control messages, one `.sqlog` file per connection.
   /// Unset turns qlog off.
   pub qlog_folder: Option<String>,
+  /// The size a connection's qlog file stops growing at, in bytes, with a last
+  /// event saying it was cut. Rotation, such as logrotate's copytruncate, starts
+  /// the count over. 0 = no limit.
+  pub qlog_max_file_bytes: u64,
   /// Number of UDP sockets to listen on, all bound to the same port with
   /// SO_REUSEPORT. Connections are spread across them by the kernel, and each socket
   /// carries its own I/O readiness state, so drivers stop contending over one.

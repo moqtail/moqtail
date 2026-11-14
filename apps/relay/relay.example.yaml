@@ -32,9 +32,11 @@ enable_object_logging: false
 enable_token_logging: false
 token_log_path: /tmp/tokens.csv
 # qlog traces of control messages, one .sqlog file per connection (unset = off)
-# The files are not capped: a long-lived publisher's grows with every stream it
-# opens. Rotate them with logrotate's copytruncate, which works while the relay
-# writes, for example in /etc/logrotate.d/moqtail-relay:
+# A long-lived publisher's file grows with every stream it opens.
+# qlog_max_file_bytes stops a file at about that size, with a last event saying
+# so (0 = no limit). To keep recent events instead, rotate the files with
+# logrotate's copytruncate, which works while the relay writes; a file emptied
+# this way takes events again. For example, in /etc/logrotate.d/moqtail-relay:
 #   /tmp/qlog/*.sqlog {
 #     size 100M
 #     rotate 2
@@ -43,6 +45,7 @@ token_log_path: /tmp/tokens.csv
 #     missingok
 #   }
 # qlog_folder: /tmp/qlog
+qlog_max_file_bytes: 0
 
 # Load and subscriber limits (0 = off / unlimited)
 # Request streams served relay-wide before new ones get EXCESSIVE_LOAD.

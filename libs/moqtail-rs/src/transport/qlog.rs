@@ -74,8 +74,13 @@ enum Record {
 static QLOG: OnceLock<Qlog> = OnceLock::new();
 
 /// Starts writing qlog files into `dir`. `vantage` is the qlog vantage point type,
-/// `"server"` or `"client"`. Later calls are ignored.
-pub fn init(dir: impl Into<PathBuf>, vantage: &'static str) -> std::io::Result<()> {
+/// `"server"` or `"client"`. A file stops growing at about `max_file_bytes`, with a
+/// last event saying so; 0 means no limit. Later calls are ignored.
+pub fn init(
+  dir: impl Into<PathBuf>,
+  vantage: &'static str,
+  max_file_bytes: u64,
+) -> std::io::Result<()> {
   let dir = dir.into();
   std::fs::create_dir_all(&dir)?;
   let (tx, rx) = sync_channel(QUEUE_CAPACITY);
@@ -89,7 +94,7 @@ pub fn init(dir: impl Into<PathBuf>, vantage: &'static str) -> std::io::Result<(
   {
     std::thread::Builder::new()
       .name("qlog-writer".into())
-      .spawn(move || write_loop(rx, &dir, vantage))?;
+      .spawn(move || write_loop(rx, &dir, vantage, max_file_bytes))?;
   }
   Ok(())
 }
@@ -289,8 +294,17 @@ fn event(name: &str, data: Value) -> Vec<u8> {
   serde_json::to_vec(&json!({ "time": time, "name": name, "data": data })).unwrap_or_default()
 }
 
-fn write_loop(rx: Receiver<Record>, dir: &Path, vantage: &str) {
-  let mut files: HashMap<usize, BufWriter<File>> = HashMap::new();
+/// A connection's open file and how much has been written to it.
+struct TraceFile {
+  writer: BufWriter<File>,
+  bytes: u64,
+  /// Set once the size limit is reached; later events are not written until the
+  /// file is emptied.
+  full: bool,
+}
+
+fn write_loop(rx: Receiver<Record>, dir: &Path, vantage: &str, max_file_bytes: u64) {
+  let mut files: HashMap<usize, TraceFile> = HashMap::new();
   // Block for the first record, drain whatever else is queued, then flush once.
   while let Ok(first) = rx.recv() {
     let mut next = Some(first);
@@ -300,35 +314,64 @@ fn write_loop(rx: Receiver<Record>, dir: &Path, vantage: &str) {
           let file = match files.entry(conn) {
             std::collections::hash_map::Entry::Occupied(e) => Some(e.into_mut()),
             std::collections::hash_map::Entry::Vacant(e) => match open(dir, vantage, conn) {
-              Ok(w) => Some(e.insert(w)),
+              Ok(writer) => Some(e.insert(TraceFile {
+                // The file's header, still in the buffer
+                bytes: writer.buffer().len() as u64,
+                writer,
+                full: false,
+              })),
               Err(err) => {
                 warn!("qlog: cannot open file for conn {conn}: {err}");
                 None
               }
             },
           };
-          if let Some(w) = file {
-            let _ = w.write_all(b"\x1e");
-            let _ = w.write_all(&json);
-            let _ = w.write_all(b"\n");
+          if let Some(f) = file {
+            let size = json.len() as u64 + 2;
+            let json = if max_file_bytes > 0 && f.bytes + size > max_file_bytes {
+              // The file may have been emptied since (logrotate's copytruncate), so
+              // its real size is checked once the count reaches the limit.
+              let _ = f.writer.flush();
+              f.bytes = f.writer.get_ref().metadata().map_or(f.bytes, |m| m.len());
+              if f.bytes + size <= max_file_bytes {
+                f.full = false;
+                Some(json)
+              } else if f.full {
+                None
+              } else {
+                f.full = true;
+                Some(event(
+                  "moqtail:trace_truncated",
+                  json!({ "max_file_bytes": max_file_bytes }),
+                ))
+              }
+            } else {
+              Some(json)
+            };
+            if let Some(json) = json {
+              let _ = f.writer.write_all(b"\x1e");
+              let _ = f.writer.write_all(&json);
+              let _ = f.writer.write_all(b"\n");
+              f.bytes += json.len() as u64 + 2;
+            }
           }
         }
         Record::Close(conn) => {
-          if let Some(mut w) = files.remove(&conn) {
-            let _ = w.flush();
+          if let Some(mut f) = files.remove(&conn) {
+            let _ = f.writer.flush();
           }
         }
         Record::Flush(done) => {
-          for w in files.values_mut() {
-            let _ = w.flush();
+          for f in files.values_mut() {
+            let _ = f.writer.flush();
           }
           let _ = done.send(());
         }
       }
       next = rx.try_recv().ok();
     }
-    for w in files.values_mut() {
-      let _ = w.flush();
+    for f in files.values_mut() {
+      let _ = f.writer.flush();
     }
   }
 }
@@ -771,8 +814,64 @@ mod tests {
   /// qlog is process-wide and starts once, so every test starts it the same way.
   fn start_for_tests() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("moqtail-qlog-test-{}", std::process::id()));
-    init(&dir, "server").unwrap();
+    init(&dir, "server", 0).unwrap();
     dir
+  }
+
+  #[test]
+  fn a_full_file_stops_until_it_is_emptied() {
+    let dir = std::env::temp_dir().join(format!("moqtail-qlog-limit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("server_conn1.sqlog");
+    let (tx, rx) = sync_channel(64);
+    let writer = {
+      let dir = dir.clone();
+      std::thread::spawn(move || write_loop(rx, &dir, "server", 1000))
+    };
+    let send = |n: usize| {
+      for _ in 0..n {
+        let json = event(
+          "moqt:subgroup_header_parsed",
+          json!({ "pad": "x".repeat(100) }),
+        );
+        tx.send(Record::Event { conn: 1, json }).unwrap();
+      }
+      let (done, wait) = sync_channel(1);
+      tx.send(Record::Flush(done)).unwrap();
+      wait.recv().unwrap();
+    };
+    let names = || -> Vec<Value> {
+      std::fs::read_to_string(&path)
+        .unwrap()
+        .split('\x1e')
+        .skip(1)
+        .filter_map(|r| serde_json::from_str::<Value>(r.trim_end()).ok())
+        .filter_map(|r| r.get("name").cloned())
+        .collect()
+    };
+
+    send(20);
+    let full = names();
+    assert_eq!(full.last().unwrap(), "moqtail:trace_truncated");
+    // Past the limit by no more than the event that says so.
+    let len = std::fs::metadata(&path).unwrap().len();
+    assert!(len <= 1000 + 150, "{len} bytes: {full:?}");
+    send(5);
+    assert_eq!(names(), full, "a full file takes no more events");
+
+    // Emptied in place, as logrotate's copytruncate does, it takes events again.
+    std::fs::OpenOptions::new()
+      .write(true)
+      .open(&path)
+      .unwrap()
+      .set_len(0)
+      .unwrap();
+    send(2);
+    assert_eq!(names(), ["moqt:subgroup_header_parsed"; 2]);
+
+    drop(tx);
+    writer.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
   }
 
   #[test]

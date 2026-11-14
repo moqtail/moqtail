@@ -217,6 +217,12 @@ export function Timeline(props: { connId: number; open: boolean }) {
           )}
         </ul>
       )}
+      {events.some(e => e.name === 'moqtail:trace_truncated') && (
+        <p class="mt-3 text-xs text-amber-300">
+          The relay stopped saving this trace at its qlog_max_file_bytes limit. Later events show
+          only while this page follows the connection live.
+        </p>
+      )}
       {!error && events.length === 0 && <p class="text-xs text-neutral-500">No events yet.</p>}
     </Card>
   );

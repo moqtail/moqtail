@@ -45,7 +45,7 @@ async fn main() -> Result<(), anyhow::Error> {
   );
 
   if let Some(dir) = &cli.qlog_folder {
-    qlog::init(dir, "client")?;
+    qlog::init(dir, "client", 0)?;
   }
 
   let result = run(cli).await;

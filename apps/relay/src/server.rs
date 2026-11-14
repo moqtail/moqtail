@@ -351,7 +351,7 @@ fn init_logging(config: &AppConfig) {
   builder.init();
 
   if let Some(dir) = &config.qlog_folder {
-    match qlog::init(dir, "server") {
+    match qlog::init(dir, "server", config.qlog_max_file_bytes) {
       Ok(()) => {
         info!("Writing qlog traces to {dir}");
         #[cfg(debug_assertions)]

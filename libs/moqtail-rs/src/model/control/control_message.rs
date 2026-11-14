@@ -221,6 +221,21 @@ mod tests {
     parameter::{authorization_token::AuthorizationToken, message_parameter::MessageParameter},
   };
 
+  /// A SUBSCRIBE Meta's client sent in interop: its FILL_PARAMETERS carries a
+  /// LOCATION_FILTER with no count before it, which once closed the session.
+  #[test]
+  fn subscribe_with_uncounted_fill_parameters_parses() {
+    let hex = "03004700100b6d6f712d746573742d30300130013001300231350133013305323033343105\
+               323033343203313030013101310130022d31022d3101300474657374032105010101022100";
+    let mut bytes: bytes::Bytes = (0..hex.len())
+      .step_by(2)
+      .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+      .collect::<Vec<u8>>()
+      .into();
+    let msg = super::ControlMessage::deserialize(&mut bytes).unwrap();
+    assert!(matches!(msg, super::ControlMessage::Subscribe(_)));
+  }
+
   use super::*;
 
   #[test]

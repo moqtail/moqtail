@@ -21,30 +21,32 @@
 
 /** The payload of the first box at `path`, each name nested in the previous one. */
 export function findBox(data: Uint8Array, path: readonly string[]): Uint8Array | undefined {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  let [start, end] = [0, data.byteLength]
+  let found: Uint8Array | undefined = data
   for (const name of path) {
-    let found = false
-    while (start + 8 <= end) {
-      let size = view.getUint32(start)
-      let header = 8
-      if (size === 1) {
-        if (start + 16 > end) return undefined
-        size = Number(view.getBigUint64(start + 8))
-        header = 16
-      } else if (size === 0) size = end - start
-      if (size < header || start + size > end) return undefined
-      const type = String.fromCharCode(...data.subarray(start + 4, start + 8))
-      if (type === name) {
-        ;[start, end] = [start + header, start + size]
-        found = true
-        break
-      }
-      start += size
-    }
+    found = [...children(found)].find((b) => b.type === name)?.body
     if (!found) return undefined
   }
-  return data.subarray(start, end)
+  return found
+}
+
+/** The boxes at the top level of `data`, up to the first malformed one. */
+export function* children(data: Uint8Array): Generator<{ type: string; body: Uint8Array }> {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  for (let start = 0; start + 8 <= data.byteLength;) {
+    let size = view.getUint32(start)
+    let header = 8
+    if (size === 1) {
+      if (start + 16 > data.byteLength) return
+      size = Number(view.getBigUint64(start + 8))
+      header = 16
+    } else if (size === 0) size = data.byteLength - start
+    if (size < header || start + size > data.byteLength) return
+    yield {
+      type: String.fromCharCode(...data.subarray(start + 4, start + 8)),
+      body: data.subarray(start + header, start + size),
+    }
+    start += size
+  }
 }
 
 /** `moof/traf/tfdt` base media decode time, in timescale units. */

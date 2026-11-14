@@ -25,11 +25,13 @@ const LOCMAF_VERSION = '0.3'
 
 /**
  * The built-in media source for a LOCMAF switching set. It rebuilds CMAF chunks, so its pad
- * carries CMAF. The player registers it, and elements reach it through `context.probe()`.
+ * carries CMAF. The player registers it, and elements reach it through `context.probe()`. Its
+ * lower priority prefers it over a CMAF set of the same media, since LOCMAF has less overhead.
  */
 export const Locmaf = defineElement({
   type: 'source',
   name: 'locmaf',
+  priority: 90,
   capabilities: [cmafCapabilities('out', 'video'), cmafCapabilities('out', 'audio')],
   provides: [MEDIA_SOURCE],
   probe: probeLocmaf,

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { findBox } from '@/player/elements/cmaf/bmff'
+import { children, findBox } from '@/player/elements/cmaf/bmff'
 import { LocmafError } from './object'
 
 /** What chunk reconstruction takes from the CMAF Header (draft-einarsson-moq-locmaf-01 §6). */
@@ -36,13 +36,18 @@ const SAMPLE_ENTRY_FIELDS: Record<string, number> = { encv: 78, enca: 28 }
 /** @throws LocmafError when `init` isn't a single-track CMAF Header with `trex`. */
 export function trackDefaults(init: Uint8Array): TrackDefaults {
   const moov = findBox(init, ['moov'])
-  if (!moov || countBoxes(moov, 'trak') !== 1) throw new LocmafError('The CMAF Header needs exactly one trak (§4.1)')
+  if (!moov || [...children(moov)].filter((b) => b.type === 'trak').length !== 1) {
+    throw new LocmafError('The CMAF Header needs exactly one trak (§4.1)')
+  }
   const tkhd = view(findBox(moov, ['trak', 'tkhd']))
   const trex = view(findBox(moov, ['mvex', 'trex']))
-  if (!tkhd || !trex || trex.byteLength < 24) throw new LocmafError('The CMAF Header has no tkhd or trex')
+  const trackIdAt = tkhd?.byteLength && tkhd.getUint8(0) === 1 ? 20 : 12
+  if (!tkhd || tkhd.byteLength < trackIdAt + 4 || !trex || trex.byteLength < 24) {
+    throw new LocmafError('The CMAF Header has no tkhd or trex')
+  }
   const tenc = view(protection(moov))
   return {
-    trackId: tkhd.getUint32(tkhd.getUint8(0) === 1 ? 20 : 12),
+    trackId: tkhd.getUint32(trackIdAt),
     sampleDescriptionIndex: trex.getUint32(8),
     sampleDuration: trex.getUint32(12),
     sampleSize: trex.getUint32(16),
@@ -61,15 +66,6 @@ function protection(moov: Uint8Array): Uint8Array | undefined {
     entry && entry.length >= 8 ? SAMPLE_ENTRY_FIELDS[String.fromCharCode(...entry.subarray(4, 8))] : undefined
   if (skip === undefined) return undefined
   return findBox(entry!.subarray(8 + skip), ['sinf', 'schi', 'tenc'])
-}
-
-function countBoxes(data: Uint8Array, type: string): number {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  let count = 0
-  for (let at = 0; at + 8 <= data.length; at += Math.max(view.getUint32(at), 8)) {
-    if (String.fromCharCode(...data.subarray(at + 4, at + 8)) === type) count++
-  }
-  return count
 }
 
 function view(data: Uint8Array | undefined): DataView | undefined {
@@ -102,5 +98,13 @@ if (import.meta.vitest) {
   test('a header with other than one trak, or without trex, is rejected', () => {
     expect(() => trackDefaults(init(trak(), trak()))).toThrow(LocmafError)
     expect(() => trackDefaults(box('moov', trak()))).toThrow(LocmafError)
+    const shortTkhd = box('moov', box('trak', fullBox('tkhd', 0, new Uint8Array(4))), box('mvex', trex))
+    expect(() => trackDefaults(shortTkhd)).toThrow(LocmafError)
+  })
+
+  test('a box running to the end is one box, whatever its payload holds', () => {
+    const toEnd = new Uint8Array([...u32(0), ...new TextEncoder().encode('free'), ...trak()])
+    const moov = box('moov', trak(), box('mvex', trex), toEnd)
+    expect(trackDefaults(moov)).toMatchObject({ trackId: 7 })
   })
 }

@@ -463,7 +463,9 @@ export class Delivery {
     if (!initData && this.#packaging.initOnObjects(track) && this.#initFor !== key) return
     const packet = this.#packaging.packet(track, object, initData ?? this.#properties?.initData)
     if (!packet) {
-      // The media it carried is missing from the pad
+      // The rest of its group depends on it (CMSF 3.4)
+      const resume = new Location(object.location.group + 1n, 0n)
+      this.#gaps.get(this.#current!.accepted.requestId)?.push({ from: object.location, resume })
       this.gap = true
       return
     }

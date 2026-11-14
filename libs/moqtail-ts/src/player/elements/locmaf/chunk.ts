@@ -43,7 +43,7 @@ export interface Chunk {
 type Represented = Map<number, bigint | bigint[] | Uint8Array>
 
 /** No real chunk comes close; it bounds what a header can make the receiver allocate (§18). */
-const MAX_SAMPLES = 1n << 24n
+const MAX_SAMPLES = 1n << 16n
 const SCALARS = [
   Field.sampleDescriptionIndex,
   Field.defaultSampleDuration,
@@ -303,6 +303,18 @@ if (import.meta.vitest) {
     const free = new Uint8Array([0, 0, 0, 8, ...new TextEncoder().encode('free')])
     expect(reference.decode(at(0, 1), new Uint8Array([4, ...free]), defaults)).toEqual(free)
     rejected(reference, at(0, 2), delta!)
+  })
+
+  test('a sample count past the bound is rejected before anything is allocated for it', () => {
+    const header = (count: number) => {
+      const block = new ByteBuffer()
+      for (const value of [Field.sampleCount, count, Field.baseMediaDecodeTime, 0]) block.putVI(value)
+      const bytes = block.toUint8Array()
+      return new Uint8Array([2, bytes.length, ...bytes])
+    }
+    const unsized = { ...defaults, sampleSize: 0 }
+    expect(new Reference().decode(at(0, 0), header(2 ** 16), unsized)).toMatchObject({ mdat: new Uint8Array() })
+    expect(() => new Reference().decode(at(0, 0), header(2 ** 16 + 1), unsized)).toThrow(LocmafError)
   })
 
   test('CENC fields on a track that isn’t protected are rejected', () => {

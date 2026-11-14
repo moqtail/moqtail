@@ -83,9 +83,10 @@ if (import.meta.vitest) {
   const { Locmaf } = await import('./index')
   type Cmaf = typeof import('@/player/elements/cmaf').Cmaf
 
-  test('the pad carries CMAF chunks; an object that can’t be decoded leaves a gap and one warning', async () => {
-    const [first, , third] = locmafVectors().find((v) => v.name === 'uniform')!.objects
-    const init = { type: 'inline' as const, data: locmafVectors()[0]!.init }
+  test('the pad carries CMAF chunks; an object that can’t be decoded skips its group with one warning', async () => {
+    const uniform = locmafVectors().find((v) => v.name === 'uniform')!
+    const [first, , third] = uniform.objects
+    const init = { type: 'inline' as const, data: uniform.init }
     const track = cmafTrack('v1', { packaging: 'locmaf', locmafVersion: '0.3', init })
     const c = await cmafChain([track], { element: Locmaf as unknown as Cmaf })
     const warnings: unknown[] = []
@@ -94,7 +95,8 @@ if (import.meta.vitest) {
     c.client.last.push(
       testObject('v1', 1, 0, first!.payload),
       testObject('v1', 1, 2, third!.payload),
-      testObject('v1', 1, 3, third!.payload),
+      // A full header decodes, but its media depends on the dropped chunk
+      testObject('v1', 1, 3, first!.payload),
       testObject('v1', 2, 0, first!.payload),
     )
     await flush()

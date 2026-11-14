@@ -10,4 +10,5 @@ closes only the QUIC connection, which a browser reports as "Connection lost" wi
 code 0. `close_session` first sends a CLOSE_WEBTRANSPORT_SESSION capsule on the
 session's CONNECT stream, waits up to 2 s for it to be acknowledged, and then closes.
 
-Drop this copy once upstream wtransport can send that capsule.
+Drop this copy once upstream wtransport can send that capsule
+([BiagioFesta/wtransport#337](https://github.com/BiagioFesta/wtransport/pull/337)).

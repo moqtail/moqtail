@@ -101,6 +101,9 @@ jobs:
             **.rs
             **.ts
             **.tsx
+          # Vendored third-party code keeps its upstream license.
+          files_ignore: |
+            vendor/**
 
       - name: Set up Go
         if: steps.changed-files.outputs.any_changed == 'true'

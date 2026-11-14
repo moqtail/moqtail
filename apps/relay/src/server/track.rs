@@ -193,6 +193,10 @@ pub struct Track {
   pub subscription_manager: SubscriptionManager,
   /// Maps publisher_connection_id -> publisher_track_alias for all active publishers.
   pub publisher_aliases: Arc<RwLock<BTreeMap<usize, u64>>>,
+  /// Where the track ended, once its last publisher said so: PUBLISH_DONE with
+  /// TRACK_ENDED, or an End of Track Object. A FETCH answered from the cache that
+  /// reaches it reports End Of Track. A new publisher clears it.
+  ended_at: Arc<std::sync::Mutex<Option<Location>>>,
   /// The connection that last stopped publishing the track, so its trace can be
   /// found once no publisher is left; `NO_PUBLISHER` until one has.
   last_publisher: Arc<AtomicUsize>,
@@ -281,6 +285,7 @@ impl Track {
         config,
       ),
       publisher_aliases: Arc::new(RwLock::new(BTreeMap::new())),
+      ended_at: Arc::new(std::sync::Mutex::new(None)),
       last_publisher: Arc::new(AtomicUsize::new(NO_PUBLISHER)),
       cache: TrackCache::new(relay_track_id, config.cache_size.into(), config),
       largest_location: Arc::new(RwLock::new(Location::new(0, 0))),
@@ -428,6 +433,7 @@ impl Track {
   pub async fn add_publisher(&self, connection_id: usize, track_alias: u64) {
     let mut aliases = self.publisher_aliases.write().await;
     aliases.insert(connection_id, track_alias);
+    self.set_ended_at(None);
     info!(
       "Added publisher {}@alias={} to relay_track_id={}",
       connection_id, track_alias, self.relay_track_id
@@ -449,6 +455,25 @@ impl Track {
       self.last_publisher.store(connection_id, Ordering::Relaxed);
     }
     (alias, !aliases.is_empty())
+  }
+
+  /// Where the track ended, if its publisher has said it did.
+  pub fn ended_at(&self) -> Option<Location> {
+    self.ended_at.lock().map_or(None, |at| at.clone())
+  }
+
+  pub(crate) fn set_ended_at(&self, at: Option<Location>) {
+    if let Ok(mut ended) = self.ended_at.lock() {
+      *ended = at;
+    }
+  }
+
+  /// Records that the track ended at its largest Object, as its publisher's
+  /// PUBLISH_DONE with TRACK_ENDED says once its streams are in.
+  pub async fn end_at_largest(&self) {
+    if let Some(largest) = self.largest_object().await {
+      self.set_ended_at(Some(largest));
+    }
   }
 
   /// The connection that last stopped publishing this track, if any has.
@@ -547,6 +572,7 @@ impl Track {
       let mut aliases = self.publisher_aliases.write().await;
       aliases.insert(publisher_connection_id, publisher_track_alias);
     }
+    self.set_ended_at(None);
     self.set_track_properties(properties).await;
 
     let mut status = self.status.write().await;
@@ -763,6 +789,17 @@ mod tests {
           payload: Bytes::from_static(b"x"),
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_track_ends_where_its_publisher_says_until_a_new_one_comes() {
+      let track = track(TrackOrigin::Publish);
+      cache_an_object(&track).await;
+      assert_eq!(track.ended_at(), None);
+      track.end_at_largest().await;
+      assert_eq!(track.ended_at(), track.largest_object().await);
+      track.add_publisher(8, 2).await;
+      assert_eq!(track.ended_at(), None, "a new publisher carries it on");
     }
 
     #[tokio::test]
@@ -992,6 +1029,7 @@ mod tests {
         complete(&track, 9).await,
         "no group after the end of the track exists"
       );
+      assert_eq!(track.ended_at(), Some(Location::new(5, 1)));
     }
 
     #[tokio::test]

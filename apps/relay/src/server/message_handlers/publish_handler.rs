@@ -325,6 +325,20 @@ pub async fn handle(
       // many the publisher opened, so wait for that many to finish first.
       wait_for_publisher_streams(&client, publisher_req_id, m.stream_count, &context).await;
 
+      if m.status_code == moqtail::model::control::constant::PublishDoneStatusCode::TrackEnded {
+        let name = client
+          .published_tracks
+          .read()
+          .await
+          .get(&publisher_req_id)
+          .cloned();
+        if let Some(name) = name
+          && let Some(track) = context.track_manager.get_track(&name).await
+        {
+          track.end_at_largest().await;
+        }
+      }
+
       // Clean up the published track
       let namespace = client
         .published_tracks

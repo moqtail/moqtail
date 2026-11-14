@@ -71,9 +71,12 @@ impl Track {
     let group_end = Location::new(group, u64::MAX);
     match object.status {
       ObjectStatus::EndOfGroup => self.cache.mark_absent(object.location.clone(), group_end),
-      ObjectStatus::EndOfTrack => self
-        .cache
-        .mark_absent(object.location.clone(), Location::new(u64::MAX, u64::MAX)),
+      ObjectStatus::EndOfTrack => {
+        self.set_ended_at(Some(object.location.clone()));
+        self
+          .cache
+          .mark_absent(object.location.clone(), Location::new(u64::MAX, u64::MAX))
+      }
       ObjectStatus::Normal => {}
     }
     if ends_its_group {

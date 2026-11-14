@@ -33,7 +33,15 @@ export { MSE } from '@/player/elements/mse'
 export { rangeAt } from '@/player/elements/mse/gaps'
 export { eachClient, followData } from '@/player/follow'
 export { liveBuffer, type LiveBufferConfig } from '@/player/plugins/buffer'
-export { abr, DefaultAbrController } from '@/player/plugins/abr'
+export {
+  abr,
+  MlAbrController,
+  Action,
+  type MlAbrConfig,
+  type Decision,
+  type Observation,
+  type ModelBlob,
+} from '@/player/plugins/abr'
 export { ssts, SstsSource, SSTS_ALGORITHMS, type SstsConfig } from '@/player/plugins/ssts'
 export type { MSEOptions } from '@/player/elements/mse/sink'
 export {

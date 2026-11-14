@@ -127,6 +127,7 @@ interface InFlight {
   requestedAt: number
   /** Request ids, once FETCH_OK names them, for cancelling. */
   requestIds: Set<bigint>
+  fetches: number
   /** Aborts reading the FETCH streams, which stops their data at the client. */
   abort: AbortController
   arrivals: Arrival[]
@@ -164,6 +165,7 @@ export class Prober {
       track: target.name,
       requestedAt: now,
       requestIds: new Set(),
+      fetches: ranges.length,
       abort: new AbortController(),
       arrivals: [],
       expectedObjects: ranges.reduce((sum, range) => sum + range.objects, 0),
@@ -174,11 +176,16 @@ export class Prober {
   }
 
   /**
-   * Counts an object of a fetch stream. By track, not request id: on a congested link FETCH_OK can
-   * come after the objects.
+   * Counts an object of a fetch stream: by request id, and by track until every FETCH_OK named its
+   * request, since on a congested link FETCH_OK can come after the objects. Fill FETCHes of the same
+   * track are not the probe's.
    */
-  received(track: string | undefined, arrival: Arrival): void {
-    if (track !== undefined && track === this.#inFlight?.track) this.#inFlight.arrivals.push(arrival)
+  received(track: string | undefined, requestId: bigint | undefined, arrival: Arrival): void {
+    const inFlight = this.#inFlight
+    if (!inFlight) return
+    const ours = requestId !== undefined && inFlight.requestIds.has(requestId)
+    const unnamed = inFlight.requestIds.size < inFlight.fetches && track !== undefined && track === inFlight.track
+    if (ours || unnamed) inFlight.arrivals.push(arrival)
   }
 
   /**
@@ -362,10 +369,10 @@ if (import.meta.vitest) {
       const prober = new Prober()
       prober.start(client as unknown as MOQtailClient, target, plan, 10)
       await vi.waitFor(() => expect(client.fetch).toHaveBeenCalledTimes(1))
-      prober.received('v', { at: 10.1, bytes: 1000 })
+      prober.received('v', 1n, { at: 10.1, bytes: 1000 })
       expect(prober.settle(10.1, [], 1e6)).toBeUndefined()
-      prober.received('other', { at: 10.15, bytes: 1000 })
-      prober.received('v', { at: 10.2, bytes: 1000 })
+      prober.received('other', undefined, { at: 10.15, bytes: 1000 })
+      prober.received('v', 1n, { at: 10.2, bytes: 1000 })
       expect(prober.settle(10.2, [], 1e6)).toBeCloseTo(10_000)
       expect(prober.observe(11)).toMatchObject({
         probeEstimate: expect.closeTo(10_000),
@@ -396,8 +403,8 @@ if (import.meta.vitest) {
         const client = fakeClient()
         prober.start(client as unknown as MOQtailClient, target, plan, now)
         await vi.waitFor(() => expect(client.fetch).toHaveBeenCalled())
-        prober.received('v', { at: now + 0.1, bytes })
-        prober.received('v', { at: now + 0.2, bytes })
+        prober.received('v', 1n, { at: now + 0.1, bytes })
+        prober.received('v', 1n, { at: now + 0.2, bytes })
         prober.settle(now + 0.2, [], 1e6)
       }
       await probeOnce(0, 1000)
@@ -407,6 +414,19 @@ if (import.meta.vitest) {
       expect(prober.observe(3).evidence).toBeCloseTo(10_000) // the median, not the outlier
       prober.age(10)
       expect(prober.observe(3).evidence).toBeNull() // no longer fresh
+    })
+
+    test("counts the track's other FETCHes only until FETCH_OK named the probe's", async () => {
+      const client = fakeClient()
+      const prober = new Prober()
+      prober.start(client as unknown as MOQtailClient, target, plan, 0)
+      prober.received('v', 7n, { at: 0.05, bytes: 1000 }) // before FETCH_OK: by track
+      await vi.waitFor(() => expect(client.fetch).toHaveBeenCalled())
+      await Promise.resolve()
+      prober.received('v', 7n, { at: 0.1, bytes: 1000 }) // a fill of the same track
+      expect(prober.settle(0.1, [], 1e6)).toBeUndefined()
+      prober.received('v', 1n, { at: 0.2, bytes: 1000 })
+      expect(prober.settle(0.2, [], 1e6)).toBeCloseTo(10_000)
     })
   })
 }

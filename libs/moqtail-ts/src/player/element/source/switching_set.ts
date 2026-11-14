@@ -231,10 +231,13 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
 
   /** `track` is the head of its ladder. */
   #rendition(track: CatalogTrack): Rendition {
-    return rendition(track, this.context.catalog, {
-      active: trackKey(track) === trackKey(this.#head(this.#recovery.active)),
-      selected: this.#selected.has(this.#id(track)),
-    })
+    return {
+      ...rendition(track, this.context.catalog, {
+        active: trackKey(track) === trackKey(this.#head(this.#recovery.active)),
+        selected: this.#selected.has(this.#id(track)),
+      }),
+      ladder: ladderOf(track, this.#tracks).map((t) => t.name),
+    }
   }
 
   #id(track: CatalogTrack): string {
@@ -280,6 +283,7 @@ if (import.meta.vitest) {
         codec: 'avc1.64001f',
         active: true,
         selected: true,
+        ladder: ['v1'],
       },
       {
         id: 'live--v2',
@@ -290,6 +294,7 @@ if (import.meta.vitest) {
         frameRate: 30,
         active: false,
         selected: true,
+        ladder: ['v2'],
       },
     ])
     await c.source.selectRenditions(['v1'])

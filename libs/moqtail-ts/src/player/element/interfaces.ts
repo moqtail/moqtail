@@ -90,6 +90,8 @@ export interface Rendition {
   active: boolean
   /** Considered for ABR. */
   selected: boolean
+  /** Track names of its fast switching GoP ladder, itself included: they all deliver this rendition. */
+  ladder?: string[]
 }
 
 /** @public What the catalog element offers the elements it loads. Updates arrive with the player's `catalog` event. */

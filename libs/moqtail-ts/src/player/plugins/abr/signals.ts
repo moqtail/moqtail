@@ -51,7 +51,7 @@ export class Signals {
   readonly #openStreams = new Map<number, string>()
   /** When each video track last delivered an object. */
   readonly #lastObject = new Map<string, number>()
-  #videoTracks: ReadonlySet<string> = new Set()
+  #videoTracks: ReadonlyMap<string, string> = new Map()
   #video: Arrival[] = []
   /** Every other live object, such as audio: it shares the link. */
   #others: Arrival[] = []
@@ -63,9 +63,14 @@ export class Signals {
   /** Windowed signals count from here on: the last settled switch. */
   #measuredFrom = -Infinity
 
-  /** The names of the tracks that carry video: only their objects are measured as live media. */
-  set videoTracks(names: ReadonlySet<string>) {
-    this.#videoTracks = names
+  /** The tracks that carry video, each to the rendition it delivers: only their objects are measured as live media. */
+  set videoTracks(heads: ReadonlyMap<string, string>) {
+    this.#videoTracks = heads
+  }
+
+  /** Stream ids are per client: after a reconnect the old client's streams never end. */
+  forgetStreams(): void {
+    this.#openStreams.clear()
   }
 
   /** A data event of a live stream, of `track` once the client knows it. */
@@ -73,16 +78,19 @@ export class Signals {
     if (event.kind === 'end') this.#openStreams.delete(event.streamId)
     if (event.kind !== 'object') return
     const arrival: Arrival = { at: event.at / 1000, bytes: event.payloadLength }
-    if (track === undefined || !this.#videoTracks.has(track)) {
+    const head = track === undefined ? undefined : this.#videoTracks.get(track)
+    if (head === undefined) {
       this.#others.push(arrival)
       return
     }
     this.#video.push(arrival)
     this.#firstVideo ??= arrival.at
-    this.#openStreams.set(event.streamId, track)
-    this.#lastObject.set(track, arrival.at)
+    this.#openStreams.set(event.streamId, head)
+    this.#lastObject.set(head, arrival.at)
     const second = Math.floor(arrival.at)
     this.#perSecond.set(second, (this.#perSecond.get(second) ?? 0) + 1)
+    // Probes are planned from the heads' groups, which the controller FETCHes by the head's name
+    if (track !== head) return
     const receiving = this.#receiving.get(track)
     // Each group has its own stream, so on a busy link the next group starts before this one's tail
     // arrives: only a newer group starts one, and a late object completes the group it belongs to
@@ -259,7 +267,7 @@ if (import.meta.vitest) {
   })
   const tracking = () => {
     const signals = new Signals()
-    signals.videoTracks = new Set(['v'])
+    signals.videoTracks = new Map([['v', 'v']])
     return signals
   }
 
@@ -330,6 +338,21 @@ if (import.meta.vitest) {
       expect(signals.lastObjectAt('v')).toBe(1)
       signals.received({ kind: 'end', direction: 'in', streamId: 1, at: 1100, reason: 'fin' }, 'v')
       expect(signals.streaming('v')).toBe(false)
+    })
+
+    test("counts a short GoP of a ladder as its head's video, but plans probes from the head only", () => {
+      const signals = new Signals()
+      signals.videoTracks = new Map([
+        ['v60', 'v60'],
+        ['v15', 'v60'],
+      ])
+      signals.received(object(1, 0, 1), 'v15')
+      signals.received(object(2, 0, 1.5), 'v15')
+      expect(signals.receivedBytes(2)).toBe(2000)
+      expect([signals.streaming('v60'), signals.lastObjectAt('v60')]).toEqual([true, 1.5])
+      expect(signals.groupInterval()).toBeNull()
+      signals.forgetStreams()
+      expect(signals.streaming('v60')).toBe(false)
     })
 
     test('reads throughput from the slower of the last second and its second half', () => {

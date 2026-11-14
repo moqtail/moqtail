@@ -16,7 +16,7 @@
 
 import type { MediaSinkElement, MediaSourceElement, Rendition } from '@/player/element/interfaces'
 import { rangeAt } from '@/player/elements/mse/gaps'
-import { followData } from '@/player/follow'
+import { eachClient, followData } from '@/player/follow'
 import { parseMsfUrl } from '@/player/msf_url'
 import type { MOQtailPlayer } from '@/player/player'
 import type { AbrController } from '@/player/plugin'
@@ -115,7 +115,13 @@ export class MlAbrController implements AbrController {
     signals.videoTracks = this.#videoTracks(player)
     const unfollow = followData(player, (event, track, header) => {
       if (header.stream === 'subgroup') signals.received(event, track)
-      else if (event.kind === 'object') prober.received(track, { at: event.at / 1000, bytes: event.payloadLength })
+      else if (event.kind === 'object')
+        prober.received(track, header.requestId, { at: event.at / 1000, bytes: event.payloadLength })
+    })
+    const unclient = eachClient(player, () => {
+      signals.forgetStreams()
+      prober.cancel()
+      return () => {}
     })
     const timer = setInterval(() => this.#tick(), this.#tickMs)
     this.#session = {
@@ -131,6 +137,7 @@ export class MlAbrController implements AbrController {
       stop: () => {
         clearInterval(timer)
         unfollow()
+        unclient()
         player.off('statechange', onState)
         player.off('autoplayblocked', onAutoplayBlocked)
       },
@@ -275,9 +282,13 @@ export class MlAbrController implements AbrController {
     prober.start(client, this.#target(probed), planProbe(groups, bytes), now)
   }
 
-  #videoTracks(player: MOQtailPlayer): Set<string> {
-    const source = videoSource(player)
-    return new Set(source?.getRenditions().map((r) => this.#target(r).name))
+  #videoTracks(player: MOQtailPlayer): Map<string, string> {
+    const heads = new Map<string, string>()
+    for (const r of videoSource(player)?.getRenditions() ?? []) {
+      const head = this.#target(r).name
+      for (const member of r.ladder ?? [head]) heads.set(member, head)
+    }
+    return heads
   }
 
   /** The track behind `rendition`, as a probe FETCHes it. */

@@ -17,12 +17,29 @@ use bytes::Bytes;
 use fnv::FnvHasher;
 use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::GroupOrder;
+use moqtail::transport::connection::TransportConnection;
 use moqtail::{
   model::control::control_message::ControlMessageTrait, transport::data_stream_handler::HeaderInfo,
 };
 use once_cell::sync::Lazy;
 use std::hash::Hasher;
 use std::time::Instant;
+
+/// Closing a peer's session so the peer learns the error code.
+pub(crate) trait CloseSession {
+  fn close_session(&self, error_code: u32, reason: &[u8]);
+}
+
+impl CloseSession for TransportConnection {
+  /// A WebTransport peer reads the code from a CLOSE_WEBTRANSPORT_SESSION capsule; a
+  /// browser reports a bare QUIC close as "Connection lost" with code 0.
+  fn close_session(&self, error_code: u32, reason: &[u8]) {
+    match self {
+      Self::WebTransport(c) => c.close_session(error_code, reason),
+      Self::Quic(_) => self.close(error_code, reason),
+    }
+  }
+}
 
 // Static reference time: set when the program starts
 pub static BASE_TIME: Lazy<Instant> = Lazy::new(Instant::now);
@@ -196,6 +213,59 @@ mod tests {
           }
         }
       }
+    }
+  }
+
+  #[tokio::test]
+  async fn a_webtransport_peer_receives_the_session_close_code() {
+    use super::CloseSession;
+    use moqtail::transport::connection::TransportConnection;
+    use wtransport::endpoint::IntoConnectOptions;
+    use wtransport::error::ConnectionError;
+    use wtransport::{ClientConfig, Endpoint, Identity, ServerConfig};
+
+    let identity = Identity::self_signed(["localhost"]).unwrap();
+    let cert_hash = identity.certificate_chain().as_slice()[0].hash();
+    let server = Endpoint::server(
+      ServerConfig::builder()
+        .with_bind_address("127.0.0.1:0".parse().unwrap())
+        .with_identity(identity)
+        .build(),
+    )
+    .unwrap();
+    let addr = server.local_addr().unwrap();
+    let accepted = tokio::spawn(async move {
+      let request = server.accept().await.await.unwrap();
+      request.accept().await.unwrap()
+    });
+    let client = Endpoint::client(
+      ClientConfig::builder()
+        .with_bind_default()
+        .with_server_certificate_hashes([cert_hash])
+        .build(),
+    )
+    .unwrap()
+    .connect(format!("https://{addr}").into_options())
+    .await
+    .unwrap();
+    let server_side = TransportConnection::WebTransport(accepted.await.unwrap());
+
+    server_side.close_session(0x3, b"Malformed message");
+
+    match client.accept_bi().await {
+      Err(ConnectionError::ApplicationClosed(close)) => {
+        assert_eq!(close.code().into_inner(), 0x3);
+        assert_eq!(close.reason(), b"Malformed message");
+      }
+      other => panic!("expected the session close code, got {other:?}"),
+    }
+    // A browser reads the code only from the capsule, so it must have come from there:
+    // the client closes QUIC itself on reading the capsule, or the relay closes it with
+    // H3_NO_ERROR, never with the code.
+    match client.closed().await {
+      ConnectionError::LocallyClosed => {}
+      ConnectionError::ApplicationClosed(close) => assert_eq!(close.code().into_inner(), 0x100),
+      other => panic!("expected the capsule to close the session, got {other:?}"),
     }
   }
 }

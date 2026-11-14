@@ -12,6 +12,7 @@ COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY apps ./apps
 COPY libs ./libs
+COPY vendor ./vendor
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -25,6 +26,7 @@ COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY apps ./apps
 COPY libs ./libs
+COPY vendor ./vendor
 COPY .git ./.git
 
 RUN cargo build -p relay --release \

@@ -29,6 +29,7 @@ use crate::server::Server;
 use crate::server::session::Session;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::SessionContext;
+use crate::server::utils::CloseSession;
 use anyhow::Result;
 use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::Tuple;
@@ -298,7 +299,7 @@ pub(crate) fn peer_going_away(context: &SessionContext, goaway: &GoAway) {
   );
   context
     .connection
-    .close(TerminationCode::NoError.to_u32(), b"peer sent GOAWAY");
+    .close_session(TerminationCode::NoError.to_u32(), b"peer sent GOAWAY");
 }
 
 async fn dial(server: &Server, authority: &str) -> Result<quinn::Connection> {

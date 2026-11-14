@@ -1,5 +1,6 @@
 [workspace]
 members = ["apps/relay", "apps/relay-api", "apps/client", "libs/moqtail-rs", "libs/moqtail-ssts", "libs/relay-hooks"]
+exclude = ["vendor/wtransport"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -25,3 +26,8 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 validator = { version = "0.21.0", features = ["derive"] }
 wtransport = { version = "0.7.2", features = ["quinn"] }
+# wtransport 0.7.2 with Connection::close_session, which sends the
+# CLOSE_WEBTRANSPORT_SESSION capsule so browsers see the session error code.
+# Only the relay calls it; the published moqtail crate builds against crates.io.
+[patch.crates-io]
+wtransport = { path = "vendor/wtransport" }

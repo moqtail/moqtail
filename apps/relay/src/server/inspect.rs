@@ -141,6 +141,7 @@ mod relay {
   use crate::server::session::client::MOQTClient;
   use crate::server::track::track_manager::{SubscribeKind, TrackManager};
   use crate::server::track::{Track, TrackOrigin, TrackStatus};
+  use crate::server::utils::CloseSession;
   use moqtail::model::control::control_message::ControlMessage;
   use moqtail::model::control::goaway::GoAway;
   use moqtail::model::error::TerminationCode;
@@ -316,7 +317,7 @@ mod relay {
           );
           client
             .connection
-            .close(TerminationCode::GoawayTimeout as u32, b"GOAWAY timeout");
+            .close_session(TerminationCode::GoawayTimeout as u32, b"GOAWAY timeout");
         }
       });
     }
@@ -346,7 +347,7 @@ mod relay {
         // for any other close.
         client
           .connection
-          .close(TerminationCode::NoError as u32, b"closed by the operator");
+          .close_session(TerminationCode::NoError as u32, b"closed by the operator");
         true
       })
     }

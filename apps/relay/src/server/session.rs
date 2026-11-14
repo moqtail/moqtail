@@ -20,6 +20,7 @@ pub(crate) mod session_context;
 use crate::server::cluster;
 use crate::server::config::AppConfig;
 use crate::server::inspect;
+use crate::server::utils::CloseSession;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
@@ -284,7 +285,7 @@ impl Session {
     {
       Ok(client) => client,
       Err(e) => {
-        context.connection.close(0u32, b"Setup failed");
+        context.connection.close_session(0u32, b"Setup failed");
         relay_hooks::reporter().connection_failed("setup");
         return Err(e);
       }
@@ -394,7 +395,7 @@ impl Session {
   ) {
     context
       .connection
-      .close(error_code.to_u32(), msg.as_bytes());
+      .close_session(error_code.to_u32(), msg.as_bytes());
   }
 
   // TODO: in an error close the connection

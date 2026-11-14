@@ -576,10 +576,14 @@ impl RecvDataStream {
                 // otherwise, handle the remaining bytes in the next iteration
                 // debug!("RecvDataStream::read Read None (EOF or stream closed)");
                 is_closed.store(true, Ordering::Relaxed);
+                qlog::stream_end(qlog_conn, stream.id(), false, qlog::StreamEnd::Fin);
               }
               Err(e) => {
                 debug!("RecvDataStream::read() Read error: {:?}", e);
                 is_closed.store(true, Ordering::Relaxed);
+                if let TransportReadError::Reset(code) = e {
+                  qlog::stream_end(qlog_conn, stream.id(), false, qlog::StreamEnd::Reset(code));
+                }
                 if matches!(e, TransportReadError::NotConnected) {
                   return Err(RecvDataStreamReadError::StreamClosed);
                 }

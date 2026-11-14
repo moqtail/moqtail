@@ -174,6 +174,7 @@ async fn subscribe_track(
   }
 }
 
+#[derive(Clone)]
 pub struct SubscribeConfig {
   pub namespace: String,
   pub track_name: String,
@@ -205,6 +206,8 @@ pub struct SubscribeConfig {
   pub update_filters_after: u64,
   pub update_range_filters: Vec<MessageParameter>,
   pub ignore_filter_limit: bool,
+  /// Counts what arrives for a load test; `None` outside one.
+  pub perf: Option<Arc<crate::perf::PerfRecorder>>,
 }
 
 pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
@@ -398,9 +401,25 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   };
   match config.delivery_mode {
     DeliveryMode::Datagram => {
-      receive_datagrams(&connection, router, config.duration, all_done).await
+      receive_datagrams(
+        &connection,
+        router,
+        config.duration,
+        all_done,
+        config.perf.clone(),
+      )
+      .await
     }
-    DeliveryMode::Subgroup => receive_streams(&connection, router, config.duration, all_done).await,
+    DeliveryMode::Subgroup => {
+      receive_streams(
+        &connection,
+        router,
+        config.duration,
+        all_done,
+        config.perf.clone(),
+      )
+      .await
+    }
   }
 }
 
@@ -461,6 +480,7 @@ async fn receive_datagrams(
   router: Arc<Mutex<Router>>,
   duration: u64,
   all_done: impl std::future::Future<Output = ()>,
+  perf: Option<Arc<crate::perf::PerfRecorder>>,
 ) -> Result<()> {
   info!("Listening for datagrams...");
 
@@ -515,6 +535,10 @@ async fn receive_datagrams(
                   ReceptionStats::prior_group_gap(obj.properties.as_ref()),
                 );
                 let sequence_ok = status == "OK";
+                if let Some(perf) = &perf {
+                  let payload = obj.payload.as_ref().map_or(0, |p| p.len());
+                  perf.record(payload, obj.properties.as_ref(), status == "GAP");
+                }
 
                 // Where a group or the track ends is always worth seeing.
                 let signals = group_end_signals(obj.object_status, obj.end_of_group);
@@ -568,6 +592,7 @@ async fn receive_streams(
   router: Arc<Mutex<Router>>,
   duration: u64,
   all_done: impl std::future::Future<Output = ()>,
+  perf: Option<Arc<crate::perf::PerfRecorder>>,
 ) -> Result<()> {
   info!("Listening for incoming streams...");
 
@@ -633,6 +658,10 @@ async fn receive_streams(
                     ReceptionStats::prior_group_gap(obj.properties.as_ref()),
                   );
                   let sequence_ok = matches!(status, "OK" | "FILL");
+                  if let Some(perf) = &perf {
+                    let payload = obj.payload.as_ref().map_or(0, |p| p.len());
+                    perf.record(payload, obj.properties.as_ref(), status == "GAP");
+                  }
 
                   // Where a group or the track ends is always worth seeing.
                   let signals = group_end_signals(Some(obj.status), false);

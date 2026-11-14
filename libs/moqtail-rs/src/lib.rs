@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod client;
+pub mod metrics;
 pub mod model;
 pub mod relay;
 pub mod transport;

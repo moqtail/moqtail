@@ -78,3 +78,21 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  cleanup:
+    name: Remove Untagged Relay Images
+    needs: publish
+    runs-on: ubuntu-latest
+    concurrency:
+      group: relay-image-cleanup
+      cancel-in-progress: false
+    permissions:
+      packages: write
+    steps:
+      - name: Delete untagged images
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: moqtail
+          package: relay
+          delete-untagged: true

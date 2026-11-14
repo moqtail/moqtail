@@ -27,8 +27,11 @@ mod utils;
 use clap::Parser;
 use cli::{Cli, CliFilter, Command, PrefixKind};
 use connection::MoqConnection;
+use moqtail::model::control::goaway::GoAway;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::qlog;
+use std::future::Future;
+use tokio::sync::oneshot;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
@@ -53,11 +56,67 @@ async fn main() -> Result<(), anyhow::Error> {
   result
 }
 
+/// Runs the command, and on GOAWAY closes the session and, when the server named a
+/// new session URI and the command can resume, runs it again there.
 async fn run(cli: Cli) -> Result<(), anyhow::Error> {
-  // Connects when a command needs its one session; a load test opens its own.
-  let (server, insecure, transport) = (cli.server.clone(), cli.no_cert_validation, cli.transport);
-  let connect = || MoqConnection::establish(&server, insecure, transport);
+  // A load test opens its own sessions, so it skips the one below.
+  if is_load_test(&cli) {
+    return run_command(None, cli).await;
+  }
+  let mut server = cli.server.clone();
+  loop {
+    let (moq_conn, goaway_rx) =
+      MoqConnection::establish(&server, cli.no_cert_validation, cli.transport).await?;
+    let connection = moq_conn.connection.clone();
+    let Some(goaway) = until_goaway(run_command(Some(moq_conn), cli.clone()), goaway_rx).await?
+    else {
+      return Ok(());
+    };
+    // The command future is dropped by now, so no new requests go out; close
+    // before the server's GOAWAY timeout rather than waiting to be cut off.
+    connection.close(0, b"GOAWAY");
+    match next_server(&goaway, cli.command) {
+      Some(uri) => {
+        info!("Moving to {uri} after GOAWAY");
+        server = uri;
+      }
+      None => {
+        info!("Leaving after GOAWAY");
+        return Ok(());
+      }
+    }
+  }
+}
 
+fn is_load_test(cli: &Cli) -> bool {
+  matches!(cli.command, Command::Subscribe) && (cli.sessions > 1 || cli.report.is_some())
+}
+
+/// Runs `command` until it ends (`None`) or the server sends GOAWAY (`Some`),
+/// whichever comes first. A GOAWAY drops the command, ending its requests.
+async fn until_goaway(
+  command: impl Future<Output = Result<(), anyhow::Error>>,
+  goaway_rx: oneshot::Receiver<GoAway>,
+) -> Result<Option<GoAway>, anyhow::Error> {
+  tokio::select! {
+    result = command => result.map(|()| None),
+    // A closed channel means the control stream ended; let the command finish.
+    Ok(goaway) = goaway_rx => Ok(Some(goaway)),
+  }
+}
+
+/// Where to reconnect after GOAWAY: the new session URI, for commands that run
+/// until stopped. A fetch is one request, and with no URI there is nowhere to go.
+fn next_server(goaway: &GoAway, command: Command) -> Option<String> {
+  match command {
+    Command::Fetch => None,
+    _ => goaway.new_session_uri.clone(),
+  }
+}
+
+/// Runs the command on `moq_conn`, which only a load test goes without.
+async fn run_command(moq_conn: Option<MoqConnection>, cli: Cli) -> Result<(), anyhow::Error> {
+  let connect = move || async move { moq_conn.ok_or_else(|| anyhow::anyhow!("no session")) };
   let content = publisher::Content {
     subgroups_per_group: cli.subgroups_per_group,
     priorities: cli.priorities.clone(),
@@ -232,4 +291,50 @@ fn init_logging() {
     .with_level(true)
     .with_env_filter(env_filter)
     .init();
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[tokio::test]
+  async fn goaway_interrupts_a_running_command() {
+    let (tx, rx) = oneshot::channel();
+    tx.send(GoAway::new(Some("moqt://next:4433".into()), 5000))
+      .unwrap();
+    let goaway = until_goaway(std::future::pending(), rx).await.unwrap();
+    assert_eq!(
+      goaway,
+      Some(GoAway::new(Some("moqt://next:4433".into()), 5000))
+    );
+  }
+
+  #[tokio::test]
+  async fn command_ends_without_goaway() {
+    let (_tx, rx) = oneshot::channel();
+    assert_eq!(until_goaway(async { Ok(()) }, rx).await.unwrap(), None);
+  }
+
+  #[tokio::test]
+  async fn closed_control_stream_lets_the_command_finish() {
+    let (tx, rx) = oneshot::channel::<GoAway>();
+    drop(tx);
+    assert_eq!(until_goaway(async { Ok(()) }, rx).await.unwrap(), None);
+  }
+
+  #[test]
+  fn reconnects_only_with_a_uri_and_a_resumable_command() {
+    let moved = GoAway::new(Some("moqt://next:4433".into()), 5000);
+    let stay = GoAway::new(None, 5000);
+    assert_eq!(
+      next_server(&moved, Command::Subscribe).as_deref(),
+      Some("moqt://next:4433")
+    );
+    assert_eq!(
+      next_server(&moved, Command::Publish).as_deref(),
+      Some("moqt://next:4433")
+    );
+    assert_eq!(next_server(&moved, Command::Fetch), None);
+    assert_eq!(next_server(&stay, Command::Subscribe), None);
+  }
 }

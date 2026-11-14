@@ -168,10 +168,30 @@ async function open(s: Slot, origin: string, options: ClientOptions): Promise<MO
       transportOptions: { ...transport, ...(transport.protocols && { protocols: [...transport.protocols] }) },
     }),
   })
-  client.on('sessionterminated', () => reconnect(s, client, origin, options))
-  await client.init()
+  // On GOAWAY, leave before the peer's timeout; the lost-session path below reopens the
+  // session at the new URI, or at this one when none is given.
+  let next = origin
+  let left = false
+  client.on('goaway', (goaway) => {
+    next = goaway.newSessionUri ?? origin
+    left = true
+    void client.disconnect('GOAWAY')
+  })
+  client.on('sessionterminated', () => reconnect(s, client, next, options))
+  await client.init().catch((error: unknown) => {
+    if (!left) throw error
+  })
+  // A GOAWAY before this point found no current client to reconnect, so the caller retries
+  if (left) throw new Moved(next)
   s.client = client
   return client
+}
+
+/** A GOAWAY arrived while the session was being set up; the next attempt goes to `uri`. */
+class Moved extends Error {
+  constructor(readonly uri: string) {
+    super(`GOAWAY during setup, moving to ${uri}`)
+  }
 }
 
 /** Recreates a lost session for every player, or fails them all with `SESSION_LOST`. */
@@ -204,15 +224,17 @@ async function retry(
 ): Promise<MOQtailClient> {
   const signal = s.abort.signal
   const attempts = options.reconnectAttempts ?? DEFAULT_RECONNECT_ATTEMPTS
+  let target = origin
   for (let failed = 0; ;) {
     onAttempt?.(failed + 1)
     await untilAvailable(signal)
     try {
-      return await open(s, origin, options)
+      return await open(s, target, options)
     } catch (cause) {
       signal.throwIfAborted()
+      if (cause instanceof Moved) target = cause.uri
       if (!available()) continue
-      if (++failed >= attempts) throw new PlayerError('SESSION_LOST', `Could not connect to ${origin}`, { cause })
+      if (++failed >= attempts) throw new PlayerError('SESSION_LOST', `Could not connect to ${target}`, { cause })
       await sleep(backoffDelay(failed - 1), signal)
     }
   }
@@ -245,6 +267,7 @@ if (import.meta.vitest) {
   const { fakeClients } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
   const { SetupOptions } = await import('@/model/parameter/setup_option')
+  const { GoAway } = await import('@/model/control/goaway')
 
   const ORIGIN = 'moqt://relay.example.com/app'
   const member = () => {
@@ -342,6 +365,35 @@ if (import.meta.vitest) {
       expect(currentClient()).toBe(fakes.clients[1])
       expect(a.log).toEqual(['reconnecting 1', 'reconnected'])
       expect(b.log).toEqual(a.log)
+    })
+
+    test('GOAWAY moves every player to the new session URI, or back to this one without it', async () => {
+      const a = member()
+      await acquire(a, ORIGIN, {})
+      fakes.clients[0]!.emit('goaway', new GoAway('moqt://next.example.com/app', 5000n))
+      await flush()
+      expect(fakes.clients[0]!.disconnected).toBe(true)
+      expect(currentClient()).toBe(fakes.clients[1])
+      expect(fakes.clients[1]!.options.url).toBe('moqt://next.example.com/app')
+      expect(a.log).toEqual(['reconnecting 1', 'reconnected'])
+
+      fakes.clients[1]!.emit('goaway', new GoAway(undefined, 5000n))
+      await flush()
+      expect(fakes.clients[2]!.options.url).toBe('moqt://next.example.com/app')
+    })
+
+    test('a GOAWAY during setup is retried at the new session URI', async () => {
+      fakes.restore()
+      const setup = Promise.withResolvers<void>()
+      fakes = fakeClients((i) => (i === 0 ? setup.promise : Promise.resolve()))
+      const connecting = acquire(member(), ORIGIN, {})
+      await flush()
+      fakes.clients[0]!.emit('goaway', new GoAway('moqt://next.example.com/app', 5000n))
+      setup.resolve()
+      expect(await connecting).toBe(fakes.clients[1])
+      expect(fakes.clients[0]!.disconnected).toBe(true)
+      expect(fakes.clients[1]!.options.url).toBe('moqt://next.example.com/app')
+      expect(currentClient()).toBe(fakes.clients[1])
     })
 
     test('after the last attempt every player fails with SESSION_LOST', async () => {

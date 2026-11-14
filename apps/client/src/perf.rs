@@ -124,7 +124,10 @@ pub async fn run(load: LoadConfig, subscribe: SubscribeConfig) -> Result<()> {
     let (connected, failed, ended_with_error) =
       (connected.clone(), failed.clone(), ended_with_error.clone());
     tasks.push(tokio::spawn(async move {
-      match MoqConnection::establish(&server, insecure, transport).await {
+      match MoqConnection::establish(&server, insecure, transport)
+        .await
+        .map(|(c, _)| c)
+      {
         Ok(moq) => {
           connected.fetch_add(1, Ordering::Relaxed);
           if let Err(e) = subscriber::run(moq, config).await {

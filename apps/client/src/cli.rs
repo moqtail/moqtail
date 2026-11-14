@@ -115,7 +115,7 @@ pub enum Command {
   Fetch,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(
   name = "moqtail-client",
   author,

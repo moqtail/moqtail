@@ -16,6 +16,7 @@ use crate::cli::Transport;
 use anyhow::Result;
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
 use moqtail::model::control::control_message::{ControlMessage, ControlMessageTrait};
+use moqtail::model::control::goaway::GoAway;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
   control::setup::{Setup, SetupSender},
@@ -27,7 +28,8 @@ use moqtail::transport::qlog;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info};
+use tokio::sync::oneshot;
+use tracing::{debug, error, info, warn};
 use wtransport::endpoint::ConnectOptions;
 use wtransport::quinn;
 use wtransport::quinn::TransportConfig;
@@ -38,22 +40,19 @@ const CLIENT_SUPPORTED_VERSIONS: &str = "moqt-22";
 
 pub struct MoqConnection {
   pub connection: Arc<TransportConnection>,
-  // Held for the session's lifetime so the control stream is not closed (which
-  // would be a protocol violation). Requests use their own bidi streams, so it is
-  // otherwise unused after SETUP.
-  #[allow(dead_code)]
-  pub control_stream: ControlStreamHandler,
   /// How many filter ranges the server allows in one request: its
   /// MAX_FILTER_RANGES, or 0 when it sent none, which allows no Range Filter.
   pub peer_max_filter_ranges: u64,
 }
 
 impl MoqConnection {
+  /// Connects and runs SETUP. The receiver yields the first GOAWAY the server
+  /// sends on the control stream.
   pub async fn establish(
     server: &str,
     no_cert_validation: bool,
     transport: Transport,
-  ) -> Result<Self> {
+  ) -> Result<(Self, oneshot::Receiver<GoAway>)> {
     let mut setup_options = Vec::new();
 
     // moqt:// is the single input scheme; the transport is chosen separately.
@@ -155,11 +154,16 @@ impl MoqConnection {
       .unwrap_or(0);
     info!("Server allows {peer_max_filter_ranges} filter ranges per request");
 
-    Ok(MoqConnection {
-      connection,
-      control_stream,
-      peer_max_filter_ranges,
-    })
+    let (goaway_tx, goaway_rx) = oneshot::channel();
+    tokio::spawn(watch_control_stream(control_stream, goaway_tx));
+
+    Ok((
+      MoqConnection {
+        connection,
+        peer_max_filter_ranges,
+      },
+      goaway_rx,
+    ))
   }
 
   /// Connects over WebTransport (HTTP/3). ALPN here is just `h3` (the default from
@@ -261,6 +265,35 @@ impl MoqConnection {
       .connect_with(client_config, remote_addr, host)?
       .await?;
     Ok(TransportConnection::Quic(connection))
+  }
+}
+
+/// Reads the server's control stream for the rest of the session and forwards the
+/// first GOAWAY. Holding the stream keeps it open: closing it mid-session is a
+/// protocol violation. Requests use their own bidi streams, so nothing else
+/// arrives here that the client acts on.
+async fn watch_control_stream(
+  mut control_stream: ControlStreamHandler,
+  goaway_tx: oneshot::Sender<GoAway>,
+) {
+  let mut goaway_tx = Some(goaway_tx);
+  loop {
+    match control_stream.next_message().await {
+      Ok(ControlMessage::Goaway(goaway)) => {
+        warn!(
+          "GOAWAY received: new session URI {:?}, timeout {} ms",
+          goaway.new_session_uri, goaway.timeout
+        );
+        if let Some(tx) = goaway_tx.take() {
+          let _ = tx.send(*goaway);
+        }
+      }
+      Ok(msg) => debug!("Ignoring control message: {:?}", msg),
+      Err(e) => {
+        debug!("Control stream ended: {:?}", e);
+        return;
+      }
+    }
   }
 }
 

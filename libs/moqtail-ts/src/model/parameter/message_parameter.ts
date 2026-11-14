@@ -21,6 +21,7 @@ import { ProtocolViolationError } from '../error/error'
 import { GroupOrder, LocationFilterType, SwitchMode } from '../control/constant'
 import { MessageParameterType } from './constant'
 import { Location } from '../common'
+import { Tuple } from '../common/tuple'
 import { AuthorizationToken } from './common'
 import { FillTimeout } from './message/fill_timeout'
 import { ObjectDeliveryTimeout } from './message/object_delivery_timeout'
@@ -296,6 +297,8 @@ enum ValueShape {
   BareLocation,
   /** A Location Filter Type and the varints it calls for, no length prefix. */
   LocationFilter,
+  /** A Track Namespace, no length prefix: TRACK_NAMESPACE_PREFIX. */
+  TrackNamespace,
   LengthPrefixedBytes,
 }
 
@@ -310,8 +313,9 @@ function valueShapeOf(typeValue: bigint): ValueShape {
       return ValueShape.BareLocation
     case BigInt(MessageParameterType.LocationFilter):
       return ValueShape.LocationFilter
-    case BigInt(MessageParameterType.SwitchFrom):
     case BigInt(MessageParameterType.TrackNamespacePrefix):
+      return ValueShape.TrackNamespace
+    case BigInt(MessageParameterType.SwitchFrom):
     case BigInt(MessageParameterType.SubgroupFilter):
     case BigInt(MessageParameterType.ObjectIdFilter):
     case BigInt(MessageParameterType.PriorityFilter):
@@ -345,6 +349,7 @@ export function serializeMessageParameterKvps(items: KeyValuePair[]): FrozenByte
         break
       case ValueShape.BareLocation:
       case ValueShape.LocationFilter:
+      case ValueShape.TrackNamespace:
         if (isBytes(kvp)) buf.putBytes(kvp.value)
         break
       case ValueShape.LengthPrefixedBytes:
@@ -389,6 +394,9 @@ function readMessageParameterKvps(buf: BaseByteBuffer, more: () => boolean): Key
         // Decoded here because nothing else knows where it ends.
         items.push(KeyValuePair.newBytes(typeValue, LocationFilter.deserializeValue(buf).serializeValue()))
         break
+      case ValueShape.TrackNamespace:
+        items.push(KeyValuePair.newBytes(typeValue, Tuple.deserialize(buf).serialize().toUint8Array()))
+        break
       case ValueShape.LengthPrefixedBytes:
         items.push(KeyValuePair.deserializeBytesValue(buf, typeValue))
         break
@@ -428,6 +436,21 @@ if (import.meta.vitest) {
   })
 
   describe('message parameter wire encodings', () => {
+    test('TRACK_NAMESPACE_PREFIX has no length prefix', () => {
+      // The field count follows the Type directly.
+      const wire = new Uint8Array([0x34, 0x02, 0x02, 0x61, 0x62, 0x01, 0x63])
+      const value = Tuple.fromUtf8Path('ab/c').serialize().toUint8Array()
+      const encoded = serializeMessageParameterKvps([KeyValuePair.newBytes(0x34n, value)]).toUint8Array()
+      expect(encoded).toEqual(wire)
+
+      const buf = new ByteBuffer()
+      buf.putBytes(wire)
+      const frozen = buf.freeze()
+      const decoded = deserializeMessageParameterKvps(frozen, 1)
+      expect(decoded).toEqual([KeyValuePair.newBytes(0x34n, value)])
+      expect(frozen.remaining).toBe(0)
+    })
+
     test('LARGEST_OBJECT is an unprefixed Location', () => {
       // Type Delta 0x09 then the Group and Object varints, no length prefix.
       // These are the bytes another implementation put on the wire for {1, 13}.

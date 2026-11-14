@@ -823,7 +823,6 @@ impl TryInto<KeyValuePair> for MessageParameter {
         };
         KeyValuePair::new_bytes(kind.parameter_type() as u64, value)
       }
-      // A namespace tuple: length-prefixed, even though the Type is even.
       Self::TrackNamespacePrefix { prefix } => KeyValuePair::new_bytes(
         MessageParameterType::TrackNamespacePrefix as u64,
         prefix.serialize()?,
@@ -896,6 +895,8 @@ enum ValueShape {
   BareLocation,
   /// A Location Filter Type and the varints it calls for, no length prefix.
   LocationFilter,
+  /// A Track Namespace, no length prefix: TRACK_NAMESPACE_PREFIX.
+  TrackNamespace,
   LengthPrefixedBytes,
 }
 
@@ -946,6 +947,9 @@ fn read_message_parameter_value(
     ValueShape::LocationFilter => {
       KeyValuePair::new_bytes(type_value, LocationFilter::deserialize(bytes)?.serialize()?)
     }
+    ValueShape::TrackNamespace => {
+      KeyValuePair::new_bytes(type_value, Tuple::deserialize(bytes)?.serialize()?)
+    }
     ValueShape::LengthPrefixedBytes => KeyValuePair::deserialize_bytes_value(bytes, type_value),
     ValueShape::VarInt => Ok(KeyValuePair::VarInt {
       type_value,
@@ -965,8 +969,9 @@ const fn value_shape(type_value: u64) -> ValueShape {
     ValueShape::BareLocation
   } else if type_value == MessageParameterType::LocationFilter as u64 {
     ValueShape::LocationFilter
-  } else if type_value == MessageParameterType::TrackNamespacePrefix as u64
-    || type_value == MessageParameterType::SwitchFrom as u64
+  } else if type_value == MessageParameterType::TrackNamespacePrefix as u64 {
+    ValueShape::TrackNamespace
+  } else if type_value == MessageParameterType::SwitchFrom as u64
     || is_object_range_filter(type_value)
     || type_value == MessageParameterType::TrackPropertyFilter as u64
   {
@@ -1012,7 +1017,7 @@ pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes
         buf.put_u8(byte);
       }
       (
-        ValueShape::BareLocation | ValueShape::LocationFilter,
+        ValueShape::BareLocation | ValueShape::LocationFilter | ValueShape::TrackNamespace,
         KeyValuePair::Bytes { value, .. },
       ) => {
         buf.extend_from_slice(value);
@@ -1666,6 +1671,25 @@ mod tests {
       decoded.get_param(MessageParameterType::SubscriberPriority),
       Some(&MessageParameter::new_subscriber_priority(200))
     );
+  }
+
+  #[test]
+  fn test_track_namespace_prefix_has_no_length_prefix() {
+    // The field count follows the Type directly; a length in front would be read
+    // as the count by other implementations.
+    let params = vec![MessageParameter::new_track_namespace_prefix(
+      Tuple::from_utf8_path("ab/c"),
+    )];
+    let wire: &[u8] = &[0x34, 0x02, 0x02, b'a', b'b', 0x01, b'c'];
+    assert_eq!(
+      serialize_message_parameters(&params).unwrap().as_ref(),
+      wire
+    );
+    let mut bytes = Bytes::from_static(wire);
+    let decoded =
+      deserialize_message_parameters(&mut bytes, 1, ControlMessageType::RequestUpdate).unwrap();
+    assert_eq!(decoded, params);
+    assert!(!bytes.has_remaining());
   }
 
   #[test]

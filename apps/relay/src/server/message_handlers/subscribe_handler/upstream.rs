@@ -262,6 +262,9 @@ async fn upstream_subscribe_exchange(
               )
               .await;
 
+              if m.status_code == PublishDoneStatusCode::TrackEnded {
+                track.end_at_largest().await;
+              }
               // SSTS: the track is no longer available upstream; remove it
               // from the switching sets of its subscribers.
               track.remove_from_subscriber_switching_sets().await;

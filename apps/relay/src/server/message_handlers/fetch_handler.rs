@@ -551,8 +551,13 @@ pub async fn handle(
         } else {
           Vec::new()
         };
-        // End Of Track holds only while the response ends where the publisher's does.
-        let end_of_track = upstream_end_of_track && upstream_end.as_ref() == Some(&end_location);
+        let end_of_track = fetch_end_of_track(
+          upstream_end
+            .as_ref()
+            .map(|end| (end, upstream_end_of_track)),
+          track.ended_at().as_ref(),
+          &end_location,
+        );
         let fetch_ok = FetchOk::new(end_of_track, end_location.clone(), vec![], track_properties);
         if let Err(error) = stream_handler
           .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
@@ -660,11 +665,25 @@ async fn send_request_error(
   client.downstream_requests.remove(request_id).await;
 }
 
+/// FETCH_OK's End Of Track: true only when the response ends where the track does.
+/// That is where the publisher's FETCH_OK said, when the relay asked it, or where the
+/// track ended, for a range the relay answers from its cache.
+fn fetch_end_of_track(
+  upstream: Option<(&Location, bool)>,
+  ended_at: Option<&Location>,
+  end_location: &Location,
+) -> bool {
+  match upstream {
+    Some((end, end_of_track)) => end_of_track && end == end_location,
+    None => ended_at == Some(end_location),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, empty_range_outcome, groups_to_claim,
-    local_state_answers, resolve_fetch_range, unresolved_fetch_range,
+    FetchRangeError, concrete_end_location, empty_range_outcome, fetch_end_of_track,
+    groups_to_claim, local_state_answers, resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
   use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -678,6 +697,23 @@ mod tests {
 
   fn range(start: Location, end: Location) -> LocationFilter {
     LocationFilter::AbsoluteRange { start, end }
+  }
+
+  #[test]
+  fn a_cached_fetch_reaching_the_end_of_an_ended_track_says_so() {
+    let end = loc(1500, 1);
+    assert!(fetch_end_of_track(None, Some(&end), &end));
+    assert!(
+      !fetch_end_of_track(None, Some(&end), &loc(1500, 0)),
+      "stops short"
+    );
+    assert!(
+      !fetch_end_of_track(None, None, &end),
+      "not known to have ended"
+    );
+    // When the publisher was asked, its FETCH_OK decides.
+    assert!(fetch_end_of_track(Some((&end, true)), None, &end));
+    assert!(!fetch_end_of_track(Some((&end, false)), Some(&end), &end));
   }
 
   #[test]

@@ -21,9 +21,19 @@ import { Badge, Card, ErrorNote } from './ui';
 import { useDashboard } from '../context';
 import { JsonSeqParser } from '../lib/stream';
 import { buildTimeline, type TimelineMessage } from '../lib/timeline';
+import { isRoutineStreamEvent } from '../pages/Events';
 
 /** Events kept in memory for one connection's timeline. */
 const MAX_EVENTS = 20000;
+
+/** `events` cut to `max` by dropping the oldest stream headers and FINs. A busy
+ *  publisher opens a stream per group, so those soon outnumber everything else;
+ *  control messages and cut streams are kept whatever their age. */
+export function keepRecent(events: QlogEvent[], max: number): QlogEvent[] {
+  let excess = events.length - max;
+  if (excess <= 0) return events;
+  return events.filter(e => excess <= 0 || !isRoutineStreamEvent(e) || excess-- <= 0);
+}
 
 function Line(props: { message: TimelineMessage; showHex: boolean; nested?: boolean }) {
   const m = props.message;
@@ -52,10 +62,12 @@ export function Timeline(props: { connId: number; open: boolean }) {
   const [error, setError] = useState<ApiError>();
   const [showHex, setShowHex] = useState(false);
   const [filter, setFilter] = useState('');
+  const [trimmed, setTrimmed] = useState(false);
 
   useEffect(() => {
     setEvents([]);
     setError(undefined);
+    setTrimmed(false);
     const controller = new AbortController();
     const parser = new JsonSeqParser();
     api
@@ -66,7 +78,12 @@ export function Timeline(props: { connId: number; open: boolean }) {
           const added = parser
             .push(text)
             .filter((r): r is QlogEvent => typeof (r as QlogEvent).time === 'number');
-          if (added.length) setEvents(previous => [...previous, ...added].slice(-MAX_EVENTS));
+          if (!added.length) return;
+          setEvents(previous => {
+            const all = [...previous, ...added];
+            if (all.length > MAX_EVENTS) setTrimmed(true);
+            return keepRecent(all, MAX_EVENTS);
+          });
         },
         controller.signal,
       )
@@ -192,6 +209,12 @@ export function Timeline(props: { connId: number; open: boolean }) {
               {d.cut > 0 && <span class="text-amber-300">, {d.cut} cut short</span>}
             </li>
           ))}
+          {trimmed && (
+            <li class="text-neutral-500">
+              Counts cover the most recent streams; older stream headers were dropped to keep the
+              page responsive.
+            </li>
+          )}
         </ul>
       )}
       {!error && events.length === 0 && <p class="text-xs text-neutral-500">No events yet.</p>}

@@ -25,6 +25,7 @@ import { parseJson } from './json';
 import { remoteIp } from '../components/ui';
 import { trackStatus } from '../pages/Tracks';
 import { catalogUrl } from '../components/Preview';
+import { keepRecent } from '../components/Timeline';
 import { isRoutineStreamEvent } from '../pages/Events';
 import { namespaceRows, underPrefix } from '../pages/Namespaces';
 
@@ -246,5 +247,19 @@ describe('catalogUrl', () => {
     expect(catalogUrl('https://relay.example:4433', 'ipc-IPC.2d001')).toBe(
       'moqt://relay.example:4433#msf:ipc-IPC.2d001--catalog',
     );
+  });
+});
+
+describe('keepRecent', () => {
+  it('drops the oldest stream headers and keeps control messages', () => {
+    const ev = (time: number, name: string) => ({ time, name, data: {} });
+    const events = [
+      ev(0, 'moqt:control_message_parsed'),
+      ev(1, 'moqt:subgroup_header_parsed'),
+      ev(2, 'moqt:subgroup_header_parsed'),
+      ev(3, 'moqt:subgroup_header_parsed'),
+    ];
+    expect(keepRecent(events, 2).map(e => e.time)).toEqual([0, 3]);
+    expect(keepRecent(events, 4)).toBe(events);
   });
 });

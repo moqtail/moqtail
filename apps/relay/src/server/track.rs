@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod ingest;
+mod new_group_request;
 mod publisher_streams;
 pub(crate) mod seen_objects;
 pub(crate) mod track_cache;
@@ -20,6 +21,7 @@ pub(crate) mod track_manager;
 mod upstream_requests;
 
 use crate::server::inspect;
+use new_group_request::SentNewGroupRequest;
 pub use publisher_streams::{DatagramArrivals, PublisherStreamProgress, await_publisher_streams};
 use upstream_requests::UpstreamRequests;
 pub(crate) use upstream_requests::{UpstreamRequestCancellation, UpstreamRequestKind};
@@ -236,6 +238,9 @@ pub struct Track {
   /// while nothing downstream wants the track; this records whether it has
   /// since been raised, so it is raised only once.
   pub upstream_forward: Arc<AtomicBool>,
+  /// The last NEW_GROUP_REQUEST the relay passed upstream, so a subscriber's
+  /// request is not sent again while an equal or larger one is outstanding.
+  sent_new_group_request: Arc<std::sync::Mutex<Option<SentNewGroupRequest>>>,
   /// The traffic counters of the accounting zone this track falls in, if any.
   pub zone: Option<Arc<relay_hooks::stats::ZoneCounters>>,
 }
@@ -304,6 +309,7 @@ impl Track {
       upstream_requests: Arc::new(Mutex::new(UpstreamRequests::default())),
       pending_upstream_subscribe_count: Arc::new(AtomicUsize::new(0)),
       upstream_forward: Arc::new(AtomicBool::new(false)),
+      sent_new_group_request: Arc::new(std::sync::Mutex::new(None)),
     }
   }
 

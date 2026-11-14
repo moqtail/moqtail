@@ -15,8 +15,9 @@
 //! The relay's own requests upstream for a track, so they can be cancelled together.
 
 use super::Track;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use std::sync::atomic::Ordering;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpstreamRequestKind {
@@ -36,6 +37,9 @@ struct UpstreamRequest {
   publisher_connection_id: usize,
   kind: UpstreamRequestKind,
   cancel: oneshot::Sender<UpstreamRequestCancellation>,
+  /// Parameters for a REQUEST_UPDATE to send on the request's stream, once its
+  /// task has asked for them.
+  updates: Option<mpsc::UnboundedSender<Vec<MessageParameter>>>,
 }
 
 #[derive(Debug, Default)]
@@ -56,6 +60,7 @@ impl UpstreamRequests {
       publisher_connection_id,
       kind,
       cancel,
+      updates: None,
     });
     receiver
   }
@@ -139,6 +144,33 @@ impl Track {
       .lock()
       .await
       .cancel_matching(|request| request.request_id == request_id, reason);
+  }
+
+  /// The REQUEST_UPDATEs to send on the stream of upstream request `request_id`,
+  /// which is registered first.
+  pub(crate) async fn upstream_request_updates(
+    &self,
+    request_id: u64,
+  ) -> mpsc::UnboundedReceiver<Vec<MessageParameter>> {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let mut requests = self.upstream_requests.lock().await;
+    if let Some(request) = requests.0.iter_mut().find(|r| r.request_id == request_id) {
+      request.updates = Some(sender);
+    }
+    receiver
+  }
+
+  /// Asks every upstream SUBSCRIBE of this track to send a REQUEST_UPDATE with
+  /// `parameters`.
+  pub(crate) async fn update_upstream_subscribes(&self, parameters: Vec<MessageParameter>) {
+    let requests = self.upstream_requests.lock().await;
+    for request in &requests.0 {
+      if request.kind == UpstreamRequestKind::Subscribe
+        && let Some(updates) = &request.updates
+      {
+        let _ = updates.send(parameters.clone());
+      }
+    }
   }
 
   pub(crate) async fn cancel_for_malformed_publisher(&self, publisher_connection_id: usize) {

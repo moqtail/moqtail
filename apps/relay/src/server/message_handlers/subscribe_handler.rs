@@ -424,6 +424,12 @@ async fn handle_subscribe_message(
     for publisher in &publishers {
       let mut new_sub = sub.clone();
       new_sub.subscribe_parameters = parameters::upstream_subscribe();
+      // With no subscription upstream yet, a NEW_GROUP_REQUEST rides on this one.
+      if let Some(value) = parameters::new_group_request(&sub.subscribe_parameters) {
+        new_sub
+          .subscribe_parameters
+          .push(MessageParameter::new_group_request(value));
+      }
       // Its own request id, which is what routes this publisher's response back.
       new_sub.request_id = publisher.next_request_id(&context.relay_next_request_id);
 
@@ -497,6 +503,9 @@ async fn handle_subscribe_message(
               sub.request_id,
             )
             .await;
+          }
+          if let Some(value) = parameters::new_group_request(&sub.subscribe_parameters) {
+            super::publish_handler::forward_new_group_request(&track_arc, &context, value).await;
           }
         }
         sent

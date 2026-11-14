@@ -25,6 +25,7 @@ use crate::server::track::{
 use anyhow::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::request_error::RequestError;
+use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::RequestErrorCode;
@@ -121,6 +122,10 @@ async fn upstream_subscribe_exchange(
     }
     receiver
   };
+  // REQUEST_UPDATEs the relay sends on this stream once it is answered, and how
+  // many of them the publisher has yet to answer.
+  let mut updates_rx = track.upstream_request_updates(relay_request_id).await;
+  let mut pending_updates = 0usize;
 
   // A publisher owes exactly one SUBSCRIBE_OK or REQUEST_ERROR. One that stays
   // connected and sends neither would otherwise hold the subscriber's request stream
@@ -168,9 +173,28 @@ async fn upstream_subscribe_exchange(
         .await;
         break;
       }
+      Some(parameters) = updates_rx.recv(), if answered => {
+        let update = RequestUpdate::new(
+          publisher.next_request_id(&context.relay_next_request_id),
+          parameters,
+        );
+        match upstream.send(&ControlMessage::RequestUpdate(Box::new(update))).await {
+          Ok(()) => pending_updates += 1,
+          Err(e) => warn!("Failed to send REQUEST_UPDATE upstream for {:?}: {:?}", full_track_name, e),
+        }
+      }
       msg = upstream.next_message() => {
         answered = true;
         match msg {
+          Ok(ControlMessage::RequestOk(_)) if pending_updates > 0 => pending_updates -= 1,
+          // A refused update leaves the subscription as it was.
+          Ok(ControlMessage::RequestError(m)) if pending_updates > 0 => {
+            pending_updates -= 1;
+            warn!(
+              "Publisher {} refused a REQUEST_UPDATE for {:?}: {:?}",
+              publisher.connection_id, full_track_name, m.error_code
+            );
+          }
           Ok(ControlMessage::SubscribeOk(m)) => {
             let accepted =
               handle_subscribe_ok_message(publisher.clone(), relay_request_id, *m, context.clone())

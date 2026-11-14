@@ -23,6 +23,7 @@ use tokio::task::yield_now;
 use tokio::time::{Instant, sleep_until};
 
 use crate::model::common::location::Location;
+use crate::model::common::varint::BufVarIntExt;
 use crate::model::control::constant::GroupOrder;
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
@@ -34,6 +35,7 @@ use crate::model::data::fetch_object::{
   EndOfRangeKind, FetchObject, FetchObjectContext, FetchObjectPayload,
 };
 use crate::model::data::object::Object;
+use crate::model::data::padding::PADDING_STREAM_TYPE;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
@@ -448,8 +450,16 @@ impl RecvDataStream {
 
     let mut previous_object_id: Option<u64> = None;
     let mut fetch_state = FetchReadState::default();
+    // A padding stream carries nothing: its bytes are read and dropped until it ends.
+    let mut padding = false;
 
     loop {
+      if !recv_bytes.is_empty() && header_info.is_none() && !padding {
+        padding = recv_bytes.clone().freeze().get_vi().ok() == Some(PADDING_STREAM_TYPE);
+      }
+      if padding {
+        recv_bytes.clear();
+      }
       if !recv_bytes.is_empty() && header_info.is_none() {
         let is_fetch = recv_bytes[0] == FetchHeaderType::Type0x05 as u8;
         let view = lend(&mut recv_bytes);
@@ -1367,6 +1377,24 @@ mod tests {
       format!("Unknown to {:?}", Location::new(10, 5)),
     ];
     assert_eq!(items, expected);
+  }
+
+  #[tokio::test]
+  async fn a_padding_stream_is_read_to_its_end_and_yields_nothing() {
+    let (mut send, recv) = setup_stream_pair().await;
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+    let padding = crate::model::data::padding::PaddingStream::new(64)
+      .serialize()
+      .unwrap();
+    send.write_all(&padding).await.unwrap();
+    send.finish().await.unwrap();
+
+    let (receiver, item) = receiver.next_item().await;
+    assert!(item.is_none());
+    assert!(!receiver.was_aborted());
   }
 
   #[tokio::test]

@@ -61,6 +61,14 @@ pub fn upstream_subscribe() -> Vec<MessageParameter> {
   ]
 }
 
+/// The NEW_GROUP_REQUEST value a subscriber's SUBSCRIBE or REQUEST_UPDATE carries.
+pub fn new_group_request(params: &[MessageParameter]) -> Option<u64> {
+  match find(params, MessageParameterType::NewGroupRequest) {
+    Some(MessageParameter::NewGroupRequest { group }) => Some(*group),
+    _ => None,
+  }
+}
+
 /// The relay's SUBSCRIBE_OK to a subscriber, given what the upstream publisher said.
 ///
 /// LARGEST_OBJECT is the only parameter that survives the hop, and only as an input:

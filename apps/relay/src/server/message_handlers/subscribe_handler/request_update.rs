@@ -43,6 +43,8 @@ pub async fn handle_request_update(
   context: Arc<SessionContext>,
   existing_req_id: u64,
 ) -> Result<(), TerminationCode> {
+  // A fill this update asks for is named by the update's own Request ID.
+  let update_request_id = update_msg.request_id;
   // An update can carry SWITCH_FROM too, activating the subscription it arrives on.
   let asks_for_a_fill = update_msg
     .parameters
@@ -248,9 +250,15 @@ pub async fn handle_request_update(
           context.clone(),
           track_arc.clone(),
           subscription,
-          existing_req_id,
+          update_request_id,
         )
         .await;
+      }
+
+      if let Some(value) =
+        crate::server::message_handlers::parameters::new_group_request(&update_parameters)
+      {
+        super::super::publish_handler::forward_new_group_request(&track_arc, &context, value).await;
       }
     }
     Some(Err(e)) => {

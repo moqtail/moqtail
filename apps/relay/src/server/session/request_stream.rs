@@ -67,6 +67,9 @@ impl RequestStreamKind {
   }
 }
 
+/// Why a session is closed when the peer sends a message that does not parse.
+const MALFORMED_REASON: &str = "Malformed message on request stream";
+
 /// Serves a request stream the peer opened, from its first message until it closes.
 pub(crate) async fn accept(
   context: Arc<SessionContext>,
@@ -84,6 +87,9 @@ pub(crate) async fn accept(
     Ok(m) => m,
     Err(e) => {
       error!("Failed to read first message on request bi-stream: {:?}", e);
+      if stream_handler.received_malformed_message() {
+        Session::close_session(context, e, MALFORMED_REASON);
+      }
       return;
     }
   };
@@ -230,9 +236,13 @@ async fn serve_prefix_subscription(
               return;
             }
           }
-          Err(_) => {
-            // FIN or RESET — subscriber cancelled
+          Err(e) => {
+            // FIN or RESET — subscriber cancelled — unless the message was malformed
+            let malformed = stream_handler.received_malformed_message();
             cancel(RequestStreamKind::PrefixSubscription, client, request_id, &context).await;
+            if malformed {
+              Session::close_session(context, e, MALFORMED_REASON);
+            }
             return;
           }
         }
@@ -304,6 +314,12 @@ async fn serve_request(
               Session::close_session(context, code, reason);
               return;
             }
+          }
+          Err(e) if stream_handler.received_malformed_message() => {
+            client.unregister_response_sender(request_id).await;
+            cancel(kind, client.clone(), request_id, &context).await;
+            Session::close_session(context, e, MALFORMED_REASON);
+            return;
           }
           Err(_) => {
             // FIN or RESET: the requester cancelled by closing the stream.

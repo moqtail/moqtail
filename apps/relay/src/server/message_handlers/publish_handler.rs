@@ -510,10 +510,60 @@ pub(crate) async fn ensure_upstream_forwarding(
     aliases.keys().copied().collect()
   };
 
+  update_publishers(
+    context,
+    &full_track_name,
+    publisher_ids,
+    vec![MessageParameter::new_forward(true)],
+    "Raised upstream Forward State",
+  )
+  .await;
+}
+
+/// Pass a subscriber's NEW_GROUP_REQUEST of `value` on to the track's publishers,
+/// unless one already sent covers it or the track cannot honour it.
+pub(crate) async fn forward_new_group_request(
+  track: &Arc<Track>,
+  context: &Arc<SessionContext>,
+  value: u64,
+) {
+  if !track.claim_new_group_request(value).await {
+    return;
+  }
+  let parameters = vec![MessageParameter::new_group_request(value)];
+  if track.origin() == TrackOrigin::Publish {
+    let publisher_ids = track
+      .publisher_aliases
+      .read()
+      .await
+      .keys()
+      .copied()
+      .collect();
+    update_publishers(
+      context,
+      &track.full_track_name,
+      publisher_ids,
+      parameters.clone(),
+      "Sent NEW_GROUP_REQUEST",
+    )
+    .await;
+  }
+  track.update_upstream_subscribes(parameters).await;
+}
+
+/// Sends a REQUEST_UPDATE with `parameters` to each publisher on its own PUBLISH
+/// request stream, where the responses to that request belong.
+async fn update_publishers(
+  context: &Arc<SessionContext>,
+  full_track_name: &FullTrackName,
+  publisher_ids: Vec<usize>,
+  parameters: Vec<MessageParameter>,
+  what: &str,
+) {
   for connection_id in publisher_ids {
     let Some(publisher_request_id) = context
       .track_manager
-      .get_publish_request_id(&full_track_name, connection_id)
+      .get_publish_request_id(full_track_name, connection_id)
       .await
     else {
       warn!("No stored PUBLISH for publisher {connection_id} on {full_track_name:?}");
@@ -526,10 +576,8 @@ pub(crate) async fn ensure_upstream_forwarding(
 
     let update = moqtail::model::control::request_update::RequestUpdate::new(
       publisher.next_request_id(&context.relay_next_request_id),
-      vec![MessageParameter::new_forward(true)],
+      parameters.clone(),
     );
-    // Goes on the publisher's own PUBLISH request stream, where the responses to
-    // that request belong.
     let delivered = publisher
       .send_response(
         publisher_request_id,
@@ -537,7 +585,7 @@ pub(crate) async fn ensure_upstream_forwarding(
       )
       .await;
     if delivered {
-      info!("Raised upstream Forward State for {full_track_name:?} (publisher {connection_id})");
+      info!("{what} for {full_track_name:?} (publisher {connection_id})");
     } else {
       warn!("No open PUBLISH request stream for publisher {connection_id} on {full_track_name:?}");
     }
@@ -765,7 +813,6 @@ pub(crate) async fn forward_publish_downstream(
             subscription.as_ref(),
             &track_arc,
             &context,
-            publish_request_id,
           )
           .await;
         }
@@ -833,8 +880,11 @@ async fn apply_pushed_update(
   subscription: Option<&Arc<RwLock<Subscription>>>,
   track_arc: &Arc<Track>,
   context: &Arc<SessionContext>,
-  publish_request_id: u64,
 ) {
+  // A fill this update asks for is named by the update's own Request ID.
+  let update_request_id = update.request_id;
+  let new_group_request =
+    crate::server::message_handlers::parameters::new_group_request(&update.parameters);
   let changes_filter = update
     .parameters
     .iter()
@@ -908,9 +958,12 @@ async fn apply_pushed_update(
       context.clone(),
       track_arc.clone(),
       subscription.clone(),
-      publish_request_id,
+      update_request_id,
     )
     .await;
+  }
+  if let Some(value) = new_group_request {
+    forward_new_group_request(track_arc, context, value).await;
   }
 }
 

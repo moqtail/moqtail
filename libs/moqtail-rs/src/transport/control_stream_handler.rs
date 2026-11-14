@@ -44,6 +44,9 @@ pub struct ControlStreamHandler {
   recv_bytes: BytesMut,
   recv_buf: Box<[u8; MTU_SIZE]>,
   partial_message_deadline: Option<Instant>,
+  /// Whether the peer sent a message that failed to parse. `next_message` reports
+  /// that and a clean FIN with the same code; a request stream must tell them apart.
+  malformed: bool,
   /// Id of the peer connection on the other end of this stream, used to label
   /// control-message traces. `None` when the caller did not set one.
   peer_id: Option<usize>,
@@ -57,8 +60,15 @@ impl ControlStreamHandler {
       recv_bytes: BytesMut::new(),
       recv_buf: Box::new([0; MTU_SIZE]),
       partial_message_deadline: None,
+      malformed: false,
       peer_id: None,
     }
+  }
+
+  /// Whether `next_message` failed because the peer sent a message that does not
+  /// parse, rather than because the stream ended.
+  pub fn received_malformed_message(&self) -> bool {
+    self.malformed
   }
 
   /// Associates the peer connection id with this stream so control-message
@@ -187,6 +197,7 @@ impl ControlStreamHandler {
           Err(ParseError::ProtocolViolation { .. }) => {
             qlog::parse_error(self.qlog_conn(), self.recv.id(), &self.recv_bytes);
             observe::parse_error(self.qlog_conn(), self.recv.id());
+            self.malformed = true;
             warn!(
               "control message received from {} failed to parse ({} bytes): {}",
               self.peer(),
@@ -694,9 +705,35 @@ mod tests {
 
     // The FIN is only observed as an error on the following call.
     match plane.next_message().await {
-      Err(_) => Ok(()),
+      Err(_) => assert!(!plane.received_malformed_message()),
       Ok(m) => panic!("Expected error after FIN, got {m:?}"),
     }
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_unparsable_message_is_reported_as_malformed() -> Result<(), Box<dyn Error>> {
+    use crate::model::control::request_update::RequestUpdate;
+
+    let setup = TestSetup::new().await?;
+    let (mut plane, mut server_send) = setup.create_control_plane().await?;
+
+    // A REQUEST_UPDATE with no parameters ends in its count, 0. Swap that for one
+    // parameter of type 0x3C, which no draft defines, and fix the 16-bit length.
+    let mut bytes = ControlMessage::RequestUpdate(Box::new(RequestUpdate::new(1, vec![])))
+      .serialize()?
+      .to_vec();
+    assert_eq!(bytes.pop(), Some(0));
+    bytes.extend_from_slice(&[1, 0x3C, 1]);
+    let length = (bytes.len() - 3) as u16;
+    bytes[1..3].copy_from_slice(&length.to_be_bytes());
+    server_send.write_all(&bytes).await?;
+
+    match plane.next_message().await {
+      Err(TerminationCode::ProtocolViolation) => assert!(plane.received_malformed_message()),
+      other => panic!("Expected ProtocolViolation, got {other:?}"),
+    }
+    Ok(())
   }
 
   #[tokio::test]

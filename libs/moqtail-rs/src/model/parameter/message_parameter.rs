@@ -491,10 +491,18 @@ impl MessageParameter {
           }
           MessageParameterType::FillParameters => {
             let mut payload = value.clone();
-            let count = payload.get_vi()?;
+            // Peers differ on whether a count leads the list. A count is below 0x0A,
+            // since only 8 types may appear; the first Type is at least FILL_TIMEOUT (0x0A).
+            let count = match payload.clone().get_vi() {
+              Ok(first) if first < MessageParameterType::FillTimeout as u64 => {
+                payload.get_vi()?;
+                Some(first)
+              }
+              _ => None,
+            };
             let mut parameters = Vec::new();
             let mut prev_type = 0u64;
-            for _ in 0..count {
+            while count.map_or(payload.has_remaining(), |c| (parameters.len() as u64) < c) {
               let delta_type = payload.get_vi()?;
               let type_value =
                 prev_type
@@ -521,8 +529,9 @@ impl MessageParameter {
               return Err(ParseError::ProtocolViolation {
                 context: "MessageParameter::deserialize(FillParameters)",
                 details: format!(
-                  "{} bytes left after {count} parameters",
-                  payload.remaining()
+                  "{} bytes left after {} parameters",
+                  payload.remaining(),
+                  parameters.len()
                 ),
               });
             }
@@ -1479,15 +1488,27 @@ mod tests {
   }
 
   #[test]
-  fn test_fill_parameters_without_a_count_is_rejected() {
-    // A parameter list with no count: the LOCATION_FILTER's type, 0x21, is read
-    // as a count of 33 parameters, which the value cannot hold.
-    let kvp = KeyValuePair::try_new_bytes(
-      MessageParameterType::FillParameters as u64,
-      Bytes::from_static(&[0x21, 0x01, 0x01]),
-    )
-    .unwrap();
-    assert!(MessageParameter::deserialize(&kvp).is_err());
+  fn test_fill_parameters_without_a_count_is_accepted() {
+    let fill = |bytes: &'static [u8]| {
+      MessageParameter::deserialize(
+        &KeyValuePair::try_new_bytes(
+          MessageParameterType::FillParameters as u64,
+          Bytes::from_static(bytes),
+        )
+        .unwrap(),
+      )
+      .unwrap()
+    };
+    // Meta's bytes: LOCATION_FILTER with no filter, no count before it.
+    assert_eq!(
+      fill(&[0x21, 0x00]),
+      MessageParameter::new_fill_parameters(vec![MessageParameter::new_location_filter(
+        LocationFilter::None
+      )])
+    );
+    // Same list with a count reads the same.
+    assert_eq!(fill(&[0x01, 0x21, 0x00]), fill(&[0x21, 0x00]));
+    assert_eq!(fill(&[]), MessageParameter::new_fill_parameters(vec![]));
   }
 
   #[test]

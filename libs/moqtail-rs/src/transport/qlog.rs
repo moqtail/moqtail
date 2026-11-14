@@ -298,8 +298,7 @@ fn event(name: &str, data: Value) -> Vec<u8> {
 struct TraceFile {
   writer: BufWriter<File>,
   bytes: u64,
-  /// Set once the size limit is reached; later events are not written until the
-  /// file is emptied.
+  /// Set once the size limit is reached; later events are not written.
   full: bool,
 }
 
@@ -328,23 +327,14 @@ fn write_loop(rx: Receiver<Record>, dir: &Path, vantage: &str, max_file_bytes: u
           };
           if let Some(f) = file {
             let size = json.len() as u64 + 2;
-            let json = if max_file_bytes > 0 && f.bytes + size > max_file_bytes {
-              // The file may have been emptied since (logrotate's copytruncate), so
-              // its real size is checked once the count reaches the limit.
-              let _ = f.writer.flush();
-              f.bytes = f.writer.get_ref().metadata().map_or(f.bytes, |m| m.len());
-              if f.bytes + size <= max_file_bytes {
-                f.full = false;
-                Some(json)
-              } else if f.full {
-                None
-              } else {
-                f.full = true;
-                Some(event(
-                  "moqtail:trace_truncated",
-                  json!({ "max_file_bytes": max_file_bytes }),
-                ))
-              }
+            let json = if f.full {
+              None
+            } else if max_file_bytes > 0 && f.bytes + size > max_file_bytes {
+              f.full = true;
+              Some(event(
+                "moqtail:trace_truncated",
+                json!({ "max_file_bytes": max_file_bytes }),
+              ))
             } else {
               Some(json)
             };
@@ -392,10 +382,8 @@ fn open(dir: &Path, vantage: &str, conn: usize) -> std::io::Result<BufWriter<Fil
   let mut group_id = base.clone();
   let mut n = 1;
   let file = loop {
-    // Appending lets logrotate's copytruncate empty a file the relay still writes:
-    // the next event lands at the new end, not at the old offset after a gap.
     match std::fs::OpenOptions::new()
-      .append(true)
+      .write(true)
       .create_new(true)
       .open(dir.join(format!("{group_id}.sqlog")))
     {
@@ -819,7 +807,7 @@ mod tests {
   }
 
   #[test]
-  fn a_full_file_stops_until_it_is_emptied() {
+  fn a_full_file_ends_with_a_truncation_event() {
     let dir = std::env::temp_dir().join(format!("moqtail-qlog-limit-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("server_conn1.sqlog");
@@ -858,16 +846,6 @@ mod tests {
     assert!(len <= 1000 + 150, "{len} bytes: {full:?}");
     send(5);
     assert_eq!(names(), full, "a full file takes no more events");
-
-    // Emptied in place, as logrotate's copytruncate does, it takes events again.
-    std::fs::OpenOptions::new()
-      .write(true)
-      .open(&path)
-      .unwrap()
-      .set_len(0)
-      .unwrap();
-    send(2);
-    assert_eq!(names(), ["moqt:subgroup_header_parsed"; 2]);
 
     drop(tx);
     writer.join().unwrap();

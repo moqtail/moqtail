@@ -40,7 +40,11 @@ objects. The list is used until the user edits the relays in Settings.
 - `baseUrl` is the relay's HTTP API (its `api.bind`). An empty string means the
   dashboard's own origin, for a web server that forwards `/api/v1` to the relay;
   one file then fits every host.
-- `moqUrl` is optional: the relay's MoQ address, for its metrics tracks.
+- `moqUrl` is optional: the relay's MoQ address, which the track page's preview
+  plays from. Without it the dashboard guesses: the API's host, on the relay's
+  listening port when the API address has a port, and on the default port when
+  it has none (a proxy in front on 443). Set it when the relay is published on
+  another port.
 - `name` is optional and defaults to the address.
 
 Do not put tokens in `appsettings.js`: anyone who can open the dashboard can

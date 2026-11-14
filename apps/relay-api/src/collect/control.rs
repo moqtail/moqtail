@@ -92,7 +92,7 @@ pub struct Percentiles {
 
 struct Pending {
   kind: &'static str,
-  /// The namespace the request is about, as `a/b`; kept only when zones are counted.
+  /// The namespace the request is about, as `a-b`; kept only when zones are counted.
   namespace: Option<String>,
   /// True when the relay sent the request, so it went upstream.
   upstream: bool,
@@ -426,12 +426,8 @@ fn request_namespace(message: &ControlMessage) -> Option<String> {
     ControlMessage::SubscribeTracks(m) => &m.track_namespace_prefix,
     _ => return None,
   };
-  let fields: Vec<String> = tuple
-    .fields
-    .iter()
-    .map(|f| String::from_utf8_lossy(f.as_bytes()).into_owned())
-    .collect();
-  Some(fields.join("/"))
+  let fields: Vec<String> = tuple.fields.iter().map(ToString::to_string).collect();
+  Some(fields.join("-"))
 }
 
 /// How a message answers a request, or `None` when it answers none.

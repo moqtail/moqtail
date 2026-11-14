@@ -83,13 +83,25 @@ export interface Timeline {
   data: DataStreams[];
 }
 
+/** A namespace or name field in the library's text form: letters, digits and `_`
+ *  as they are, every other byte as `.xx`. */
 function fieldText(field: Field | undefined): string {
   if (!field) return '';
-  return field.value ?? `0x${field.value_bytes ?? ''}`;
+  const bytes =
+    field.value !== undefined
+      ? new TextEncoder().encode(field.value)
+      : ((field.value_bytes ?? '').match(/../g)?.map(h => parseInt(h, 16)) ?? []);
+  let out = '';
+  for (const b of bytes) {
+    const c = String.fromCharCode(b);
+    out += /[A-Za-z0-9_]/.test(c) ? c : `.${b.toString(16).padStart(2, '0')}`;
+  }
+  return out;
 }
 
+/** A namespace as its fields joined by `-`, as the library prints it. */
 function tupleText(fields: unknown): string {
-  return Array.isArray(fields) ? fields.map(f => fieldText(f as Field)).join('/') : '';
+  return Array.isArray(fields) ? fields.map(f => fieldText(f as Field)).join('-') : '';
 }
 
 /** A parameter or setup option: its name, or its type when qlog has no name for
@@ -118,14 +130,14 @@ export function describe(m: Message): string {
   for (const key of ['track_namespace', 'track_namespace_prefix', 'track_namespace_suffix']) {
     if (key in m) {
       let ns = tupleText(m[key]);
-      if ('track_name' in m) ns += ` : ${fieldText(m.track_name as Field)}`;
+      if ('track_name' in m) ns += `--${fieldText(m.track_name as Field)}`;
       parts.push(ns);
     }
   }
   const standalone = m.standalone_fetch as Record<string, unknown> | undefined;
   if (standalone) {
     parts.push(
-      `${tupleText(standalone.track_namespace)} : ${fieldText(standalone.track_name as Field)}`,
+      `${tupleText(standalone.track_namespace)}--${fieldText(standalone.track_name as Field)}`,
     );
   }
   for (const key of ['request_id', 'track_alias', 'error_code', 'status_code', 'stream_count']) {

@@ -17,6 +17,7 @@
 //! counted per track. It follows the dashboard's `src/lib/timeline.ts`; both are
 //! tested against `testdata/timeline.sqlog`.
 
+use moqtail::model::common::tuple::TupleField;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap};
 
@@ -30,23 +31,29 @@ const REQUESTS: [&str; 7] = [
   "subscribe_tracks",
 ];
 
+/// A namespace or name field in the library's text form: letters, digits and `_`
+/// as they are, every other byte as `.xx`.
 fn field_text(field: &Value) -> String {
-  match field.get("value").and_then(Value::as_str) {
-    Some(text) => text.to_string(),
-    None => format!(
-      "0x{}",
-      field
+  let bytes = match field.get("value").and_then(Value::as_str) {
+    Some(text) => text.as_bytes().to_vec(),
+    None => {
+      let hex = field
         .get("value_bytes")
         .and_then(Value::as_str)
-        .unwrap_or("")
-    ),
-  }
+        .unwrap_or("");
+      (0..hex.len() / 2)
+        .filter_map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok())
+        .collect()
+    }
+  };
+  TupleField::new(bytes.into()).to_string()
 }
 
+/// A namespace as its fields joined by `-`, as the library prints it.
 fn tuple_text(fields: &Value) -> String {
   fields
     .as_array()
-    .map(|f| f.iter().map(field_text).collect::<Vec<_>>().join("/"))
+    .map(|f| f.iter().map(field_text).collect::<Vec<_>>().join("-"))
     .unwrap_or_default()
 }
 
@@ -96,14 +103,14 @@ pub fn describe(m: &Map<String, Value>) -> String {
     if let Some(ns) = m.get(key) {
       let mut text = tuple_text(ns);
       if let Some(name) = m.get("track_name") {
-        text += &format!(" : {}", field_text(name));
+        text += &format!("--{}", field_text(name));
       }
       parts.push(text);
     }
   }
   if let Some(standalone) = m.get("standalone_fetch") {
     parts.push(format!(
-      "{} : {}",
+      "{}--{}",
       tuple_text(&standalone["track_namespace"]),
       field_text(&standalone["track_name"])
     ));

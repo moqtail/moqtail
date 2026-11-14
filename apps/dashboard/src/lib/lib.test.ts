@@ -24,6 +24,7 @@ import { loadRelays, pinnedRelay } from './relays';
 import { parseJson } from './json';
 import { remoteIp } from '../components/ui';
 import { trackStatus } from '../pages/Tracks';
+import { catalogUrl } from '../components/Preview';
 import { isRoutineStreamEvent } from '../pages/Events';
 import { namespaceRows, underPrefix } from '../pages/Namespaces';
 
@@ -73,12 +74,12 @@ describe('buildTimeline', () => {
     data: { stream_id: streamId, message },
   });
 
-  it('prints unnamed parameters with byte values as hex', () => {
+  it('escapes namespace fields and prints unnamed parameters with byte values as hex', () => {
     const timeline = buildTimeline([
       control(1000, 'moqt:control_message_created', 2, {
         type: 'publish_namespace',
         request_id: 1,
-        track_namespace: [{ value: 'cam' }],
+        track_namespace: [{ value: 'ipc' }, { value: 'IPC-001' }, { value_bytes: 'ff' }],
         parameters: [
           { name: 'unknown', type: 0x40b57, length: 2, value_bytes: { length: 2, data: 'beef' } },
           { name: 'unknown', type: 0x40b58, value: 4 },
@@ -88,7 +89,7 @@ describe('buildTimeline', () => {
     ]);
     const entry = timeline.entries[0];
     expect(entry.kind === 'request' && entry.request.text).toBe(
-      'PUBLISH_NAMESPACE cam request_id=1 params[0x40b57=beef, 0x40b58=4, 0x21]',
+      'PUBLISH_NAMESPACE ipc-IPC.2d001-.ff request_id=1 params[0x40b57=beef, 0x40b58=4, 0x21]',
     );
   });
 
@@ -112,7 +113,7 @@ describe('buildTimeline', () => {
     const request = timeline.entries[0];
     expect(request.kind).toBe('request');
     if (request.kind === 'request') {
-      expect(request.request.text).toBe('SUBSCRIBE live : video request_id=0');
+      expect(request.request.text).toBe('SUBSCRIBE live--video request_id=0');
       expect(request.request.at).toBeCloseTo(0.1);
       expect(request.responses.map(r => r.type)).toEqual(['subscribe_ok']);
     }
@@ -158,24 +159,24 @@ describe('the trace shared with the relay', () => {
 
 describe('namespaces', () => {
   it('matches prefixes field by field', () => {
-    expect(underPrefix('live/sports', 'live')).toBe(true);
+    expect(underPrefix('live-sports', 'live')).toBe(true);
     expect(underPrefix('live', 'live')).toBe(true);
     expect(underPrefix('livestream', 'live')).toBe(false);
     expect(underPrefix('anything', '')).toBe(true);
   });
 
   it('joins announcements, tracks and namespace subscriptions', () => {
-    const track = { namespace: 'live/a', name: 'v', track_id: 1, subscribers: 3 } as never;
+    const track = { namespace: 'live-a', name: 'v', track_id: 1, subscribers: 3 } as never;
     const rows = namespaceRows(
       {
-        announced: [{ namespace: 'live/b', announced_by: [7] }],
+        announced: [{ namespace: 'live-b', announced_by: [7] }],
         subscriptions: [{ prefix: 'live', conn_id: 9, kind: 'namespace' }],
       },
       [track],
     );
     expect(rows.map(r => [r.namespace, r.announcedBy, r.tracks.length, r.watchedBy])).toEqual([
-      ['live/a', [], 1, [9]],
-      ['live/b', [7], 0, [9]],
+      ['live-a', [], 1, [9]],
+      ['live-b', [7], 0, [9]],
     ]);
   });
 });
@@ -237,5 +238,13 @@ describe('trackStatus', () => {
     const t = { origin: 'cache_only', status: 'pending' } as Parameters<typeof trackStatus>[0];
     expect(trackStatus(t).text).toBe('cached only');
     expect(trackStatus({ ...t, origin: 'subscribe' }).text).toBe('pending');
+  });
+});
+
+describe('catalogUrl', () => {
+  it('points the player at the namespace catalog over moqt', () => {
+    expect(catalogUrl('https://relay.example:4433', 'ipc-IPC.2d001')).toBe(
+      'moqt://relay.example:4433#msf:ipc-IPC.2d001--catalog',
+    );
   });
 });

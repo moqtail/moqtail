@@ -22,7 +22,7 @@ import { href } from '../lib/route';
 
 /** Whether `namespace` (`a/b/c`) falls under `prefix` (`a/b`), field by field. */
 export function underPrefix(namespace: string, prefix: string): boolean {
-  return prefix === '' || namespace === prefix || namespace.startsWith(`${prefix}/`);
+  return prefix === '' || namespace === prefix || namespace.startsWith(`${prefix}-`);
 }
 
 interface Row {

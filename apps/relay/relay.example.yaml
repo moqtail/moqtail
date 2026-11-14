@@ -132,6 +132,7 @@ api:
   slowlog_size: 1000
   # Namespace prefixes counted separately in /api/v1/zones and the metrics, such as
   # one per tenant; a namespace belongs to the longest prefix it falls under.
+  # Fields are joined by "-", as the dashboard shows namespaces: tenant1-live.
   accounting_zones: []
   # Publish the relay's own metrics as MoQ tracks (catalog, "4" every second, "6"
   # every ten seconds) under metrics.moq.arpa/v1/<metrics_resource_id>. The

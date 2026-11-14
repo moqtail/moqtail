@@ -39,10 +39,14 @@ function RelayForm(props: { relay: Relay; onSave: (relay: Relay) => void; onRemo
     setDraft({ ...draft, [key]: e.currentTarget.value });
   return (
     <form
-      class="grid gap-2 sm:grid-cols-[1fr_2fr_auto] sm:items-end"
+      class="grid gap-2 sm:grid-cols-[1fr_2fr_2fr_auto] sm:items-end"
       onSubmit={e => {
         e.preventDefault();
-        props.onSave({ ...draft, baseUrl: draft.baseUrl.trim() });
+        props.onSave({
+          ...draft,
+          baseUrl: draft.baseUrl.trim(),
+          moqUrl: draft.moqUrl?.trim() || undefined,
+        });
       }}
     >
       <label class="text-xs text-neutral-400">
@@ -58,6 +62,15 @@ function RelayForm(props: { relay: Relay; onSave: (relay: Relay) => void; onRemo
           placeholder="http://127.0.0.1:4480"
           value={draft.baseUrl}
           onInput={set('baseUrl')}
+        />
+      </label>
+      <label class="text-xs text-neutral-400">
+        MoQ address (optional, for the preview)
+        <input
+          class={field}
+          placeholder="moqt://127.0.0.1:4443"
+          value={draft.moqUrl ?? ''}
+          onInput={set('moqUrl')}
         />
       </label>
       <div class="flex gap-2">

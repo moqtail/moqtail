@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.5",
+    "custom-media-element": "^1.4.7",
+    "media-tracks": "^0.3.5",
     "preact": "^11.2.0",
     "tailwindcss": "^4.3.5",
     "uplot": "^1.6.32"

@@ -33,7 +33,7 @@ struct ZoneRequests {
 
 #[derive(Debug)]
 pub(crate) struct Zones {
-  /// The configured prefixes, as `a/b`.
+  /// The configured prefixes, as `a-b`.
   names: Vec<String>,
   traffic: Vec<Arc<ZoneCounters>>,
   requests: Vec<ZoneRequests>,
@@ -45,7 +45,7 @@ impl Zones {
   pub fn new(prefixes: &[String]) -> Self {
     let names: Vec<String> = prefixes
       .iter()
-      .map(|p| p.trim_matches('/').to_string())
+      .map(|p| p.trim_matches('-').to_string())
       .collect();
     let slots = names.len() + 1;
     Zones {
@@ -60,7 +60,7 @@ impl Zones {
     self.names.is_empty()
   }
 
-  /// The slot of the longest prefix `namespace` (`a/b/c`) falls under.
+  /// The slot of the longest prefix `namespace` (`a-b-c`) falls under.
   fn slot(&self, namespace: &str) -> usize {
     self
       .names
@@ -70,7 +70,7 @@ impl Zones {
         namespace == prefix.as_str()
           || namespace
             .strip_prefix(prefix.as_str())
-            .is_some_and(|rest| rest.starts_with('/'))
+            .is_some_and(|rest| rest.starts_with('-'))
       })
       .max_by_key(|(_, prefix)| prefix.len())
       .map_or(self.unzoned, |(i, _)| i)
@@ -167,9 +167,9 @@ mod tests {
 
   #[test]
   fn the_longest_prefix_wins_and_matches_whole_fields() {
-    let zones = Zones::new(&["live".into(), "live/sports/".into(), "vod".into()]);
-    assert_eq!(zones.name(zones.slot("live/news")), "live");
-    assert_eq!(zones.name(zones.slot("live/sports/match1")), "live/sports");
+    let zones = Zones::new(&["live".into(), "live-sports-".into(), "vod".into()]);
+    assert_eq!(zones.name(zones.slot("live-news")), "live");
+    assert_eq!(zones.name(zones.slot("live-sports-match1")), "live-sports");
     assert_eq!(zones.name(zones.slot("live")), "live");
     assert_eq!(zones.name(zones.slot("livestream")), "unzoned");
     assert_eq!(zones.name(zones.slot("other")), "unzoned");
@@ -178,9 +178,9 @@ mod tests {
   #[test]
   fn traffic_and_requests_are_counted_per_zone() {
     let zones = Zones::new(&["live".into()]);
-    zones.traffic_for("live/a").object_in(100);
+    zones.traffic_for("live-a").object_in(100);
     zones.traffic_for("x").object_out(10);
-    zones.request_answered("live/a", false);
+    zones.request_answered("live-a", false);
     let reports = reports(&zones, &[]);
     assert_eq!((reports[0].bytes_in, reports[0].requests_error), (100, 1));
     assert_eq!(

@@ -16,6 +16,7 @@
 
 import { useState } from 'preact/hooks';
 import type { Page, TrackDetail, TrackInfo } from '../api/types';
+import { Preview } from '../components/Preview';
 import { Subscriptions } from '../components/Subscriptions';
 import { Badge, Card, ErrorNote, Facts, Loading, Pager, SortHeader, Table } from '../components/ui';
 import { useDashboard } from '../context';
@@ -99,7 +100,7 @@ export function Tracks() {
                   <td>{t.track_id}</td>
                   <td>
                     <a class="link" href={href('tracks', t.track_id)}>
-                      {t.namespace} : {t.name}
+                      {t.namespace}--{t.name}
                     </a>
                   </td>
                   <td>{t.origin}</td>
@@ -150,7 +151,7 @@ export function Track(props: { id: string }) {
   return (
     <div class="space-y-4">
       <h1 class="text-lg font-semibold">
-        {t.namespace} : {t.name}
+        {t.namespace}--{t.name}
       </h1>
       <Card title="Fan-out">
         <div class="flex flex-wrap items-center gap-4 text-sm">
@@ -208,6 +209,7 @@ export function Track(props: { id: string }) {
           ]}
         />
       </Card>
+      <Preview namespace={t.namespace} />
       <Card title="Subscriptions">
         <Subscriptions subscriptions={t.subscriptions} showConn />
       </Card>

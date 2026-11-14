@@ -15,7 +15,7 @@
         "direction": "<-",
         "stream_id": 4,
         "type": "subscribe",
-        "text": "SUBSCRIBE live/news : video request_id=0 params[forward=1, subscriber_priority=128, subscription_filter=filter_type=5, group_order=1]",
+        "text": "SUBSCRIBE live-news--video request_id=0 params[forward=1, subscriber_priority=128, subscription_filter=filter_type=5, group_order=1]",
         "hex": "03001b0002046c697665046e65777305766964656f041001108001050101"
       },
       "responses": [

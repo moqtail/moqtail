@@ -19,6 +19,7 @@ pub(crate) mod track_cache;
 pub(crate) mod track_manager;
 mod upstream_requests;
 
+use crate::server::inspect;
 pub use publisher_streams::{DatagramArrivals, PublisherStreamProgress, await_publisher_streams};
 use upstream_requests::UpstreamRequests;
 pub(crate) use upstream_requests::{UpstreamRequestCancellation, UpstreamRequestKind};
@@ -175,6 +176,9 @@ impl TrackEvent {
   }
 }
 
+/// `Track::last_publisher` before any publisher has left.
+const NO_PUBLISHER: usize = usize::MAX;
+
 #[derive(Debug, Clone)]
 pub struct Track {
   /// Stable relay-assigned track identifier, independent of publisher aliases.
@@ -193,6 +197,9 @@ pub struct Track {
   /// TRACK_ENDED, or an End of Track Object. A FETCH answered from the cache that
   /// reaches it reports End Of Track. A new publisher clears it.
   ended_at: Arc<std::sync::Mutex<Option<Location>>>,
+  /// The connection that last stopped publishing the track, so its trace can be
+  /// found once no publisher is left; `NO_PUBLISHER` until one has.
+  last_publisher: Arc<AtomicUsize>,
   pub(crate) cache: TrackCache,
   pub largest_location: Arc<RwLock<Location>>,
   /// Object ids already ingested, to drop duplicates from multiple publishers.
@@ -229,6 +236,8 @@ pub struct Track {
   /// while nothing downstream wants the track; this records whether it has
   /// since been raised, so it is raised only once.
   pub upstream_forward: Arc<AtomicBool>,
+  /// The traffic counters of the accounting zone this track falls in, if any.
+  pub zone: Option<Arc<relay_hooks::stats::ZoneCounters>>,
 }
 
 // TODO: this track implementation should be static? At least
@@ -264,6 +273,7 @@ impl Track {
     origin: TrackOrigin,
   ) -> Self {
     Track {
+      zone: inspect::zone_for(&full_track_name),
       relay_track_id,
       full_track_name: full_track_name.clone(),
       origin: Arc::new(AtomicU8::new(origin as u8)),
@@ -276,6 +286,7 @@ impl Track {
       ),
       publisher_aliases: Arc::new(RwLock::new(BTreeMap::new())),
       ended_at: Arc::new(std::sync::Mutex::new(None)),
+      last_publisher: Arc::new(AtomicUsize::new(NO_PUBLISHER)),
       cache: TrackCache::new(relay_track_id, config.cache_size.into(), config),
       largest_location: Arc::new(RwLock::new(Location::new(0, 0))),
       seen_objects: Arc::new(SeenObjects::new(config.dedup_retained_groups)),
@@ -389,6 +400,7 @@ impl Track {
       .collect();
     for (connection_id, _) in &aliases {
       self.publisher_stream_progress.forget(*connection_id).await;
+      self.last_publisher.store(*connection_id, Ordering::Relaxed);
     }
     self
       .cancel_upstream_requests_of_kind(
@@ -439,6 +451,9 @@ impl Track {
   async fn take_publisher(&self, connection_id: usize) -> (Option<u64>, bool) {
     let mut aliases = self.publisher_aliases.write().await;
     let alias = aliases.remove(&connection_id);
+    if alias.is_some() {
+      self.last_publisher.store(connection_id, Ordering::Relaxed);
+    }
     (alias, !aliases.is_empty())
   }
 
@@ -459,6 +474,12 @@ impl Track {
     if let Some(largest) = self.largest_object().await {
       self.set_ended_at(Some(largest));
     }
+  }
+
+  /// The connection that last stopped publishing this track, if any has.
+  #[cfg(any(feature = "observability", test))]
+  pub fn last_publisher(&self) -> Option<usize> {
+    Some(self.last_publisher.load(Ordering::Relaxed)).filter(|&id| id != NO_PUBLISHER)
   }
 
   /// Remove a publisher by connection_id, reporting its alias and whether the
@@ -782,6 +803,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_publisher_leaving_is_remembered() {
+      let track = track(TrackOrigin::Publish);
+      assert_eq!(track.last_publisher(), None);
+      track.add_publisher(7, 1).await;
+      track.remove_publisher_quietly(7).await;
+      assert_eq!(track.last_publisher(), Some(7));
+    }
+
+    #[tokio::test]
     async fn letting_go_of_the_upstream_keeps_the_cache() {
       let track = track(TrackOrigin::Subscribe);
       track.publisher_aliases.write().await.insert(3, 11);
@@ -794,6 +824,7 @@ mod tests {
       assert_eq!(track.origin(), TrackOrigin::CacheOnly);
       assert!(track.publisher_aliases.read().await.is_empty());
       assert!(track.cache.get_group(4).await.is_some(), "the cache stays");
+      assert_eq!(track.last_publisher(), Some(3), "its trace stays findable");
 
       // The next SUBSCRIBE takes it over and subscribes upstream afresh.
       assert!(

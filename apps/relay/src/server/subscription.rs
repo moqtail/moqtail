@@ -21,6 +21,7 @@ pub(crate) mod subscription_manager;
 pub(crate) mod subscription_state;
 mod switch;
 
+use crate::server::inspect;
 use stream_writer::for_mid_subgroup_stream;
 
 use crate::server::config::AppConfig;
@@ -98,6 +99,12 @@ pub struct Subscription {
   /// the track's relay id or one of the subscription's own, as `track_alias_mode`
   /// decides; `relay_track_id` stays the relay's internal name for the track.
   pub track_alias: u64,
+  /// Where this subscription records its processing time. `None` when processing
+  /// time is not measured: the API's `latency` feature and the metrics track are
+  /// both off, or the relay is built without the `observability` feature.
+  stats: Option<Arc<relay_hooks::stats::SubscriptionStats>>,
+  /// The traffic counters of its track's accounting zone, if any.
+  zone: Option<Arc<relay_hooks::stats::ZoneCounters>>,
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
@@ -160,11 +167,19 @@ impl Subscription {
     config: &'static AppConfig,
     active_subgroup_headers: ActiveSubgroupHeaderMap,
   ) -> Self {
+    let stats = relay_hooks::reporter().subscription_stats(
+      relay_track_id,
+      client_connection_id as u64,
+      request_id,
+    );
+    let zone = inspect::zone_for(&full_track_name);
     Self {
       ssts_gate: Arc::new(ForwardGate::new(full_track_name.clone(), relay_track_id)),
       relay_track_id,
       track_alias,
       full_track_name,
+      stats,
+      zone,
       request_id,
       subscription_state: Arc::new(RwLock::new(origin_message.into())),
       subscriber,
@@ -329,6 +344,15 @@ impl Subscription {
 
   /// Number of data streams opened for this subscription (PUBLISH_DONE Stream
   /// Count), including subgroups that carried no objects.
+  pub fn relay_track_id(&self) -> u64 {
+    self.relay_track_id
+  }
+
+  /// Payload bytes fanned out to this subscription and not yet taken by its task.
+  pub fn queued_bytes(&self) -> u64 {
+    self.queue.bytes.load(Ordering::Relaxed) as u64
+  }
+
   pub fn opened_stream_count(&self) -> u64 {
     self.opened_stream_count.load(Ordering::Relaxed)
   }
@@ -552,6 +576,9 @@ impl Subscription {
       );
       event_rx_guard.take();
       drop(event_rx_guard);
+      if let Some(c) = inspect::counters() {
+        c.subscriptions_too_far_behind.add(1);
+      }
       self
         .reset_data_streams(StreamResetCode::TooFarBehind.to_u64())
         .await;
@@ -560,9 +587,9 @@ impl Subscription {
     }
 
     match recv_result {
-      Some((queued_at, event)) if !self.finished.load(Ordering::Relaxed) => {
+      Some((times, event)) if !self.finished.load(Ordering::Relaxed) => {
         drop(event_rx_guard);
-        self.handle_track_event(queued_at, event).await;
+        self.handle_track_event(times, event).await;
       }
       Some(_) => {
         event_rx_guard.take();

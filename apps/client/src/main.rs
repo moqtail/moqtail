@@ -16,6 +16,7 @@ mod cli;
 mod connection;
 mod fetcher;
 mod filter_spec;
+mod perf;
 mod prefix_subscriber;
 mod publisher;
 mod routing;
@@ -47,7 +48,7 @@ async fn main() -> Result<(), anyhow::Error> {
   );
 
   if let Some(dir) = &cli.qlog_folder {
-    qlog::init(dir, "client")?;
+    qlog::init(dir, "client", 0)?;
   }
 
   let result = run(cli).await;
@@ -58,12 +59,17 @@ async fn main() -> Result<(), anyhow::Error> {
 /// Runs the command, and on GOAWAY closes the session and, when the server named a
 /// new session URI and the command can resume, runs it again there.
 async fn run(cli: Cli) -> Result<(), anyhow::Error> {
+  // A load test opens its own sessions, so it skips the one below.
+  if is_load_test(&cli) {
+    return run_command(None, cli).await;
+  }
   let mut server = cli.server.clone();
   loop {
     let (moq_conn, goaway_rx) =
       MoqConnection::establish(&server, cli.no_cert_validation, cli.transport).await?;
     let connection = moq_conn.connection.clone();
-    let Some(goaway) = until_goaway(run_command(moq_conn, cli.clone()), goaway_rx).await? else {
+    let Some(goaway) = until_goaway(run_command(Some(moq_conn), cli.clone()), goaway_rx).await?
+    else {
       return Ok(());
     };
     // The command future is dropped by now, so no new requests go out; close
@@ -80,6 +86,10 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
       }
     }
   }
+}
+
+fn is_load_test(cli: &Cli) -> bool {
+  matches!(cli.command, Command::Subscribe) && (cli.sessions > 1 || cli.report.is_some())
 }
 
 /// Runs `command` until it ends (`None`) or the server sends GOAWAY (`Some`),
@@ -104,7 +114,9 @@ fn next_server(goaway: &GoAway, command: Command) -> Option<String> {
   }
 }
 
-async fn run_command(moq_conn: MoqConnection, cli: Cli) -> Result<(), anyhow::Error> {
+/// Runs the command on `moq_conn`, which only a load test goes without.
+async fn run_command(moq_conn: Option<MoqConnection>, cli: Cli) -> Result<(), anyhow::Error> {
+  let connect = move || async move { moq_conn.ok_or_else(|| anyhow::anyhow!("no session")) };
   let content = publisher::Content {
     subgroups_per_group: cli.subgroups_per_group,
     priorities: cli.priorities.clone(),
@@ -117,6 +129,7 @@ async fn run_command(moq_conn: MoqConnection, cli: Cli) -> Result<(), anyhow::Er
     reset_streams_at: cli.reset_stream_at.clone(),
     dropped_datagrams: cli.drop_datagram.clone(),
     gap_properties: !cli.no_gap_properties,
+    timestamp: cli.timestamp,
   };
 
   match cli.command {
@@ -138,7 +151,7 @@ async fn run_command(moq_conn: MoqConnection, cli: Cli) -> Result<(), anyhow::Er
         publisher_priority: cli.publisher_priority,
         content: content.clone(),
       };
-      publisher::run(moq_conn, config).await
+      publisher::run(connect().await?, config).await
     }
     Command::PublishNamespace => {
       let config = publisher::PublishNamespaceConfig {
@@ -155,7 +168,7 @@ async fn run_command(moq_conn: MoqConnection, cli: Cli) -> Result<(), anyhow::Er
         publisher_priority: cli.publisher_priority,
         content: content.clone(),
       };
-      publisher::run_namespace(moq_conn, config).await
+      publisher::run_namespace(connect().await?, config).await
     }
     Command::Subscribe => {
       let config = subscriber::SubscribeConfig {
@@ -191,8 +204,21 @@ async fn run_command(moq_conn: MoqConnection, cli: Cli) -> Result<(), anyhow::Er
         update_filters_after: cli.update_filters_after,
         update_range_filters: cli.update_range_filter,
         ignore_filter_limit: cli.ignore_filter_limit,
+        perf: None,
       };
-      subscriber::run(moq_conn, config).await
+      if cli.sessions > 1 || cli.report.is_some() {
+        let load = perf::LoadConfig {
+          server: cli.server,
+          transport: cli.transport,
+          no_cert_validation: cli.no_cert_validation,
+          sessions: cli.sessions,
+          ramp: cli.ramp,
+          report: cli.report,
+        };
+        perf::run(load, config).await
+      } else {
+        subscriber::run(connect().await?, config).await
+      }
     }
     Command::SubscribeNamespace | Command::SubscribeTracks => {
       let config = prefix_subscriber::PrefixSubscribeConfig {
@@ -234,7 +260,7 @@ async fn run_command(moq_conn: MoqConnection, cli: Cli) -> Result<(), anyhow::Er
         range_filters: cli.range_filter,
         ignore_filter_limit: cli.ignore_filter_limit,
       };
-      prefix_subscriber::run(moq_conn, config).await
+      prefix_subscriber::run(connect().await?, config).await
     }
     Command::Fetch => {
       let config = fetcher::FetchConfig {
@@ -250,7 +276,7 @@ async fn run_command(moq_conn: MoqConnection, cli: Cli) -> Result<(), anyhow::Er
         range_filters: cli.range_filter,
         ignore_filter_limit: cli.ignore_filter_limit,
       };
-      fetcher::run(moq_conn, config).await
+      fetcher::run(connect().await?, config).await
     }
   }
 }

@@ -1,0 +1,251 @@
+/**
+ * Copyright 2026 The MOQtail Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { ApiError } from '../api/client';
+import type { ConnectionSummary, Page, QlogEvent } from '../api/types';
+import { Card, ErrorNote } from '../components/ui';
+import { useDashboard } from '../context';
+import { href } from '../lib/route';
+import { SseParser } from '../lib/stream';
+import { parseJson } from '../lib/json';
+
+/** Lines kept on screen; older ones are dropped so a busy relay cannot fill memory. */
+const MAX_LINES = 1000;
+/** How often new lines are drawn. Events can arrive hundreds of times a second;
+ *  drawing each one would keep the page too busy to type in. */
+const FLUSH_MS = 500;
+
+interface Line {
+  key: number;
+  kind: string;
+  event?: QlogEvent;
+  text?: string;
+}
+
+interface Filter {
+  conn: string;
+  name: string;
+}
+
+/**
+ * Routine data stream events: each stream's header and its FIN, one of each per
+ * stream, so they far outnumber control messages. A stream cut short with
+ * RESET_STREAM or STOP_SENDING is not routine, and always shows.
+ */
+export function isRoutineStreamEvent(event: QlogEvent): boolean {
+  const { name } = event;
+  if (name.startsWith('moqt:subgroup_header') || name.startsWith('moqt:fetch_header')) {
+    return true;
+  }
+  return name.startsWith('moqtail:stream_end') && event.data.end === 'fin';
+}
+
+/** `connId` comes from the address, as `#/events/42`, when opened from a connection. */
+export function Events(props: { connId?: string }) {
+  const { api } = useDashboard();
+  // What is typed, and what is applied: the stream restarts only on Apply.
+  const start = { conn: props.connId ?? '', name: '' };
+  const [draft, setDraft] = useState<Filter>(start);
+  const [filter, setFilter] = useState<Filter>(start);
+  // Open connections to pick from, since ids are long and opaque.
+  const [choices, setChoices] = useState<ConnectionSummary[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    api.get<Page<ConnectionSummary>>('/connections', { limit: 1000 }, controller.signal).then(
+      page => setChoices(page.items),
+      () => {},
+    );
+    return () => controller.abort();
+  }, [api]);
+  const [streams, setStreams] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [lines, setLines] = useState<Line[]>([]);
+  // Data stream events left out while the box is unticked, so the page shows it
+  // is receiving even when nothing else happens.
+  const [hidden, setHidden] = useState(0);
+  const [error, setError] = useState<ApiError>();
+  const streamsRef = useRef(streams);
+  streamsRef.current = streams;
+
+  useEffect(() => {
+    if (paused) return;
+    const controller = new AbortController();
+    const parser = new SseParser();
+    let key = 0;
+    let pending: Line[] = [];
+    let pendingHidden = 0;
+    const flush = setInterval(() => {
+      if (pendingHidden > 0) {
+        const count = pendingHidden;
+        pendingHidden = 0;
+        setHidden(previous => previous + count);
+      }
+      if (pending.length === 0) return;
+      const added = pending.reverse();
+      pending = [];
+      setLines(previous => [...added, ...previous].slice(0, MAX_LINES));
+    }, FLUSH_MS);
+    setError(undefined);
+    api
+      .stream(
+        '/events',
+        { conn: filter.conn || undefined, name: filter.name || undefined },
+        text => {
+          for (const m of parser.push(text)) {
+            if (m.event === 'qlog') {
+              let event: QlogEvent;
+              try {
+                event = parseJson(m.data) as QlogEvent;
+              } catch {
+                pending.push({ key: key++, kind: m.event, text: m.data });
+                continue;
+              }
+              if (!streamsRef.current && isRoutineStreamEvent(event)) {
+                pendingHidden += 1;
+                continue;
+              }
+              pending.push({ key: key++, kind: m.event, event });
+            } else {
+              pending.push({ key: key++, kind: m.event, text: m.data });
+            }
+          }
+          // Only the newest lines can be shown, so a burst is cut early.
+          if (pending.length > MAX_LINES) pending = pending.slice(-MAX_LINES);
+        },
+        controller.signal,
+      )
+      .catch(e => {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) {
+          setError(e instanceof ApiError ? e : new ApiError(0, 'error', String(e)));
+        }
+      });
+    return () => {
+      clearInterval(flush);
+      controller.abort();
+    };
+  }, [api, filter, paused]);
+
+  const changed = draft.conn !== filter.conn || draft.name !== filter.name;
+
+  return (
+    <Card
+      title="Live events"
+      actions={
+        <form
+          class="flex flex-wrap items-center gap-2 text-xs text-neutral-400"
+          onSubmit={e => {
+            e.preventDefault();
+            setFilter({ conn: draft.conn.trim(), name: draft.name.trim() });
+            setLines([]);
+            setHidden(0);
+          }}
+        >
+          <label>
+            Connection{' '}
+            <input
+              class="w-28"
+              inputMode="numeric"
+              list="event-connections"
+              placeholder="any"
+              value={draft.conn}
+              onInput={e => setDraft({ ...draft, conn: e.currentTarget.value })}
+            />
+          </label>
+          <label>
+            Event name starts with{' '}
+            <input
+              class="w-48"
+              placeholder="moqt:control_message"
+              value={draft.name}
+              onInput={e => setDraft({ ...draft, name: e.currentTarget.value })}
+            />
+          </label>
+          <datalist id="event-connections">
+            {choices.map(c => (
+              <option key={c.conn_id} value={String(c.conn_id)}>
+                {[
+                  c.remote,
+                  c.implementation,
+                  c.published_tracks ? `publishes ${c.published_tracks}` : '',
+                  c.subscriptions ? `${c.subscriptions} subscriptions` : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </option>
+            ))}
+          </datalist>
+          <button class={changed ? 'btn btn-primary' : 'btn'}>Apply</button>
+          <label class="flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={streams}
+              onChange={e => setStreams(e.currentTarget.checked)}
+            />
+            Data stream events
+          </label>
+          <button type="button" class="btn" onClick={() => setPaused(!paused)}>
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <button
+            type="button"
+            class="btn"
+            onClick={() => {
+              setLines([]);
+              setHidden(0);
+            }}
+          >
+            Clear
+          </button>
+        </form>
+      }
+    >
+      {error && <ErrorNote error={error} />}
+      <p class="mb-2 text-xs text-neutral-500">
+        Newest first, the last {MAX_LINES} kept, updated twice a second.{' '}
+        {paused ? 'Paused: nothing is received.' : 'Receiving.'}
+        {!streams &&
+          ` ${hidden.toLocaleString('en-US')} data stream headers and FINs hidden; tick the box to show them. Resets always show.`}
+      </p>
+      {lines.length === 0 && !paused && (
+        <p class="py-6 text-center text-xs text-neutral-500">
+          {streams
+            ? 'Waiting for events…'
+            : 'Waiting for control messages. A steady relay sends few; they appear when a client connects, subscribes or leaves.'}
+        </p>
+      )}
+      <ol class="max-h-[70vh] overflow-auto font-mono text-xs" aria-live="off">
+        {lines.map(line => (
+          <li key={line.key} class="border-b border-white/6 py-1">
+            {line.event ? (
+              <>
+                <a class="link" href={href('connections', line.event.conn_id)}>
+                  [{line.event.conn_id}]
+                </a>{' '}
+                <span class="font-semibold text-neutral-100">{line.event.name}</span>{' '}
+                <span class="text-neutral-400">{JSON.stringify(line.event.data)}</span>
+              </>
+            ) : (
+              <span class="text-neutral-500">
+                {line.kind}: {line.text}
+              </span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </Card>
+  );
+}

@@ -349,8 +349,10 @@ fn open(dir: &Path, vantage: &str, conn: usize) -> std::io::Result<BufWriter<Fil
   let mut group_id = base.clone();
   let mut n = 1;
   let file = loop {
+    // Appending lets logrotate's copytruncate empty a file the relay still writes:
+    // the next event lands at the new end, not at the old offset after a gap.
     match std::fs::OpenOptions::new()
-      .write(true)
+      .append(true)
       .create_new(true)
       .open(dir.join(format!("{group_id}.sqlog")))
     {

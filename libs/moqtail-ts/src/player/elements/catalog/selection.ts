@@ -19,7 +19,7 @@
  * set from the first render group, plus the event timelines the player opted into.
  */
 
-import type { SourceElementDefinition } from '@/player/element/define'
+import { DEFAULT_PRIORITY, type SourceElementDefinition } from '@/player/element/define'
 import type { CatalogTrack } from '@/player/element/interfaces'
 
 /** The tracks one source is loaded for, and the definition their probe picked. */
@@ -111,9 +111,20 @@ export function startFirst(tracks: CatalogTrack[]): CatalogTrack[] {
   return [start, ...tracks.filter((t) => t !== start)]
 }
 
-/** The default video and audio sets, in that order, with their start tracks first. */
+/**
+ * The default video and audio sets, in that order, with their start tracks first. Of the sets
+ * sharing an `altGroup` and `lang`, only those whose definition has the lowest priority are kept.
+ */
 export function selectMedia(tracks: readonly CatalogTrack[], options: SelectionOptions): SelectedSet[] {
-  const sets = mediaSets(tracks, options.probe)
+  const all = mediaSets(tracks, options.probe)
+  const key = (s: SelectedSet) => (s.tracks[0]!.altGroup === undefined ? undefined : setKey(s.tracks[0]!, 0))
+  const rank = (s: SelectedSet) => s.definition.priority ?? DEFAULT_PRIORITY
+  const best = new Map<string, number>()
+  for (const s of all) {
+    const k = key(s)
+    if (k !== undefined) best.set(k, Math.min(best.get(k) ?? Infinity, rank(s)))
+  }
+  const sets = all.filter((s) => key(s) === undefined || rank(s) === best.get(key(s)!))
   const video = sets.find((s) => s.tracks[0]!.role === 'video')
   const audio = pickAudio(
     sets.filter((s) => s.tracks[0]!.role === 'audio'),
@@ -146,11 +157,13 @@ if (import.meta.vitest) {
   const { Tuple } = await import('@/model/common/tuple')
   const { testSource } = await import('@/player/testing/elements')
   const { probeCmaf } = await import('@/player/elements/cmaf')
+  const { Locmaf, probeLocmaf } = await import('@/player/elements/locmaf')
 
   const cmaf = testSource({ name: 'cmaf', probe: probeCmaf })
+  const locmaf = testSource({ name: 'locmaf', probe: probeLocmaf, priority: Locmaf.priority! })
   const loc = testSource({ name: 'loc', probe: (t) => t.packaging === 'loc' })
   const timeline = testSource({ name: 'sap', probe: (t) => t.eventType === 'org.ietf.moq.cmsf.sap' })
-  const probe = (track: CatalogTrack) => [cmaf, loc, timeline].find((d) => d.probe(track))
+  const probe = (track: CatalogTrack) => [cmaf, locmaf, loc, timeline].find((d) => d.probe(track))
   const names = (sets: SelectedSet[]) => sets.map((s) => `${s.definition.name}: ${s.tracks.map((t) => t.name)}`)
   const track = (name: string, extra: Partial<CatalogTrack> = {}) =>
     withRole({
@@ -184,6 +197,31 @@ if (import.meta.vitest) {
       ]
       expect(names(selectMedia(set, { probe }))).toEqual(['cmaf: c,a'])
       expect(names(mediaSets(set, probe))).toEqual(['cmaf: a,c', 'loc: b'])
+    })
+
+    test('LOCMAF is preferred over CMAF, each in a set of its own', () => {
+      const pair = (name: string, extra: Partial<CatalogTrack>) => [
+        track(name, { packaging: 'cmaf', altGroup: 1, ...extra }),
+        track(`${name}_locmaf`, { packaging: 'locmaf', locmafVersion: '0.3', altGroup: 1, ...extra }),
+      ]
+      const video = { codec: 'avc1.64001f', height: 720 }
+      const audio = { codec: 'mp4a.40.2', channelConfig: '2', altGroup: 2 }
+      const tracks = [...pair('v1', video), ...pair('v2', video), ...pair('a', audio)]
+      expect(names(mediaSets(tracks, probe))).toEqual([
+        'cmaf: v1,v2',
+        'locmaf: v1_locmaf,v2_locmaf',
+        'cmaf: a',
+        'locmaf: a_locmaf',
+      ])
+      expect(names(selectMedia(tracks, { probe }))).toEqual(['locmaf: v1_locmaf,v2_locmaf', 'locmaf: a_locmaf'])
+      // An unsupported version leaves CMAF
+      const old = tracks.map((t) => (t.packaging === 'locmaf' ? { ...t, locmafVersion: '0.2' } : t))
+      expect(names(selectMedia(old, { probe }))).toEqual(['cmaf: v1,v2', 'cmaf: a'])
+      const cameras = [
+        track('main_cam', { packaging: 'cmaf', altGroup: 1, ...video }),
+        track('alt_cam', { packaging: 'locmaf', locmafVersion: '0.3', altGroup: 2, ...video }),
+      ]
+      expect(names(selectMedia(cameras, { probe }))).toEqual(['cmaf: main_cam'])
     })
 
     test('audio: exact tag, then primary subtag, then the first set', () => {

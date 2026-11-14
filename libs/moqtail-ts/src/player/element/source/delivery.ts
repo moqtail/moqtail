@@ -461,6 +461,14 @@ export class Delivery {
     const initData = this.#packaging.objectInitData(track, object)
     // Packets of a track with init data on its objects can't be decoded before the first one
     if (!initData && this.#packaging.initOnObjects(track) && this.#initFor !== key) return
+    const packet = this.#packaging.packet(track, object, initData ?? this.#properties?.initData)
+    if (!packet) {
+      // The rest of its group depends on it (CMSF 3.4)
+      const resume = new Location(object.location.group + 1n, 0n)
+      this.#gaps.get(this.#current!.accepted.requestId)?.push({ from: object.location, resume })
+      this.gap = true
+      return
+    }
     if (this.seeks > 0) {
       this.gap = false
       await this.#answerSeeks('ok')
@@ -472,12 +480,12 @@ export class Delivery {
       await this.#setProperties({ initData })
       this.#initFor = key
     }
-    await this.pad.write({ type: 'packet', object })
+    await this.pad.write({ type: 'packet', object: packet })
     const previous = this.#last
     this.#last = { track: key, location: object.location }
     this.delivered = true
     if (previous?.location.group !== object.location.group || previous.track !== key) {
-      this.#recordTime(track, object)
+      this.#recordTime(track, packet)
       await this.#setProperties(this.#groupProperties(track))
     }
     const changed = previous !== undefined && previous.track !== key

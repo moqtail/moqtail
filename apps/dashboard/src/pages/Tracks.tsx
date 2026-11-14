@@ -166,6 +166,13 @@ export function Track(props: { id: string }) {
                   <span class="text-neutral-500">alias {p.alias}</span>
                 </div>
               ))
+            ) : t.last_publisher != null ? (
+              <div>
+                <span class="text-neutral-500">none now; last was </span>
+                <a class="link" href={href('connections', t.last_publisher)}>
+                  connection {t.last_publisher}
+                </a>
+              </div>
             ) : (
               <div class="text-neutral-500">none</div>
             )}

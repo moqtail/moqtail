@@ -428,6 +428,7 @@ mod relay {
       upstream_forward: track
         .upstream_forward
         .load(std::sync::atomic::Ordering::Relaxed),
+      last_publisher: track.last_publisher().map(|id| id as u64),
     }
   }
 

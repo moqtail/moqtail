@@ -172,6 +172,8 @@ export interface TrackInfo {
   largest_location: string | null;
   cached_groups: number;
   upstream_forward: boolean;
+  /** The connection that last stopped publishing the track. */
+  last_publisher?: number | null;
   processing_ms?: Summary;
 }
 

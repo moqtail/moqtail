@@ -307,7 +307,7 @@ pub struct CloseInfo {
 pub struct TrackInfo {
   /// The relay's own id for the track, stable for the track's life.
   pub track_id: u64,
-  /// The namespace as `a/b/c`.
+  /// The namespace as `a-b-c`, the way the library prints it.
   pub namespace: String,
   pub name: String,
   /// `publish` (a PUBLISH brought it), `subscribe` (a SUBSCRIBE reached a
@@ -324,6 +324,9 @@ pub struct TrackInfo {
   pub cached_groups: u64,
   /// True while the relay asks its publishers to forward objects.
   pub upstream_forward: bool,
+  /// The connection that last stopped publishing the track, so a track whose
+  /// publishers have all left still leads to their trace.
+  pub last_publisher: Option<u64>,
 }
 
 /// A publisher of a track, and the alias it publishes it under.

@@ -173,6 +173,7 @@ pub fn track(track_id: u64, namespace: &str, subscribers: usize) -> TrackInfo {
     largest_location: Some("12:3".into()),
     cached_groups: 2,
     upstream_forward: true,
+    last_publisher: None,
   }
 }
 

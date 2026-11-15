@@ -14,19 +14,37 @@
  * limitations under the License.
  */
 import { Publish, RequestOk } from '@/model/control'
-import { MoqtObject } from '@/model/data'
+import { FullTrackName, MoqtObject } from '@/model/data'
 import { logger } from '@/util/logger'
+import { ObjectStream } from '@/client/util/object_stream'
 import { RequestStreamMessageHandler } from './handler'
+
+/**
+ * A receiver for a track the peer pushes with PUBLISH. It stands in for a SubscribeRequest
+ * and its Subscription, so the data stream and datagram paths deliver to it unchanged.
+ */
+export function pushedTrackReceiver(requestId: bigint, fullTrackName: FullTrackName) {
+  const objects = new ObjectStream()
+  const receiver = {
+    requestId,
+    fullTrackName,
+    streamsAccepted: 0,
+    largestLocation: undefined,
+    manager: {
+      objects,
+      requests: [],
+      drop() {},
+      deliver(_request: unknown, obj: MoqtObject) {
+        objects.enqueue(obj)
+        return true
+      },
+    },
+  }
+  return { receiver, stream: objects.readable }
+}
 
 export const handlerPublish: RequestStreamMessageHandler<Publish> = async (client, msg, stream) => {
   logger.log('handler/publish', 'track: %s alias: %d', msg.fullTrackName.toString(), msg.trackAlias)
-
-  let streamController!: ReadableStreamDefaultController<MoqtObject>
-  const objects = new ReadableStream<MoqtObject>({
-    start(c) {
-      streamController = c
-    },
-  })
 
   const localPseudoRequestId = client.allocatePseudoRequestId()
 
@@ -35,13 +53,7 @@ export const handlerPublish: RequestStreamMessageHandler<Publish> = async (clien
   client.subscriptionAliasMap.set(localPseudoRequestId, msg.trackAlias)
   client.aliasFullTrackNameMap.set(msg.trackAlias, msg.fullTrackName)
 
-  // This object mimics a SubscribeRequest so #handleRecvStreams can use it identically
-  const receiver = {
-    requestId: localPseudoRequestId,
-    streamsAccepted: 0,
-    largestLocation: undefined,
-    controller: streamController,
-  }
+  const { receiver, stream: objects } = pushedTrackReceiver(localPseudoRequestId, msg.fullTrackName)
 
   // Without a receiver for the alias, its data streams are a protocol violation
   client.subscriptions.set(msg.trackAlias, receiver)

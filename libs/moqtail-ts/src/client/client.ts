@@ -86,6 +86,7 @@ import { SubscribeRequest, Subscription } from '@/client/request/subscribe'
 import { PublishRequest } from '@/client/request/publish'
 import { TrackStatusRequest } from '@/client/request/track_status'
 import { getHandlerForControlMessage, getHandlerForRequestStreamMessage } from '@/client/handler/handler'
+import { pushedTrackReceiver } from '@/client/handler/publish'
 import { SubscribePublication } from '@/client/publication/subscribe'
 import { FetchPublication } from '@/client/publication/fetch'
 import { PublishPublication } from '@/client/publication/publish'
@@ -1666,27 +1667,12 @@ export class MOQtailClient extends Emitter<ClientEvents> {
   acceptPushedTrack(msg: Publish): ReadableStream<MoqtObject> {
     this.#ensureActive()
 
-    let streamController!: ReadableStreamDefaultController<MoqtObject>
-    const stream = new ReadableStream<MoqtObject>({
-      start(c) {
-        streamController = c
-      },
-    })
-
     // 1. Map the request ID to the full track name so the parser knows what track this is
     this.requestIdMap.addMapping(msg.requestId, msg.fullTrackName)
 
-    // 2. Create a pseudo-subscription object that mimics a SubscribeRequest
-    // This perfectly matches the shape #handleRecvStreams expects
-    const receiver = {
-      requestId: msg.requestId,
-      fullTrackName: msg.fullTrackName,
-      streamsAccepted: 0,
-      largestLocation: undefined,
-      controller: streamController,
-    }
+    const { receiver, stream } = pushedTrackReceiver(msg.requestId, msg.fullTrackName)
 
-    // 3. Register the receiver in the main routing table using the publisher's alias
+    // Register the receiver in the main routing table using the publisher's alias
     this.#claimTrackAlias(msg.trackAlias, receiver)
 
     return stream
@@ -3202,6 +3188,35 @@ if (import.meta.vitest) {
       expect(incoming.messages[0]).toBeInstanceOf(RequestError)
       expect(transport.sentChunks).toHaveLength(1)
 
+      await client.disconnect()
+    })
+
+    it('delivers the data streams of a track the peer pushes with PUBLISH', async () => {
+      const { client, transport } = await connected()
+      const errors = vi.spyOn(logger, 'error')
+      const pushed = new Promise<ReadableStream<MoqtObject>>((resolve) =>
+        client.on('peerpublish', (_msg, stream) => resolve(stream)),
+      )
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(new Publish(4n, ftn, 9n, []))
+      const reader = (await pushed).getReader()
+
+      const bytes = new ByteBuffer()
+      bytes.putBytes(Header.newSubgroup(SubgroupHeaderType.Type0x10, 9n, 1n, undefined, 0).serialize().toUint8Array())
+      bytes.putBytes(
+        SubgroupObject.newWithPayload(0, null, new Uint8Array([1]))
+          .serialize(undefined)
+          .toUint8Array(),
+      )
+      transport.openIncomingUniStream(bytes.toUint8Array())
+
+      const { value } = await reader.read()
+      expect(value?.location.equals(new Location(1n, 0n))).toBe(true)
+      expect(value?.fullTrackName).toEqual(ftn)
+      expect(errors).not.toHaveBeenCalledWith('MOQtailClient', 'handleRecvStreams error', expect.anything())
+
+      errors.mockRestore()
       await client.disconnect()
     })
 

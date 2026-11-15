@@ -30,6 +30,9 @@ use validator::Validate;
 use wtransport::Identity;
 use wtransport::quinn::congestion::BbrConfig;
 use wtransport::quinn::{self, TransportConfig};
+use wtransport::tls::WEBTRANSPORT_ALPN;
+use wtransport::tls::rustls;
+use wtransport::tls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 /// Cache expiration strategy
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -359,7 +362,7 @@ impl AppConfig {
       }
     };
 
-    let mut tls_config = wtransport::tls::server::build_default_tls_config(identity);
+    let mut tls_config = server_tls_config(&identity)?;
 
     for version in SUPPORTED_VERSIONS.replace(" ", "").split(",") {
       tls_config.alpn_protocols.push(version.as_bytes().to_vec());
@@ -436,6 +439,28 @@ impl AppConfig {
 ///
 /// `reuse_port` lets several sockets share the port, which is how the relay listens on
 /// more than one; the kernel then hashes each connection onto one of them.
+/// TLS 1.3 with `h3` ALPN, like wtransport's default, but on aws-lc-rs: ring has no
+/// X25519MLKEM768, so a client offering only that key share (picoquic's default) would
+/// get a HelloRetryRequest instead of a handshake.
+fn server_tls_config(identity: &Identity) -> Result<rustls::ServerConfig> {
+  let certs = identity
+    .certificate_chain()
+    .as_slice()
+    .iter()
+    .map(|cert| CertificateDer::from(cert.der().to_vec()))
+    .collect();
+  let key = PrivateKeyDer::try_from(identity.private_key().secret_der().to_vec())
+    .map_err(|e| anyhow::anyhow!("invalid private key: {e}"))?;
+  let mut tls_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+    rustls::crypto::aws_lc_rs::default_provider(),
+  ))
+  .with_protocol_versions(&[&rustls::version::TLS13])?
+  .with_no_client_auth()
+  .with_single_cert(certs, key)?;
+  tls_config.alpn_protocols = vec![WEBTRANSPORT_ALPN.to_vec()];
+  Ok(tls_config)
+}
+
 fn bind_udp_socket(addr: SocketAddr, reuse_port: bool, buffer_bytes: usize) -> Result<UdpSocket> {
   let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, None)?;
   if addr.is_ipv6() {
@@ -684,5 +709,19 @@ mod tests {
   #[test]
   fn the_example_config_loads() {
     from_yaml(include_str!("../../relay.example.yaml")).unwrap();
+  }
+
+  #[test]
+  fn the_server_tls_offers_x25519mlkem768() {
+    let identity = Identity::self_signed(["localhost"]).unwrap();
+    let tls = server_tls_config(&identity).unwrap();
+    assert!(
+      tls
+        .crypto_provider()
+        .kx_groups
+        .iter()
+        .any(|group| group.name() == rustls::NamedGroup::X25519MLKEM768)
+    );
+    assert_eq!(tls.alpn_protocols, [WEBTRANSPORT_ALPN.to_vec()]);
   }
 }

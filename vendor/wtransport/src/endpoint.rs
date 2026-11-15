@@ -611,6 +611,14 @@ impl IncomingSessionFuture {
         }))
     }
 
+    /// Creates a future that accepts a WebTransport session on an established
+    /// [`quinn::Connection`], e.g. after the caller has read its negotiated ALPN.
+    #[cfg(feature = "quinn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quinn")))]
+    pub fn with_quic_connection(quic_connection: quinn::Connection) -> Self {
+        Self(Box::pin(Self::accept(quic_connection)))
+    }
+
     fn new(quic_incoming: quinn::Incoming) -> Self {
         Self(Box::pin(async move {
             let quic_connection = quic_incoming.await?;

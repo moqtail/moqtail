@@ -25,7 +25,7 @@ import type { Tuple } from '@/model/common/tuple'
 import { splitNamespace, toBytes } from './strings'
 
 /** The `version` values this player parses, with the editor's draft rules. */
-export const SUPPORTED_MSF_VERSIONS = ['draft-01'] as const
+export const SUPPORTED_MSF_VERSIONS = ['draft-01', 'draft-02'] as const
 
 const int = v.pipe(v.number(), v.integer())
 const location = v.tuple([int, int])

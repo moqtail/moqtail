@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { Publish, RequestOk } from '@/model/control'
+import { Publish, PublishDone, RequestOk } from '@/model/control'
 import { FullTrackName, MoqtObject } from '@/model/data'
 import { logger } from '@/util/logger'
 import { ObjectStream } from '@/client/util/object_stream'
@@ -28,8 +28,11 @@ export function pushedTrackReceiver(requestId: bigint, fullTrackName: FullTrackN
   const receiver = {
     requestId,
     fullTrackName,
-    streamsAccepted: 0,
+    streamsAccepted: 0n,
+    expectedStreams: undefined as bigint | undefined,
+    publishDone: undefined as PublishDone | undefined,
     largestLocation: undefined,
+    finish() {},
     manager: {
       objects,
       requests: [],
@@ -46,14 +49,13 @@ export function pushedTrackReceiver(requestId: bigint, fullTrackName: FullTrackN
 export const handlerPublish: RequestStreamMessageHandler<Publish> = async (client, msg, stream) => {
   logger.log('handler/publish', 'track: %s alias: %d', msg.fullTrackName.toString(), msg.trackAlias)
 
-  const localPseudoRequestId = client.allocatePseudoRequestId()
-
-  // Registered before the push is accepted, since its data streams may follow at once
-  client.requestIdMap.addMapping(localPseudoRequestId, msg.fullTrackName)
-  client.subscriptionAliasMap.set(localPseudoRequestId, msg.trackAlias)
+  // Filed under the PUBLISH's own request id, which its PUBLISH_DONE arrives under.
+  // Registered before the push is accepted, since its data streams may follow at once.
+  client.requestIdMap.addMapping(msg.requestId, msg.fullTrackName)
+  client.subscriptionAliasMap.set(msg.requestId, msg.trackAlias)
   client.aliasFullTrackNameMap.set(msg.trackAlias, msg.fullTrackName)
 
-  const { receiver, stream: objects } = pushedTrackReceiver(localPseudoRequestId, msg.fullTrackName)
+  const { receiver, stream: objects } = pushedTrackReceiver(msg.requestId, msg.fullTrackName)
 
   // Without a receiver for the alias, its data streams are a protocol violation
   client.subscriptions.set(msg.trackAlias, receiver)

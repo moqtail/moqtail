@@ -324,13 +324,6 @@ export class MOQtailClient extends Emitter<ClientEvents> {
   }
 
   /**
-   * Generates a safe, sequential local request ID for tracking pushed/incoming tracks.
-   */
-  allocatePseudoRequestId(): bigint {
-    return this.#nextClientRequestId
-  }
-
-  /**
    * Gets the current server setup configuration.
    *
    * @returns The {@link Setup} instance the server sent back during handshake.
@@ -3191,7 +3184,7 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
-    it('delivers the data streams of a track the peer pushes with PUBLISH', async () => {
+    it('delivers the data streams of a track the peer pushes with PUBLISH, until its PUBLISH_DONE', async () => {
       const { client, transport } = await connected()
       const errors = vi.spyOn(logger, 'error')
       const pushed = new Promise<ReadableStream<MoqtObject>>((resolve) =>
@@ -3215,6 +3208,11 @@ if (import.meta.vitest) {
       expect(value?.location.equals(new Location(1n, 0n))).toBe(true)
       expect(value?.fullTrackName).toEqual(ftn)
       expect(errors).not.toHaveBeenCalledWith('MOQtailClient', 'handleRecvStreams error', expect.anything())
+
+      // Its PUBLISH_DONE accounts for the one stream, so the push ends and its alias is released
+      incoming.respond(new PublishDone(PublishDoneStatusCode.TrackEnded, 1n, new ReasonPhrase('')))
+      expect((await reader.read()).done).toBe(true)
+      expect(client.subscriptions.has(9n)).toBe(false)
 
       errors.mockRestore()
       await client.disconnect()

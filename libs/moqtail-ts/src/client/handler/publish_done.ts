@@ -25,9 +25,16 @@ export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = asyn
   openingRequestId,
 ) => {
   client.emit('peerpublishdone', msg, openingRequestId)
-  //TODO: Check for all kinds of subscriptions, not jus tthe ones initiated with subscribe messages
-  const request = client.requests.get(openingRequestId)
-  if (request instanceof SubscribeRequest) {
+  // A track the peer pushed with PUBLISH has no request of ours; its receiver is held under its alias
+  const alias = client.subscriptionAliasMap.get(openingRequestId)
+  const found = client.requests.get(openingRequestId)
+  const request =
+    found instanceof SubscribeRequest
+      ? found
+      : found === undefined && alias !== undefined
+        ? client.subscriptions.get(alias)
+        : undefined
+  if (request) {
     request.expectedStreams = msg.streamCount
     request.publishDone = msg
     // The streams it accounts for may all have arrived already, in which case this

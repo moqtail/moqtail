@@ -91,7 +91,7 @@ Release images are published to `ghcr.io/moqtail/relay` with `latest` and versio
 To build the image locally from the workspace root:
 
 ```bash
-docker build -f apps/relay/Dockerfile -t moqtail-relay .
+docker build -f apps/relay/Dockerfile -t moqtail-relay
 ```
 
 For local certificate generation and browser trust setup, see [apps/relay/cert/README.md](apps/relay/cert/README.md).

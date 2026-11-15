@@ -55,6 +55,9 @@ impl std::fmt::Display for CacheKey {
 // Type alias for the cached value (group objects)
 type GroupObjects = Arc<RwLock<Vec<FetchObjectPayload>>>;
 
+/// A cached group and when it was created, which is when its first Object arrived.
+type Group = (Instant, GroupObjects);
+
 /// The groups upstream FETCHes are filling into the cache right now, first to last,
 /// each with a lock its filler holds until it is done.
 type Fills = Arc<Mutex<Vec<(u64, u64, Arc<AsyncMutex<()>>)>>>;
@@ -130,15 +133,44 @@ impl AbsentRanges {
 /// The track's MAX_CACHE_DURATION in milliseconds, or u64::MAX when it has none.
 /// A group expires that long after its first Object arrived; every later Object of
 /// the group arrived after that one, so none is served past its own deadline.
+///
+/// The duration can arrive after a group was created: Objects may land before the
+/// PUBLISH, SUBSCRIBE_OK or FETCH_OK carrying it is handled, and a new publisher can
+/// change it. So the current duration is measured from the group's creation on every
+/// read, not fixed when the group is created.
 #[derive(Debug, Clone)]
 struct MaxCacheDuration(Arc<AtomicU64>);
 
-impl Expiry<CacheKey, GroupObjects> for MaxCacheDuration {
-  fn expire_after_create(&self, _: &CacheKey, _: &GroupObjects, _: Instant) -> Option<Duration> {
+impl MaxCacheDuration {
+  /// How long a group created at `created` has left at `now`; None if no limit.
+  fn remaining(&self, created: Instant, now: Instant) -> Option<Duration> {
     match self.0.load(Ordering::Relaxed) {
       u64::MAX => None,
-      ms => Some(Duration::from_millis(ms)),
+      ms => Some(Duration::from_millis(ms).saturating_sub(now.saturating_duration_since(created))),
     }
+  }
+
+  fn expired(&self, group: &Group) -> bool {
+    self.remaining(group.0, Instant::now()) == Some(Duration::ZERO)
+  }
+}
+
+/// Lets moka drop expired groups from memory. Moka only applies a read's new expiry
+/// after returning the entry, so reads check `expired` themselves as well.
+impl Expiry<CacheKey, Group> for MaxCacheDuration {
+  fn expire_after_create(&self, _: &CacheKey, group: &Group, now: Instant) -> Option<Duration> {
+    self.remaining(group.0, now)
+  }
+
+  fn expire_after_read(
+    &self,
+    _: &CacheKey,
+    group: &Group,
+    now: Instant,
+    _: Option<Duration>,
+    _: Instant,
+  ) -> Option<Duration> {
+    self.remaining(group.0, now)
   }
 }
 
@@ -146,7 +178,7 @@ impl Expiry<CacheKey, GroupObjects> for MaxCacheDuration {
 pub struct TrackCache {
   pub relay_track_id: u64,
   // Moka cache for storing groups of objects with composite keys
-  cache: Cache<CacheKey, GroupObjects>,
+  cache: Cache<CacheKey, Group>,
   /// Read on every cache check, written far less often.
   absent: Arc<SyncRwLock<AbsentRanges>>,
   fills: Fills,
@@ -164,7 +196,7 @@ impl TrackCache {
     let cache_builder = Cache::builder()
       .max_capacity(cache_size as u64)
       .expire_after(max_cache_duration.clone())
-      .eviction_listener(move |key: Arc<CacheKey>, value: GroupObjects, cause| {
+      .eviction_listener(move |key: Arc<CacheKey>, (_, value): Group, cause| {
         inspect::count_cache_removal(cause);
         let relay_track_id = key.relay_track_id;
         let group_id = key.group_id;
@@ -269,9 +301,11 @@ impl TrackCache {
   pub async fn add_object(&self, object: FetchObjectPayload) {
     let cache_key = CacheKey::new(self.relay_track_id, object.group_id);
 
-    let group_objects = self
+    let (_, group_objects) = self
       .cache
-      .get_with(cache_key, async { Arc::new(RwLock::new(Vec::new())) })
+      .get_with(cache_key, async {
+        (Instant::now(), Arc::new(RwLock::new(Vec::new())))
+      })
       .await;
 
     // Subgroups of a group arrive on separate streams and interleave, but a FETCH
@@ -372,8 +406,12 @@ impl TrackCache {
   /// it is meant for one track at a time.
   pub async fn payload_bytes(&self) -> u64 {
     let mut total = 0;
-    for (_, objects) in self.cache.iter() {
-      total += objects
+    for (_, group) in self.cache.iter() {
+      if self.max_cache_duration.expired(&group) {
+        continue;
+      }
+      total += group
+        .1
         .read()
         .await
         .iter()
@@ -386,7 +424,12 @@ impl TrackCache {
   #[cfg(feature = "observability")]
   /// The ids of the cached groups, in ascending order, for the observability API.
   pub fn group_ids(&self) -> Vec<u64> {
-    let mut ids: Vec<u64> = self.cache.iter().map(|(key, _)| key.group_id).collect();
+    let mut ids: Vec<u64> = self
+      .cache
+      .iter()
+      .filter(|(_, group)| !self.max_cache_duration.expired(group))
+      .map(|(key, _)| key.group_id)
+      .collect();
     ids.sort_unstable();
     ids
   }
@@ -398,16 +441,20 @@ impl TrackCache {
   }
 
   /// Whether the cache holds no Object of the track. A group is only ever created
-  /// by an Object going into it, so no group means no Object. Iterating skips
-  /// expired groups, which the entry count only drops once a sweep reaches them.
+  /// by an Object going into it, so no group means no Object. Expired groups are
+  /// skipped, since the entry count only drops once a sweep reaches them.
   pub async fn is_empty(&self) -> bool {
-    self.cache.iter().next().is_none()
+    !self
+      .cache
+      .iter()
+      .any(|(_, group)| !self.max_cache_duration.expired(&group))
   }
 
   /// Get a specific group if it exists
   pub async fn get_group(&self, group_id: u64) -> Option<GroupObjects> {
     let cache_key = CacheKey::new(self.relay_track_id, group_id);
-    self.cache.get(&cache_key).await
+    let group = self.cache.get(&cache_key).await?;
+    (!self.max_cache_duration.expired(&group)).then_some(group.1)
   }
 
   /// Check if a group exists in cache
@@ -577,14 +624,28 @@ mod tests {
   async fn objects_are_not_served_past_max_cache_duration() {
     let config = AppConfig::default();
     let cache = TrackCache::new(1, 10_000, &config);
-    cache.set_max_cache_duration(Some(50));
+    cache.set_max_cache_duration(Some(500));
     for object_id in 0..9 {
       cache.add_object(object_at(0, object_id)).await;
     }
     assert_eq!(cache.objects_if_complete(0, 0, 8).await.unwrap().len(), 9);
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(cache.objects_if_complete(0, 0, 8).await.is_none());
+    assert!(cache.is_empty().await);
+  }
+
+  #[tokio::test]
+  async fn a_duration_set_after_a_group_was_created_still_applies() {
+    let config = AppConfig::default();
+    let cache = TrackCache::new(1, 10_000, &config);
+    cache.add_object(object_at(0, 0)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // The properties arrive after the group did, and its first Object is already
+    // older than the duration.
+    cache.set_max_cache_duration(Some(10));
+    assert!(cache.objects_if_complete(0, 0, 0).await.is_none());
     assert!(cache.is_empty().await);
   }
 

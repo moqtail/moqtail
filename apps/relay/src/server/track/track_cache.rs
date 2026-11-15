@@ -13,12 +13,15 @@
 // limitations under the License.
 
 use crate::server::inspect;
+use moka::Expiry;
 use moka::future::Cache;
 use moka::notification::RemovalCause;
 use moqtail::model::common::location::Location;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock as SyncRwLock};
+use std::time::{Duration, Instant};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, RwLock};
@@ -124,6 +127,21 @@ impl AbsentRanges {
   }
 }
 
+/// The track's MAX_CACHE_DURATION in milliseconds, or u64::MAX when it has none.
+/// A group expires that long after its first Object arrived; every later Object of
+/// the group arrived after that one, so none is served past its own deadline.
+#[derive(Debug, Clone)]
+struct MaxCacheDuration(Arc<AtomicU64>);
+
+impl Expiry<CacheKey, GroupObjects> for MaxCacheDuration {
+  fn expire_after_create(&self, _: &CacheKey, _: &GroupObjects, _: Instant) -> Option<Duration> {
+    match self.0.load(Ordering::Relaxed) {
+      u64::MAX => None,
+      ms => Some(Duration::from_millis(ms)),
+    }
+  }
+}
+
 #[derive(Debug, Clone)]
 pub struct TrackCache {
   pub relay_track_id: u64,
@@ -132,6 +150,7 @@ pub struct TrackCache {
   /// Read on every cache check, written far less often.
   absent: Arc<SyncRwLock<AbsentRanges>>,
   fills: Fills,
+  max_cache_duration: MaxCacheDuration,
   #[allow(dead_code)] // Used in eviction listener closure
   log_folder: String,
 }
@@ -141,8 +160,10 @@ impl TrackCache {
     let log_folder = config.log_folder.clone();
     let log_folder_for_listener = log_folder.clone();
 
+    let max_cache_duration = MaxCacheDuration(Arc::new(AtomicU64::new(u64::MAX)));
     let cache_builder = Cache::builder()
       .max_capacity(cache_size as u64)
+      .expire_after(max_cache_duration.clone())
       .eviction_listener(move |key: Arc<CacheKey>, value: GroupObjects, cause| {
         inspect::count_cache_removal(cause);
         let relay_track_id = key.relay_track_id;
@@ -178,8 +199,18 @@ impl TrackCache {
       cache,
       absent: Arc::default(),
       fills: Arc::default(),
+      max_cache_duration,
       log_folder,
     }
+  }
+
+  /// Applies the track's MAX_CACHE_DURATION, in milliseconds, to groups created from
+  /// now on. None lets them stay until the relay's own expiry evicts them.
+  pub fn set_max_cache_duration(&self, duration_ms: Option<u64>) {
+    self
+      .max_cache_duration
+      .0
+      .store(duration_ms.unwrap_or(u64::MAX), Ordering::Relaxed);
   }
 
   /// Log cache eviction events to cache_eviction.log
@@ -367,11 +398,10 @@ impl TrackCache {
   }
 
   /// Whether the cache holds no Object of the track. A group is only ever created
-  /// by an Object going into it, so no group means no Object. Expired and evicted
-  /// groups are swept out first, since the count lags behind them.
+  /// by an Object going into it, so no group means no Object. Iterating skips
+  /// expired groups, which the entry count only drops once a sweep reaches them.
   pub async fn is_empty(&self) -> bool {
-    self.cache.run_pending_tasks().await;
-    self.cache.entry_count() == 0
+    self.cache.iter().next().is_none()
   }
 
   /// Get a specific group if it exists
@@ -541,6 +571,21 @@ mod tests {
     drop(first);
     assert!(in_flight.try_lock().is_ok(), "free once it is done");
     assert!(cache.claim_fill(5, 7).is_ok(), "and no longer listed");
+  }
+
+  #[tokio::test]
+  async fn objects_are_not_served_past_max_cache_duration() {
+    let config = AppConfig::default();
+    let cache = TrackCache::new(1, 10_000, &config);
+    cache.set_max_cache_duration(Some(50));
+    for object_id in 0..9 {
+      cache.add_object(object_at(0, object_id)).await;
+    }
+    assert_eq!(cache.objects_if_complete(0, 0, 8).await.unwrap().len(), 9);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(cache.objects_if_complete(0, 0, 8).await.is_none());
+    assert!(cache.is_empty().await);
   }
 
   #[tokio::test]

@@ -14,9 +14,10 @@
 
 //! Writing a FETCH's range onto its data stream, from the cache and from upstream.
 
-use super::upstream::{handle_malformed_track, send_upstream_fetch_for_range};
+use super::upstream::send_upstream_fetch_for_range;
 use super::{FetchStop, PendingUpstreamFetch};
 use crate::server::inspect;
+use crate::server::message_handlers::malformed_track::handle_malformed_track;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::{SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};

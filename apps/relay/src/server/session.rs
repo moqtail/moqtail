@@ -872,7 +872,7 @@ impl Session {
     publisher: &MOQTClient,
     track: &Arc<Track>,
   ) {
-    if !message_handlers::fetch_handler::handle_malformed_track(context, track, publisher).await {
+    if !message_handlers::malformed_track::handle_malformed_track(context, track, publisher).await {
       return;
     }
     warn!(

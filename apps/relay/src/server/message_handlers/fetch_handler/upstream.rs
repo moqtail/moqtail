@@ -14,18 +14,16 @@
 
 //! The upstream half of FETCH: asking the publisher for what the cache lacks, and reading its answer.
 
-use super::{FetchStop, UPSTREAM_FETCH_CHANNEL_CAPACITY, UpstreamFetch, UpstreamFetchResponse};
+use super::{UPSTREAM_FETCH_CHANNEL_CAPACITY, UpstreamFetch, UpstreamFetchResponse};
 use crate::server::cluster;
 use crate::server::message_handlers::parameters;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::{SessionContext, UpstreamFetchEvent};
-use crate::server::track::{Track, TrackOrigin, UpstreamRequestCancellation, UpstreamRequestKind};
+use crate::server::track::{TrackOrigin, UpstreamRequestCancellation, UpstreamRequestKind};
 use core::result::Result::{Err, Ok};
 use moqtail::model::control::constant::GroupOrder;
-use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
-use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
@@ -33,7 +31,7 @@ use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info, trace, warn};
+use tracing::{info, trace, warn};
 
 /// Send an upstream Fetch to the publisher for the range `filter` selects, asking for
 /// the groups in `group_order` so they arrive in the order they are written downstream.
@@ -320,71 +318,4 @@ async fn forget_upstream_fetch(
     .write()
     .await
     .remove(&relay_request_id);
-}
-
-async fn cancel_downstream_fetches(context: &SessionContext, full_track_name: &FullTrackName) {
-  let clients = context
-    .client_manager
-    .clients
-    .read()
-    .await
-    .values()
-    .cloned()
-    .collect::<Vec<_>>();
-  for client in clients {
-    client
-      .downstream_requests
-      .stop_fetches_of(full_track_name, FetchStop::MalformedTrack)
-      .await;
-  }
-}
-
-/// Ends `publisher`'s copy of a track found malformed. Only the first call for a track
-/// tears it down, and returns true: streams, datagrams and upstream FETCHes can find the
-/// same track malformed at once, and a second teardown would remove the track by name,
-/// even one created since.
-pub(crate) async fn handle_malformed_track(
-  context: &SessionContext,
-  track: &Arc<Track>,
-  publisher: &MOQTClient,
-) -> bool {
-  let (full_track_name, remove_track) = {
-    let _handover = track.lock_handover().await;
-    if !publisher
-      .mark_track_malformed(track.full_track_name.clone())
-      .await
-    {
-      return false;
-    }
-    cancel_downstream_fetches(context, &track.full_track_name).await;
-    track
-      .cancel_for_malformed_publisher(publisher.connection_id)
-      .await;
-    let still_served =
-      crate::server::message_handlers::subscribe_handler::upstream::remove_upstream_publisher(
-        track,
-        publisher.connection_id,
-        context,
-      )
-      .await;
-    track.remove_from_subscriber_switching_sets().await;
-    if let Err(error) = track
-      .notify_publish_done(
-        PublishDoneStatusCode::MalformedTrack,
-        "Malformed track".to_string(),
-      )
-      .await
-    {
-      error!("Failed to end subscriptions for malformed track: {error:?}");
-    }
-    track.subscription_manager.detach_all().await;
-    (
-      track.full_track_name.clone(),
-      track.origin() == TrackOrigin::Subscribe || !still_served,
-    )
-  };
-  if remove_track {
-    context.track_manager.remove_track(&full_track_name).await;
-  }
-  true
 }

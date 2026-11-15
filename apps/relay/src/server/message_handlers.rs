@@ -30,6 +30,7 @@ use crate::server::{
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 pub(crate) mod fetch_handler;
+pub(crate) mod malformed_track;
 pub(crate) mod parameters;
 mod publish_handler;
 pub(crate) mod publish_namespace_handler;

@@ -58,6 +58,13 @@ pub enum ParseError {
     context: &'static str,
     details: String,
   },
+  /// The data is well-formed but breaks a rule that makes its Track malformed: the
+  /// receiver drops the Track, not the session.
+  #[error("Malformed track: [{context}], [{details}]")]
+  MalformedTrack {
+    context: &'static str,
+    details: String,
+  },
   #[error("Track naming error: [{context}], [{details}]")]
   TrackNameError {
     context: &'static str,

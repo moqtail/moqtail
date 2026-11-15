@@ -339,16 +339,23 @@ async fn cancel_downstream_fetches(context: &SessionContext, full_track_name: &F
   }
 }
 
-pub(crate) async fn handle_malformed_upstream_fetch(
+/// Ends `publisher`'s copy of a track found malformed. Only the first call for a track
+/// tears it down, and returns true: streams, datagrams and upstream FETCHes can find the
+/// same track malformed at once, and a second teardown would remove the track by name,
+/// even one created since.
+pub(crate) async fn handle_malformed_track(
   context: &SessionContext,
   track: &Arc<Track>,
   publisher: &MOQTClient,
-) {
+) -> bool {
   let (full_track_name, remove_track) = {
     let _handover = track.lock_handover().await;
-    publisher
+    if !publisher
       .mark_track_malformed(track.full_track_name.clone())
-      .await;
+      .await
+    {
+      return false;
+    }
     cancel_downstream_fetches(context, &track.full_track_name).await;
     track
       .cancel_for_malformed_publisher(publisher.connection_id)
@@ -379,4 +386,5 @@ pub(crate) async fn handle_malformed_upstream_fetch(
   if remove_track {
     context.track_manager.remove_track(&full_track_name).await;
   }
+  true
 }

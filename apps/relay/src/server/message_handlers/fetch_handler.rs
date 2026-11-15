@@ -14,6 +14,7 @@
 
 pub(crate) mod delivery;
 mod upstream;
+pub(crate) use upstream::handle_malformed_track;
 
 use crate::server::requests::DownstreamRequest;
 use crate::server::session::client::MOQTClient;

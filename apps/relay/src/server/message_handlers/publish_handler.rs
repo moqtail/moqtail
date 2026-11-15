@@ -95,6 +95,21 @@ pub async fn handle(
         name: m.track_name.clone(),
       };
 
+      // A track this session already sent a malformed Object on stays dropped: it would
+      // never be torn down again, since the track is marked only once.
+      if client.is_track_malformed(&full_track_name).await {
+        info!("Rejecting PUBLISH for {full_track_name:?}: this session made it malformed");
+        let publish_error = Box::new(RequestError::new(
+          RequestErrorCode::MalformedTrack,
+          0,
+          ReasonPhrase::try_new("Malformed track".to_string())
+            .map_err(|_| TerminationCode::InternalError)?,
+        ));
+        return stream_handler
+          .send(&ControlMessage::RequestError(publish_error))
+          .await;
+      }
+
       // Tracks MUST NOT be published under a reserved namespace.
       if let Some(reason) =
         crate::server::utils::reserved_namespace_rejection(&m.track_namespace, &m.track_name)

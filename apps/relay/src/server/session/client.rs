@@ -52,7 +52,7 @@ use std::{
   time::Duration,
 };
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, RwLock, RwLockWriteGuard, mpsc};
+use tokio::sync::{Mutex, RwLock, RwLockWriteGuard, mpsc, oneshot};
 use tokio::time::Instant;
 use tracing::{debug, error, trace, warn};
 
@@ -122,6 +122,8 @@ pub(crate) struct MOQTClient {
   pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client
   pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
   malformed_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
+  /// Fired to cancel a PUBLISH this client sent, keyed by its Request ID.
+  publish_cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
   /// The tracks a disconnect has to visit: every track the client ever subscribed to
   /// or published. Recorded before the client joins the track, so a disconnect never
   /// misses one. An unsubscribe prunes the track once the client holds no role on it;
@@ -229,6 +231,7 @@ impl MOQTClient {
       outbound_announcements: Arc::new(RwLock::new(HashMap::new())),
       published_tracks: Arc::new(RwLock::new(HashMap::new())),
       malformed_tracks: Arc::new(RwLock::new(HashSet::new())),
+      publish_cancels: Arc::new(Mutex::new(HashMap::new())),
       cleanup_tracks: Arc::new(RwLock::new(HashSet::new())),
       subscribers: Arc::new(RwLock::new(Vec::new())),
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
@@ -267,8 +270,46 @@ impl MOQTClient {
     announced_track_namespaces.push(track_namespace);
   }
 
-  pub(crate) async fn mark_track_malformed(&self, full_track_name: FullTrackName) {
-    self.malformed_tracks.write().await.insert(full_track_name);
+  /// Returns whether the track was not marked yet.
+  pub(crate) async fn mark_track_malformed(&self, full_track_name: FullTrackName) -> bool {
+    self.malformed_tracks.write().await.insert(full_track_name)
+  }
+
+  /// Returns what fires when the relay cancels the PUBLISH that opened `request_id`.
+  pub(crate) async fn register_publish_cancel(&self, request_id: u64) -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    self.publish_cancels.lock().await.insert(request_id, tx);
+    rx
+  }
+
+  pub(crate) async fn unregister_publish_cancel(&self, request_id: u64) {
+    self.publish_cancels.lock().await.remove(&request_id);
+  }
+
+  /// Cancels every PUBLISH this client sent for `full_track_name` and forgets them.
+  /// Returns whether there was any.
+  pub(crate) async fn cancel_publishes_of(&self, full_track_name: &FullTrackName) -> bool {
+    let request_ids: Vec<u64> = {
+      let mut published = self.published_tracks.write().await;
+      let ids = published
+        .iter()
+        .filter(|(_, name)| *name == full_track_name)
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+      for id in &ids {
+        published.remove(id);
+      }
+      ids
+    };
+    let cancelled = !request_ids.is_empty();
+    let mut cancels = self.publish_cancels.lock().await;
+    for id in request_ids {
+      self.downstream_requests.remove(id).await;
+      if let Some(cancel) = cancels.remove(&id) {
+        let _ = cancel.send(());
+      }
+    }
+    cancelled
   }
 
   pub(crate) async fn is_track_malformed(&self, full_track_name: &FullTrackName) -> bool {

@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::TrackPropertyType;
+use super::constant::{TrackPropertyType, property_ranges::MANDATORY_TRACK};
+use crate::model::common::grease::is_grease;
 use crate::model::common::pair::{
   KeyValuePair, deserialize_kvp_list_until_empty, serialize_kvp_list,
 };
@@ -52,6 +53,7 @@ impl ObjectProperty {
   /// Unknown type values are returned as `Unknown { kvp }` rather than an error.
   pub fn deserialize(kvp: KeyValuePair) -> Result<Self, ParseError> {
     let type_value = kvp.get_type();
+    reject_mandatory_track_property(type_value)?;
     let ext_type = match TrackPropertyType::try_from(type_value) {
       Ok(t) => t,
       Err(_) => return Ok(Self::Unknown { kvp }),
@@ -62,6 +64,9 @@ impl ObjectProperty {
         let bytes = kvp_bytes_value(&kvp, "ObjectProperty::deserialize(ImmutableProperties)")?;
         let mut buf = bytes;
         let properties = deserialize_kvp_list_until_empty(&mut buf)?;
+        for inner in &properties {
+          reject_mandatory_track_property(inner.get_type())?;
+        }
         if properties
           .iter()
           .any(|inner| inner.get_type() == TrackPropertyType::ImmutableProperties as u64)
@@ -152,6 +157,19 @@ pub fn validate_prior_gaps(
   Ok(())
 }
 
+// The mandatory range is Track scope only; on an Object it can only be misplaced. The
+// GREASE values that fall in it are left alone: a peer sends them to exercise
+// unknown-value handling, which must never be what drops its track.
+fn reject_mandatory_track_property(type_value: u64) -> Result<(), ParseError> {
+  if MANDATORY_TRACK.contains(&type_value) && !is_grease(type_value) {
+    return Err(ParseError::MalformedTrack {
+      context: "ObjectProperty::deserialize",
+      details: format!("Mandatory Track Property 0x{type_value:X} is not allowed on an Object"),
+    });
+  }
+  Ok(())
+}
+
 fn kvp_varint_value(kvp: &KeyValuePair, context: &'static str) -> Result<u64, ParseError> {
   match kvp {
     KeyValuePair::VarInt { value, .. } => Ok(*value),
@@ -229,6 +247,39 @@ mod tests {
       ObjectProperty::deserialize(outer).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
+  }
+
+  #[test]
+  fn test_mandatory_track_property_on_object_is_error() {
+    let direct = KeyValuePair::try_new_varint(0x4000, 1).unwrap();
+    let nested = KeyValuePair::try_new_bytes(
+      0x0B,
+      KeyValuePair::try_new_bytes(0x7FFF, Bytes::from_static(b"x"))
+        .unwrap()
+        .serialize()
+        .unwrap(),
+    )
+    .unwrap();
+    for kvp in [direct, nested] {
+      assert!(matches!(
+        ObjectProperty::deserialize(kvp).unwrap_err(),
+        ParseError::MalformedTrack { .. }
+      ));
+    }
+    // just outside the range, and a GREASE value inside it, stay forwarded unknowns
+    use crate::model::common::grease::grease_value;
+    let grease = grease_value(129).unwrap();
+    assert!(MANDATORY_TRACK.contains(&grease));
+    for ty in [0x8000, grease] {
+      let kvp = KeyValuePair::try_new_varint(ty, 1).unwrap();
+      assert!(
+        matches!(
+          ObjectProperty::deserialize(kvp),
+          Ok(ObjectProperty::Unknown { .. })
+        ),
+        "{ty:#x}"
+      );
+    }
   }
 
   #[test]

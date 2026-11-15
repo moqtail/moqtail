@@ -220,11 +220,12 @@ impl Datagram {
       }
 
       let mut header_bytes = bytes.copy_to_bytes(ext_len);
-      let headers = deserialize_object_properties(&mut header_bytes).map_err(|e| {
-        ParseError::ProtocolViolation {
+      let headers = deserialize_object_properties(&mut header_bytes).map_err(|e| match e {
+        ParseError::MalformedTrack { .. } => e,
+        _ => ParseError::ProtocolViolation {
           context: "Datagram::deserialize, can't parse headers",
           details: e.to_string(),
-        }
+        },
       })?;
       Some(headers)
     } else {

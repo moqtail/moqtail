@@ -14,7 +14,7 @@
 
 //! Writing a FETCH's range onto its data stream, from the cache and from upstream.
 
-use super::upstream::{handle_malformed_upstream_fetch, send_upstream_fetch_for_range};
+use super::upstream::{handle_malformed_track, send_upstream_fetch_for_range};
 use super::{FetchStop, PendingUpstreamFetch};
 use crate::server::inspect;
 use crate::server::session::client::MOQTClient;
@@ -656,7 +656,8 @@ pub(crate) async fn serve_fetch_stream(
                     "handle_fetch_messages | Malformed upstream FETCH for gap [{}, {}]",
                     gap_start, gap_end
                   );
-                  handle_malformed_upstream_fetch(&context, &track, &upstream_publisher).await;
+                  // This FETCH stops either way; the track is torn down once.
+                  handle_malformed_track(&context, &track, &upstream_publisher).await;
                   stop_reason = FetchStop::MalformedTrack;
                   break;
                 }

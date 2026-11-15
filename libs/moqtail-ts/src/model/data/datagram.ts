@@ -15,7 +15,8 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
+import { KeyValuePair, serializeKvpList } from '../common/pair'
+import { ObjectProperty } from '../property/object_property'
 import { ObjectDatagramType, ObjectStatus } from './constant'
 import { Location } from '../common/location'
 
@@ -172,7 +173,7 @@ export class Datagram {
     if (ObjectDatagramType.hasProperties(msgType)) {
       const extBytes = buf.getLengthPrefixedBytes()
       const headerBytes = new FrozenByteBuffer(extBytes)
-      properties = deserializeKvpListUntilEmpty(headerBytes)
+      properties = ObjectProperty.deserializeRaw(headerBytes)
     }
 
     // STATUS bit determines whether we read Object Status or Object Payload

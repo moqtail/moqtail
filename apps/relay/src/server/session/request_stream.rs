@@ -268,6 +268,13 @@ async fn serve_request(
   client
     .register_response_sender(request_id, response_tx)
     .await;
+  // Only a PUBLISH can be cancelled by the relay. A oneshot receiver panics if polled
+  // again once it has resolved, so its branch is guarded by `cancel_open`.
+  let (mut cancel_rx, mut cancel_open) = if kind == RequestStreamKind::Publish {
+    (client.register_publish_cancel(request_id).await, true)
+  } else {
+    (tokio::sync::oneshot::channel().1, false)
+  };
 
   if let Err(e) = MessageHandler::handle(
     client.clone(),
@@ -279,6 +286,7 @@ async fn serve_request(
   .await
   {
     client.unregister_response_sender(request_id).await;
+    client.unregister_publish_cancel(request_id).await;
     Session::close_session(context, e, "Error handling request stream message");
     return;
   }
@@ -286,6 +294,15 @@ async fn serve_request(
   loop {
     tokio::select! {
       biased;
+      cancel = &mut cancel_rx, if cancel_open => {
+        cancel_open = false;
+        if cancel.is_ok() {
+          trace!("Cancelling PUBLISH request {request_id}");
+          client.unregister_response_sender(request_id).await;
+          stream_handler.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+          return;
+        }
+      }
       deferred = response_rx.recv() => {
         match deferred {
           Some(msg) => {
@@ -311,12 +328,14 @@ async fn serve_request(
             .await
             {
               client.unregister_response_sender(request_id).await;
+              client.unregister_publish_cancel(request_id).await;
               Session::close_session(context, code, reason);
               return;
             }
           }
           Err(e) if stream_handler.received_malformed_message() => {
             client.unregister_response_sender(request_id).await;
+            client.unregister_publish_cancel(request_id).await;
             cancel(kind, client.clone(), request_id, &context).await;
             Session::close_session(context, e, MALFORMED_REASON);
             return;
@@ -332,6 +351,7 @@ async fn serve_request(
     }
   }
   client.unregister_response_sender(request_id).await;
+  client.unregister_publish_cancel(request_id).await;
 }
 
 /// Handles a message that follows the request on its stream. An error names what the

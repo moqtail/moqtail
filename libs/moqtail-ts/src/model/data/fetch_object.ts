@@ -15,7 +15,8 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
+import { KeyValuePair, serializeKvpList } from '../common/pair'
+import { ObjectProperty } from '../property/object_property'
 import { Location } from '../common/location'
 import { GroupOrder } from '../control/constant'
 import { ObjectForwardingPreference } from './constant'
@@ -379,7 +380,7 @@ export class FetchObject {
     if (hasProperties) {
       const extLen = buf.getNumberVI()
       const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
-      properties = deserializeKvpListUntilEmpty(headerBytes)
+      properties = ObjectProperty.deserializeRaw(headerBytes)
     }
 
     const payloadLen = buf.getNumberVI()

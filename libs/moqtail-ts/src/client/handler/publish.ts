@@ -13,52 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { Publish, PublishDone, RequestOk } from '@/model/control'
-import { FullTrackName, MoqtObject } from '@/model/data'
+import { Publish, RequestOk } from '@/model/control'
 import { logger } from '@/util/logger'
-import { ObjectStream } from '@/client/util/object_stream'
 import { RequestStreamMessageHandler } from './handler'
-
-/**
- * A receiver for a track the peer pushes with PUBLISH. It stands in for a SubscribeRequest
- * and its Subscription, so the data stream and datagram paths deliver to it unchanged.
- */
-export function pushedTrackReceiver(requestId: bigint, fullTrackName: FullTrackName) {
-  const objects = new ObjectStream()
-  const receiver = {
-    requestId,
-    fullTrackName,
-    streamsAccepted: 0n,
-    expectedStreams: undefined as bigint | undefined,
-    publishDone: undefined as PublishDone | undefined,
-    largestLocation: undefined,
-    finish() {},
-    manager: {
-      objects,
-      requests: [],
-      drop() {},
-      deliver(_request: unknown, obj: MoqtObject) {
-        objects.enqueue(obj)
-        return true
-      },
-    },
-  }
-  return { receiver, stream: objects.readable }
-}
 
 export const handlerPublish: RequestStreamMessageHandler<Publish> = async (client, msg, stream) => {
   logger.log('handler/publish', 'track: %s alias: %d', msg.fullTrackName.toString(), msg.trackAlias)
 
-  // Filed under the PUBLISH's own request id, which its PUBLISH_DONE arrives under.
-  // Registered before the push is accepted, since its data streams may follow at once.
-  client.requestIdMap.addMapping(msg.requestId, msg.fullTrackName)
-  client.subscriptionAliasMap.set(msg.requestId, msg.trackAlias)
-  client.aliasFullTrackNameMap.set(msg.trackAlias, msg.fullTrackName)
-
-  const { receiver, stream: objects } = pushedTrackReceiver(msg.requestId, msg.fullTrackName)
-
-  // Without a receiver for the alias, its data streams are a protocol violation
-  client.subscriptions.set(msg.trackAlias, receiver)
+  // Registered before the push is accepted, since its data streams may follow at once
+  const objects = client.acceptPushedTrack(msg)
 
   client.emit('peerpublish', msg, objects)
 

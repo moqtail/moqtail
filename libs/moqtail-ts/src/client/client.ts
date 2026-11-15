@@ -86,10 +86,10 @@ import { SubscribeRequest, Subscription } from '@/client/request/subscribe'
 import { PublishRequest } from '@/client/request/publish'
 import { TrackStatusRequest } from '@/client/request/track_status'
 import { getHandlerForControlMessage, getHandlerForRequestStreamMessage } from '@/client/handler/handler'
-import { pushedTrackReceiver } from '@/client/handler/publish'
 import { SubscribePublication } from '@/client/publication/subscribe'
 import { FetchPublication } from '@/client/publication/fetch'
 import { PublishPublication } from '@/client/publication/publish'
+import { ObjectStream } from '@/client/util/object_stream'
 import { random60bitId } from '@/client/util/random_id'
 import { assertWithinFilterRangeLimit, isValidTrackAlias } from '@/client/util/validators'
 import { MaxFilterRanges } from '@/model/parameter/setup/max_filter_ranges'
@@ -1660,15 +1660,34 @@ export class MOQtailClient extends Emitter<ClientEvents> {
   acceptPushedTrack(msg: Publish): ReadableStream<MoqtObject> {
     this.#ensureActive()
 
-    // 1. Map the request ID to the full track name so the parser knows what track this is
+    // Filed under the PUBLISH's own request id, which its PUBLISH_DONE arrives under
     this.requestIdMap.addMapping(msg.requestId, msg.fullTrackName)
 
-    const { receiver, stream } = pushedTrackReceiver(msg.requestId, msg.fullTrackName)
+    // Stands in for a SubscribeRequest and its Subscription, so the data stream path delivers to it unchanged
+    const objects = new ObjectStream()
+    const receiver = {
+      requestId: msg.requestId,
+      fullTrackName: msg.fullTrackName,
+      streamsAccepted: 0n,
+      expectedStreams: undefined as bigint | undefined,
+      publishDone: undefined as PublishDone | undefined,
+      largestLocation: undefined,
+      finish() {},
+      manager: {
+        objects,
+        requests: [],
+        drop() {},
+        deliver(_request: unknown, obj: MoqtObject) {
+          objects.enqueue(obj)
+          return true
+        },
+      },
+    }
 
-    // Register the receiver in the main routing table using the publisher's alias
+    // Without a receiver for the alias, its data streams are a protocol violation
     this.#claimTrackAlias(msg.trackAlias, receiver)
 
-    return stream
+    return objects.readable
   }
 
   // TODO: Each announced track should checked against ongoing subscribe_namespace

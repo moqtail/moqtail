@@ -51,6 +51,10 @@ export class CmafSource extends SwitchingSetSource {
     if (!object.payload) return undefined
     return fragmentTime(object.payload, track.timescale ?? (initData && mediaTimescale(initData)))
   }
+
+  packet(_track: CatalogTrack, object: MoqtObject, _initData: Uint8Array | undefined): MoqtObject | undefined {
+    return object
+  }
 }
 
 if (import.meta.vitest) {

@@ -49,10 +49,34 @@ export function gapJumpTarget(
   return undefined
 }
 
+/** How long playback may sit still with data ahead before a nudge, in seconds. */
+const NUDGE_AFTER = 1
+/** The first nudge; each further one at the same spot doubles. */
+const NUDGE = 0.1
+
+/**
+ * Where to nudge playback stuck at `currentTime` inside a range for `stuckFor` seconds after
+ * `attempts` nudges, or `undefined` to wait. Data after a hole can start without its keyframe,
+ * so the decoder waits on frames that never come although the range says data is there; a jump
+ * past them gets it going (hls.js does the same). Doubling reaches a GoP away in a few tries.
+ */
+export function nudgeTarget(
+  currentTime: number,
+  buffered: TimeRanges,
+  stuckFor: number,
+  attempts: number,
+): number | undefined {
+  const index = rangeAt(currentTime, buffered)
+  if (index === -1 || stuckFor < NUDGE_AFTER) return undefined
+  const ahead = buffered.end(index) - currentTime
+  if (ahead < STALL_THRESHOLD) return undefined
+  return currentTime + Math.min(NUDGE * 2 ** attempts, ahead - STALL_THRESHOLD)
+}
+
 /** WebKit rounds `currentTime`, so a jump to a range's start can land a hair before it. */
 const START_TOLERANCE = 0.001
 
-/** Index of the range containing `time`, or -1. */
+/** @public Index of the range containing `time`, or -1. */
 export function rangeAt(time: number, ranges: TimeRanges): number {
   for (let i = 0; i < ranges.length; i++)
     if (ranges.start(i) - START_TOLERANCE <= time && time <= ranges.end(i)) return i
@@ -111,6 +135,16 @@ if (import.meta.vitest) {
       expect(gapJumpTarget(10.4, holes, false, LIVE_EDGE_DELAY)).toBe(12) // not back to 10.3
       expect(gapJumpTarget(21, holes, false, LIVE_EDGE_DELAY)).toBeUndefined()
       expect(gapJumpTarget(1, timeRanges([]), true, LIVE_EDGE_DELAY)).toBeUndefined()
+    })
+
+    test('nudges playback stuck with data ahead, further each time, never past the stall threshold', () => {
+      const ranges = timeRanges([[10, 14]])
+      expect(nudgeTarget(11, ranges, 0.5, 0)).toBeUndefined() // not stuck long enough
+      expect(nudgeTarget(11, ranges, 1, 0)).toBeCloseTo(11.1)
+      expect(nudgeTarget(11, ranges, 1, 3)).toBeCloseTo(11.8)
+      expect(nudgeTarget(11, ranges, 1, 10)).toBeCloseTo(13.5)
+      expect(nudgeTarget(13.7, ranges, 5, 0)).toBeUndefined() // out of data: a plain stall
+      expect(nudgeTarget(9, ranges, 5, 0)).toBeUndefined() // outside every range: gapJumpTarget's case
     })
 
     test('a time WebKit rounded to just before a range start is in it', () => {

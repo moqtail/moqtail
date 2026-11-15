@@ -70,7 +70,10 @@ export interface ElementDefinition<
   readonly type: 'source' | 'transform' | 'sink'
   readonly name: string
   readonly capabilities: CapabilityBundles
-  /** Ranks the probes that accept a track: lower wins, then the earlier definition. Default 100. */
+  /**
+   * Ranks the probes that accept a track: lower wins, then the earlier definition. Default selection
+   * also keeps only the lowest of the sets sharing an `altGroup` and `lang`. Default 100.
+   */
   readonly priority?: number
   /** The optional interfaces this element implements. */
   readonly provides?: P

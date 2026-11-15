@@ -610,6 +610,12 @@ impl Track {
         _ => None,
       })
       .unwrap_or(DEFAULT_PUBLISHER_PRIORITY);
+    self
+      .cache
+      .set_max_cache_duration(properties.iter().find_map(|p| match p {
+        TrackProperty::MaxCacheDuration { duration_ms } => Some(*duration_ms),
+        _ => None,
+      }));
     let mut cached = self.track_properties.write().await;
     *cached = properties;
     self

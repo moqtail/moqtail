@@ -79,6 +79,7 @@ export async function cmafChain(
     reconnectAttempts?: number
     respond?: FakeClient['respond']
     ordered?: boolean
+    element?: typeof Cmaf
   } = {},
 ) {
   const client = () => {
@@ -100,7 +101,7 @@ export async function cmafChain(
     testSource({
       script: async (parent) => {
         const { catalog, cmaf = {} } = options
-        source = await parent.ctx.load(Cmaf, { tracks, options: cmaf, ...(catalog && { catalog }) })
+        source = await parent.ctx.load(options.element ?? Cmaf, { tracks, options: cmaf, ...(catalog && { catalog }) })
         parent.emit('nomorepads')
       },
     }),

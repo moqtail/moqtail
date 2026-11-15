@@ -649,8 +649,9 @@ if (import.meta.vitest) {
   })
 
   test('setTracks: a removed active track switches to the closest bitrate, an empty set removes the pad', async () => {
-    const c = await playing([cmafTrack('v1', { bitrate: 1000 }), cmafTrack('v2', { bitrate: 900 })])
-    c.source.setTracks([cmafTrack('v2', { bitrate: 900 }), cmafTrack('v3', { bitrate: 5000 })])
+    // Live starts at the lower of two middles: v1
+    const c = await playing([cmafTrack('v1', { bitrate: 1000 }), cmafTrack('v2', { bitrate: 1100 })])
+    c.source.setTracks([cmafTrack('v2', { bitrate: 1100 }), cmafTrack('v3', { bitrate: 5000 })])
     await flush()
     expect(c.requests().slice(1, 2)).toEqual(['subscribe v2 2.0-'])
     expect(c.source.getRenditions().map((r) => [r.id, r.selected])).toEqual([

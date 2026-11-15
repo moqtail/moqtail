@@ -23,7 +23,7 @@ import type { Pad, PadEvent, PadItem, PadProperties, PadSignal } from '@/player/
 import { PlayerError } from '@/player/error'
 import { handledResolvers } from '@/player/util/async'
 import { BufferQueue } from './buffer_queue'
-import { GAP_CHECK_INTERVAL_MS, LIVE_EDGE_DELAY, gapJumpTarget, liveEdge, rangeAt } from './gaps'
+import { GAP_CHECK_INTERVAL_MS, LIVE_EDGE_DELAY, gapJumpTarget, liveEdge, nudgeTarget, rangeAt } from './gaps'
 import { liveEdgeStart, liveSeekable, vodDuration } from './range'
 import {
   BACK_BUFFER,
@@ -110,6 +110,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   #live = false
   /** The live seekable range last set. */
   #seekable: { start: number; end: number } | undefined
+  /** Where playback last sat still, since when (ms), and the nudges tried there. */
+  #stuck = { time: NaN, since: 0, attempts: 0 }
   /** Set once playback has its start position; a rebuild clears it. */
   #started = false
   /** Where playback continues after a rebuild, instead of the start position. */
@@ -443,6 +445,14 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     if (video.seeking) return this.#unstrand()
     const target = gapJumpTarget(video.currentTime, video.buffered, this.#live, this.#options.liveEdgeDelay)
     if (target !== undefined && target > video.currentTime) this.#seekTracker.jump(target)
+    else this.#unstrand()
+  }
+
+  /** Playback stranded where nothing will move it on: outside the data, or stuck inside it. */
+  #unstrand(): void {
+    const { currentTime, buffered } = this.#video
+    if (rangeAt(currentTime, buffered) === -1) this.#jumpToData(currentTime, buffered)
+    else this.#nudgeStuck(currentTime, buffered)
   }
 
   /**
@@ -450,15 +460,28 @@ export class MSESink extends SinkElement implements MediaSinkElement {
    * tracks whose data starts at different times. Once no upstream seek is pending and every
    * buffer has data past it, nothing will fill the spot, so it jumps to where the data starts.
    */
-  #unstrand(): void {
-    const time = this.#video.currentTime
-    const buffered = this.#video.buffered
-    if (rangeAt(time, buffered) !== -1) return
+  #jumpToData(time: number, buffered: TimeRanges): void {
     for (const state of this.#pads.values()) {
       if (state.seeks > 0 || !state.queue || (bufferedEnd(state.queue.buffer) ?? 0) <= time) return
     }
     for (let i = 0; i < buffered.length; i++)
       if (buffered.start(i) > time) return this.#seekTracker.jump(buffered.start(i))
+  }
+
+  /** Playback sitting still inside the data, past a hole whose data starts without its keyframe (`nudgeTarget`). */
+  #nudgeStuck(time: number, buffered: TimeRanges): void {
+    const video = this.#video
+    const now = performance.now()
+    const previous = this.#stuck
+    if (video.paused || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA || time !== previous.time) {
+      // Attempts count until playback moves on
+      this.#stuck = { time, since: now, attempts: time === previous.time ? previous.attempts : 0 }
+      return
+    }
+    const target = nudgeTarget(time, buffered, (now - previous.since) / 1000, previous.attempts)
+    if (target === undefined) return
+    this.#stuck = { time: target, since: now, attempts: previous.attempts + 1 }
+    this.#seekTracker.jump(target)
   }
 
   /**

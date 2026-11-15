@@ -21,7 +21,7 @@
 
 import { Attributes } from 'custom-media-element'
 import { afterEach, beforeAll } from 'vitest'
-import { abr, DefaultAbrController, ssts, SstsSource, type MOQtailPlayerOptions } from '@/player'
+import { abr, MlAbrController, ssts, SstsSource, type MOQtailPlayerOptions } from '@/player'
 import { LiveBufferController } from '@/player/plugins/buffer/live'
 import { MOQtailVideoElement, defineMOQtailVideo } from '@/player/component'
 import { ch07, ch07_vod, describe, expect, test, warmUp } from './harness/test'
@@ -93,7 +93,7 @@ describe('component', () => {
       Infinity,
     ])
     expect(el.player?.bufferController).toBeInstanceOf(LiveBufferController) // the defaults, attached
-    expect(el.player?.abrController).toBeInstanceOf(DefaultAbrController)
+    expect(el.player?.abrController).toBeInstanceOf(MlAbrController)
 
     await until(() => !Number.isNaN(el.liveEdgeStart), 'liveEdgeStart')
     expect(el.seekable.length).toBe(1)
@@ -123,7 +123,7 @@ describe('component', () => {
     const sources = el.player!.mediaSources
     await until(() => sources.every((s) => s.getRenditions().every((r) => r.selected)), 'every rendition selected')
     expect(el.videoRenditions.selectedIndex).toBe(-1)
-    expect(el.player?.abrController).toBeInstanceOf(DefaultAbrController)
+    expect(el.player?.abrController).toBeInstanceOf(MlAbrController)
     // A selection made through the player API shows in the list too
     const video = sources.find((s) => s.getRenditions().some((r) => r.width !== undefined))!
     await video.selectRenditions([renditions[0]!.id!])

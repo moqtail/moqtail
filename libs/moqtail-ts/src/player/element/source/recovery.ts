@@ -390,9 +390,9 @@ if (import.meta.vitest) {
   describe('Recovery', () => {
     test('a rejected rendition falls back to the closest bitrate, and none left removes the pad', async () => {
       const set = [
-        cmafTrack('v1', { bitrate: 500 }),
+        cmafTrack('v1', { bitrate: 1000 }), // live starts at the middle bitrate
         cmafTrack('v2', { bitrate: 3000 }),
-        cmafTrack('v3', { bitrate: 1000 }),
+        cmafTrack('v3', { bitrate: 500 }),
       ]
       const c = await cmafChain(set, { respond: (_, o) => (requested(o) === 'v3' ? {} : refuse()) })
       await flush()

@@ -183,6 +183,14 @@ pub(crate) async fn send_upstream_fetch_for_range(
               "Upstream FETCH {} accepted, end location {:?}",
               relay_request_id, ok.end_location
             );
+            // A cache-only track has no publisher whose PUBLISH or SUBSCRIBE_OK gave
+            // it properties, so the ones in FETCH_OK are the latest it has, and the
+            // cache needs their MAX_CACHE_DURATION.
+            if request_track.origin() == TrackOrigin::CacheOnly {
+              request_track
+                .set_track_properties(ok.track_properties.clone())
+                .await;
+            }
             let end_location = ok.end_location.clone();
             // Signal range resolution before writing to the potentially full event queue.
             let _ = response_tx

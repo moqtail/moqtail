@@ -27,6 +27,7 @@ import {
 } from 'moqtail/player';
 import type { MOQtailVideoElement } from 'moqtail/player/component';
 import { Publisher } from '@/lib/publisher';
+import presets from '@/presets.json';
 import type { Track, Status, SourceState, SourceKind, PublishStatus, Features } from '@/types';
 import { Header } from '@/components/Header';
 import { Sidebar } from '@/components/Sidebar';
@@ -143,9 +144,22 @@ export function App() {
   const [publishError, setPublishError] = useState<string | null>(null);
   const publisherRef = useRef<Publisher | null>(null);
 
-  // Pre-populate watch fields from a ?url=moqt://... query param.
+  // Pre-populate watch fields from a ?preset=<id> or ?url=moqt://... query param.
   useEffect(() => {
-    const raw = new URLSearchParams(window.location.search).get('url');
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('preset');
+    if (id) {
+      const relay = presets.relays.find(r => r.namespaces.some(ns => ns.id === id));
+      const ns = relay?.namespaces.find(ns => ns.id === id);
+      if (relay && ns) {
+        setRelayUrl(relay.url);
+        setFeatures(f => ({ ...f, switchFrom: supportsSwitchFrom(relay.url) }));
+        setNamespace(ns.name);
+        return;
+      }
+      logger.warn('app', `ignoring an unknown ?preset= "${id}"`);
+    }
+    const raw = params.get('url');
     if (!raw) return;
     try {
       const source = parseMsfUrl(raw);

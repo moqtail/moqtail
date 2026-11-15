@@ -14,37 +14,14 @@
  * limitations under the License.
  */
 import { Publish, RequestOk } from '@/model/control'
-import { MoqtObject } from '@/model/data'
 import { logger } from '@/util/logger'
 import { RequestStreamMessageHandler } from './handler'
 
 export const handlerPublish: RequestStreamMessageHandler<Publish> = async (client, msg, stream) => {
   logger.log('handler/publish', 'track: %s alias: %d', msg.fullTrackName.toString(), msg.trackAlias)
 
-  let streamController!: ReadableStreamDefaultController<MoqtObject>
-  const objects = new ReadableStream<MoqtObject>({
-    start(c) {
-      streamController = c
-    },
-  })
-
-  const localPseudoRequestId = client.allocatePseudoRequestId()
-
   // Registered before the push is accepted, since its data streams may follow at once
-  client.requestIdMap.addMapping(localPseudoRequestId, msg.fullTrackName)
-  client.subscriptionAliasMap.set(localPseudoRequestId, msg.trackAlias)
-  client.aliasFullTrackNameMap.set(msg.trackAlias, msg.fullTrackName)
-
-  // This object mimics a SubscribeRequest so #handleRecvStreams can use it identically
-  const receiver = {
-    requestId: localPseudoRequestId,
-    streamsAccepted: 0,
-    largestLocation: undefined,
-    controller: streamController,
-  }
-
-  // Without a receiver for the alias, its data streams are a protocol violation
-  client.subscriptions.set(msg.trackAlias, receiver)
+  const objects = client.acceptPushedTrack(msg)
 
   client.emit('peerpublish', msg, objects)
 

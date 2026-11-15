@@ -26,6 +26,7 @@ export interface Features {
 }
 
 export interface PresetNamespace {
+  id: string;
   name: string;
   label: string;
   videoTracks: number;

@@ -51,7 +51,7 @@ export interface MsfSource {
   locationRanges: LocationRange[]
   mediaTimeRanges: TimeRange[]
   wallclockRanges: TimeRange[]
-  c4m?: string
+  cat?: string
   connection?: 'q' | 'wt'
   /** Every fragment parameter, last value wins. Used for catalog variable substitution (MSF 5.4). */
   variables: Record<string, string>
@@ -102,8 +102,8 @@ export function parseMsfUrl(uri: string): MsfSource {
       case 'wallclock-range':
         source.wallclockRanges.push(parseTimeRange(value))
         break
-      case 'c4m':
-        source.c4m = value
+      case 'cat':
+        source.cat = value
         break
       case 'connection':
         if (value !== 'q' && value !== 'wt') unsupported(`connection must be q or wt, got ${value}`)
@@ -235,14 +235,14 @@ if (import.meta.vitest) {
         { start: new Location(34, 0), end: { group: 64n } },
       ])
 
-      const c4m =
+      const cat =
         'gqhkYWxnIGVzaGFyqGR0eXBNhdZ9hdWQAY3VybGZlbWlzcwZleWV2aW5uZWlhdGVwQWNyZW5lYnJmcmVqMTIzNDU2NzgwMHZpc3VlZF9hdD0xNzMwNDM'
-      expect(parseMsfUrl(`${base}#msf:customerID-broadcastID--catalog&c4m=${c4m}`).c4m).toBe(c4m)
+      expect(parseMsfUrl(`${base}#msf:customerID-broadcastID--catalog&cat=${cat}`).cat).toBe(cat)
       const withToken = parseMsfUrl(
-        `${base}?token=HTRCII74GHFT@JHBCVSW56HKKneH2Dbyq6NHBI2#msf:customerID-broadcastID--catalog&c4m=${c4m}`,
+        `${base}?token=HTRCII74GHFT@JHBCVSW56HKKneH2Dbyq6NHBI2#msf:customerID-broadcastID--catalog&cat=${cat}`,
       )
       expect(withToken.url).toBe(`${base}?token=HTRCII74GHFT@JHBCVSW56HKKneH2Dbyq6NHBI2`)
-      expect(withToken.variables).toEqual({ c4m })
+      expect(withToken.variables).toEqual({ cat })
     })
 
     test('scheme is normalised to lowercase', () => {

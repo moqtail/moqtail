@@ -69,11 +69,11 @@ if (import.meta.vitest) {
 
   describe('substituteVariables', () => {
     test('substitutes string values, recursively, but not keys', () => {
-      const { value, warnings } = run('{"%id%": ["tracking-%id%", {"c4m": "%token%"}, 1]}', {
+      const { value, warnings } = run('{"%id%": ["tracking-%id%", {"cat": "%token%"}, 1]}', {
         id: 'bob',
         token: '12@34',
       })
-      expect(value).toEqual({ '%id%': ['tracking-bob', { c4m: '12@34' }, 1] })
+      expect(value).toEqual({ '%id%': ['tracking-bob', { cat: '12@34' }, 1] })
       expect(warnings).toEqual([])
     })
 

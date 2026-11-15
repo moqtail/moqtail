@@ -4,6 +4,7 @@
       "url": "moqt://relay.moqtail.dev",
       "namespaces": [
         {
+          "id": "testsrc",
           "name": "moqtail/testsrc",
           "label": "Test Source",
           "videoTracks": 1,
@@ -11,6 +12,7 @@
           "features": ["CMAF"]
         },
         {
+          "id": "ch00",
           "name": "moqtail/ch00",
           "label": "Channel 00",
           "videoTracks": 4,
@@ -18,6 +20,7 @@
           "features": ["CMAF", "4K"]
         },
         {
+          "id": "ch07",
           "name": "moqtail/ch07",
           "label": "Channel 07",
           "videoTracks": 3,
@@ -25,6 +28,7 @@
           "features": ["CMAF"]
         },
         {
+          "id": "ch07-all",
           "name": "moqtail/ch07_all",
           "label": "Channel 07 (all GoPs)",
           "videoTracks": 9,
@@ -32,6 +36,7 @@
           "features": ["CMAF", "Fast Switching"]
         },
         {
+          "id": "ch07-vod",
           "name": "moqtail/ch07_vod",
           "label": "Channel 07 (VOD)",
           "videoTracks": 3,
@@ -44,6 +49,7 @@
       "url": "moqt://moqlivemock.demo.osaas.io/moq",
       "namespaces": [
         {
+          "id": "eyevinn",
           "name": "mlm/cmsf/clear",
           "label": "Eyevinn Test Source",
           "videoTracks": 9,

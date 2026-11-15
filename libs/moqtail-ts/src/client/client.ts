@@ -89,6 +89,7 @@ import { getHandlerForControlMessage, getHandlerForRequestStreamMessage } from '
 import { SubscribePublication } from '@/client/publication/subscribe'
 import { FetchPublication } from '@/client/publication/fetch'
 import { PublishPublication } from '@/client/publication/publish'
+import { ObjectStream } from '@/client/util/object_stream'
 import { random60bitId } from '@/client/util/random_id'
 import { assertWithinFilterRangeLimit, isValidTrackAlias } from '@/client/util/validators'
 import { MaxFilterRanges } from '@/model/parameter/setup/max_filter_ranges'
@@ -320,13 +321,6 @@ export class MOQtailClient extends Emitter<ClientEvents> {
     const id = this.#dontUseRequestId
     this.#dontUseRequestId += 2n
     return id
-  }
-
-  /**
-   * Generates a safe, sequential local request ID for tracking pushed/incoming tracks.
-   */
-  allocatePseudoRequestId(): bigint {
-    return this.#nextClientRequestId
   }
 
   /**
@@ -1666,30 +1660,34 @@ export class MOQtailClient extends Emitter<ClientEvents> {
   acceptPushedTrack(msg: Publish): ReadableStream<MoqtObject> {
     this.#ensureActive()
 
-    let streamController!: ReadableStreamDefaultController<MoqtObject>
-    const stream = new ReadableStream<MoqtObject>({
-      start(c) {
-        streamController = c
-      },
-    })
-
-    // 1. Map the request ID to the full track name so the parser knows what track this is
+    // Filed under the PUBLISH's own request id, which its PUBLISH_DONE arrives under
     this.requestIdMap.addMapping(msg.requestId, msg.fullTrackName)
 
-    // 2. Create a pseudo-subscription object that mimics a SubscribeRequest
-    // This perfectly matches the shape #handleRecvStreams expects
+    // Stands in for a SubscribeRequest and its Subscription, so the data stream path delivers to it unchanged
+    const objects = new ObjectStream()
     const receiver = {
       requestId: msg.requestId,
       fullTrackName: msg.fullTrackName,
-      streamsAccepted: 0,
+      streamsAccepted: 0n,
+      expectedStreams: undefined as bigint | undefined,
+      publishDone: undefined as PublishDone | undefined,
       largestLocation: undefined,
-      controller: streamController,
+      finish() {},
+      manager: {
+        objects,
+        requests: [],
+        drop() {},
+        deliver(_request: unknown, obj: MoqtObject) {
+          objects.enqueue(obj)
+          return true
+        },
+      },
     }
 
-    // 3. Register the receiver in the main routing table using the publisher's alias
+    // Without a receiver for the alias, its data streams are a protocol violation
     this.#claimTrackAlias(msg.trackAlias, receiver)
 
-    return stream
+    return objects.readable
   }
 
   // TODO: Each announced track should checked against ongoing subscribe_namespace
@@ -3202,6 +3200,40 @@ if (import.meta.vitest) {
       expect(incoming.messages[0]).toBeInstanceOf(RequestError)
       expect(transport.sentChunks).toHaveLength(1)
 
+      await client.disconnect()
+    })
+
+    it('delivers the data streams of a track the peer pushes with PUBLISH, until its PUBLISH_DONE', async () => {
+      const { client, transport } = await connected()
+      const errors = vi.spyOn(logger, 'error')
+      const pushed = new Promise<ReadableStream<MoqtObject>>((resolve) =>
+        client.on('peerpublish', (_msg, stream) => resolve(stream)),
+      )
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(new Publish(4n, ftn, 9n, []))
+      const reader = (await pushed).getReader()
+
+      const bytes = new ByteBuffer()
+      bytes.putBytes(Header.newSubgroup(SubgroupHeaderType.Type0x10, 9n, 1n, undefined, 0).serialize().toUint8Array())
+      bytes.putBytes(
+        SubgroupObject.newWithPayload(0, null, new Uint8Array([1]))
+          .serialize(undefined)
+          .toUint8Array(),
+      )
+      transport.openIncomingUniStream(bytes.toUint8Array())
+
+      const { value } = await reader.read()
+      expect(value?.location.equals(new Location(1n, 0n))).toBe(true)
+      expect(value?.fullTrackName).toEqual(ftn)
+      expect(errors).not.toHaveBeenCalledWith('MOQtailClient', 'handleRecvStreams error', expect.anything())
+
+      // Its PUBLISH_DONE accounts for the one stream, so the push ends and its alias is released
+      incoming.respond(new PublishDone(PublishDoneStatusCode.TrackEnded, 1n, new ReasonPhrase('')))
+      expect((await reader.read()).done).toBe(true)
+      expect(client.subscriptions.has(9n)).toBe(false)
+
+      errors.mockRestore()
       await client.disconnect()
     })
 

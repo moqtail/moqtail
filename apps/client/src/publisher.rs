@@ -38,7 +38,7 @@ use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
-use moqtail::model::error::{RequestErrorCode, StreamResetCode};
+use moqtail::model::error::{ParseError, RequestErrorCode, StreamResetCode, TerminationCode};
 use moqtail::model::parameter::message_parameter::{MessageParameter, include_properties};
 use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::model::property::track_property::TrackProperty;
@@ -231,8 +231,8 @@ async fn serve_request_streams(
                 Err(e) => error!("Data sending failed: {:?}", e),
               }
             }
-            _ = request_stream.next_message() => {
-              info!("Subscriber cancelled (stream reset); stopping data delivery");
+            _ = request_cancelled(&mut request_stream) => {
+              info!("Subscriber cancelled; stopping data delivery");
             }
           }
           drop(request_stream);
@@ -452,8 +452,13 @@ impl DataConfig {
     }
     for spec in &self.content.object_properties {
       let value = spec.source.value(group_id, object_id, self.subgroup_of(i));
-      let property = KeyValuePair::try_new_varint(spec.property_type, value)
-        .and_then(ObjectProperty::deserialize);
+      // Sent as asked even when a receiver must reject it, so a peer's handling can be tested.
+      let property = KeyValuePair::try_new_varint(spec.property_type, value).and_then(|kvp| {
+        ObjectProperty::deserialize(kvp.clone()).or_else(|e| match e {
+          ParseError::MalformedTrack { .. } => Ok(ObjectProperty::Unknown { kvp }),
+          _ => Err(e),
+        })
+      });
       match property {
         Ok(property) => properties.push(property),
         Err(e) => error!(
@@ -702,6 +707,31 @@ async fn send_fetch_objects(
   Ok(())
 }
 
+/// Resolves once the peer cancels the request served on `request_stream`, or the session
+/// ends. Messages it sends, such as a REQUEST_UPDATE, are logged and left alone, and a
+/// FIN only says it sends nothing more: neither cancels the request.
+async fn request_cancelled(request_stream: &mut ControlStreamHandler) {
+  loop {
+    match request_stream.next_message().await {
+      Ok(m) => info!("Ignoring {:?} on a request stream", m.get_type()),
+      // How the handler reports a FIN, as opposed to a malformed message. Past its FIN
+      // the peer can only cancel with STOP_SENDING on our half.
+      Err(TerminationCode::ProtocolViolation) if !request_stream.received_malformed_message() => {
+        debug!("Request stream FIN received; watching for STOP_SENDING");
+        match request_stream.stopped().await {
+          Some(code) => debug!("Request stream stopped with code {code:#x}"),
+          None => std::future::pending().await,
+        }
+        return;
+      }
+      Err(e) => {
+        debug!("Request stream read failed: {e:?}");
+        return;
+      }
+    }
+  }
+}
+
 /// Send PUBLISH_DONE as the final message on a subscription's request stream to
 /// signal the publisher is done sending objects for it.
 async fn send_publish_done(
@@ -760,12 +790,23 @@ async fn publish_track(
     Err(e) => anyhow::bail!("Failed waiting for REQUEST_OK: {:?}", e),
   }
 
-  // Hold the request stream open while objects are delivered on uni streams.
-  let result = send_data(connection, track_alias, data_config, published).await;
+  // Hold the request stream open while objects are delivered on uni streams, and stop
+  // if the subscriber cancels the PUBLISH by resetting it. Anything it sends on the
+  // stream, such as a REQUEST_UPDATE, leaves delivery running.
+  let result = tokio::select! {
+    result = send_data(connection, track_alias, data_config, published) => Some(result),
+    _ = request_cancelled(&mut request_stream) => {
+      info!("PUBLISH cancelled; stopping data delivery");
+      None
+    }
+  };
 
   // PUBLISH_DONE is the final message on the request stream once all objects are
   // delivered, so the peer learns the publisher is done rather than inferring it
   // from the stream closing.
+  let Some(result) = result else {
+    return Ok(());
+  };
   if result.is_ok() {
     send_publish_done(&mut request_stream, 0, stream_count(data_config)).await;
   }

@@ -15,9 +15,10 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
+import { greaseValue, isGrease } from '../common/grease'
 import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
-import { ProtocolViolationError } from '../error/error'
-import { TrackPropertyType } from './constant'
+import { NotEnoughBytesError, ProtocolViolationError } from '../error/error'
+import { PropertyRanges, TrackPropertyType } from './constant'
 
 export class ImmutablePropertiesObjectProperty {
   static readonly TYPE = TrackPropertyType.ImmutableProperties
@@ -36,6 +37,7 @@ export class ImmutablePropertiesObjectProperty {
       return undefined
     const buf = new FrozenByteBuffer(pair.value)
     const properties = deserializeKvpListUntilEmpty(buf)
+    properties.forEach(rejectMandatoryTrackProperty)
     if (properties.some((inner) => Number(inner.typeValue) === TrackPropertyType.ImmutableProperties)) {
       throw new ProtocolViolationError(
         'ImmutablePropertiesObjectProperty.fromKeyValuePair',
@@ -43,6 +45,19 @@ export class ImmutablePropertiesObjectProperty {
       )
     }
     return new ImmutablePropertiesObjectProperty(properties)
+  }
+}
+
+// The mandatory range is Track scope only; on an Object it can only be misplaced. The
+// GREASE values that fall in it are left alone: a peer sends them to exercise
+// unknown-value handling, which must never be what drops its track.
+function rejectMandatoryTrackProperty(pair: KeyValuePair): void {
+  const { from, to } = PropertyRanges.MandatoryTrack
+  if (pair.typeValue >= from && pair.typeValue <= to && !isGrease(pair.typeValue)) {
+    throw new ProtocolViolationError(
+      'ObjectProperty.fromKeyValuePair',
+      `Mandatory Track Property 0x${pair.typeValue.toString(16)} is not allowed on an Object`,
+    )
   }
 }
 
@@ -89,12 +104,29 @@ export type ObjectProperty =
 
 export namespace ObjectProperty {
   export function fromKeyValuePair(pair: KeyValuePair): ObjectProperty {
+    rejectMandatoryTrackProperty(pair)
     return (
       ImmutablePropertiesObjectProperty.fromKeyValuePair(pair) ??
       PriorGroupIdGapProperty.fromKeyValuePair(pair) ??
       PriorObjectIdGapProperty.fromKeyValuePair(pair) ??
       new UnknownObjectProperty(pair)
     )
+  }
+
+  /**
+   * Reads an Object's length-delimited property block as raw pairs, checked like
+   * `fromKeyValuePair`. Throws ProtocolViolationError if it is malformed.
+   */
+  export function deserializeRaw(buf: BaseByteBuffer): KeyValuePair[] {
+    try {
+      const pairs = deserializeKvpListUntilEmpty(buf)
+      pairs.forEach(fromKeyValuePair)
+      return pairs
+    } catch (e) {
+      // The block is complete, so running short is malformed data, not a reason to wait for more.
+      if (e instanceof NotEnoughBytesError) throw new ProtocolViolationError('ObjectProperty.deserializeRaw', e.message)
+      throw e
+    }
   }
 
   export function toKeyValuePair(ext: ObjectProperty): KeyValuePair {
@@ -170,6 +202,31 @@ if (import.meta.vitest) {
       outer.putBytes(innerKvp.serialize().toUint8Array())
       const outerKvp = KeyValuePair.tryNewBytes(TrackPropertyType.ImmutableProperties, outer.toUint8Array())
       expect(() => ImmutablePropertiesObjectProperty.fromKeyValuePair(outerKvp)).toThrow(ProtocolViolationError)
+    })
+
+    test('deserializeRaw rejects a Mandatory Track Property, directly or nested', () => {
+      const raw = (pairs: KeyValuePair[]) => ObjectProperty.deserializeRaw(serializeKvpList(pairs))
+      const direct = KeyValuePair.tryNewVarInt(0x4000, 1n)
+      const nested = new ImmutablePropertiesObjectProperty([
+        KeyValuePair.tryNewBytes(0x7fff, new Uint8Array([1])),
+      ]).toKeyValuePair()
+      expect(() => raw([direct])).toThrow(ProtocolViolationError)
+      expect(() => raw([nested])).toThrow(ProtocolViolationError)
+      const outside = [KeyValuePair.tryNewVarInt(0x8000, 1n)]
+      expect(raw(outside)).toEqual(outside)
+      // A GREASE value inside the range is an ordinary unknown property.
+      const grease = greaseValue(129)!
+      expect(grease >= 0x4000n && grease <= 0x7fffn).toBe(true)
+      const greased = [KeyValuePair.tryNewVarInt(grease, 1n)]
+      expect(raw(greased)).toEqual(greased)
+    })
+
+    test('deserializeRaw turns a truncated block into a protocol violation', () => {
+      const truncatedNested = KeyValuePair.tryNewBytes(TrackPropertyType.ImmutableProperties, new Uint8Array([0x02]))
+      expect(() => ObjectProperty.deserializeRaw(serializeKvpList([truncatedNested]))).toThrow(ProtocolViolationError)
+      expect(() => ObjectProperty.deserializeRaw(new FrozenByteBuffer(new Uint8Array([0x02])))).toThrow(
+        ProtocolViolationError,
+      )
     })
 
     test('UnknownObjectProperty pass-through roundtrip', () => {

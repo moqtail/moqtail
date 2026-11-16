@@ -28,6 +28,7 @@ use moqtail::model::control::control_message::ControlMessageTrait;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::parameter::setup_option::SetupOption;
 use moqtail::model::{
+  common::varint::BufVarIntExt,
   control::{
     constant::SUPPORTED_VERSIONS,
     control_message::ControlMessage,
@@ -35,7 +36,7 @@ use moqtail::model::{
     setup::{Setup, SetupSender},
   },
   data::datagram::Datagram,
-  error::TerminationCode,
+  error::{ParseError, TerminationCode},
 };
 use moqtail::transport::{
   connection::{
@@ -471,7 +472,7 @@ impl Session {
             trace!("Received datagram from client {}", connection_id);
 
             // Parse the datagram
-            let mut bytes = datagram_bytes;
+            let mut bytes = datagram_bytes.clone();
             match Datagram::deserialize(&mut bytes) {
               Ok(datagram_obj) => {
                 trace!("Parsed datagram: track_alias={}, group_id={}, object_id={}",
@@ -483,6 +484,19 @@ impl Session {
                   }
                 } else {
                   trace!("Track not found for track_alias {}", datagram_obj.track_alias);
+                }
+              }
+              Err(e @ ParseError::MalformedTrack { .. }) => {
+                warn!("Malformed track in datagram from client {}: {:?}", connection_id, e);
+                // The Track Alias follows the type and precedes the properties, so a
+                // datagram that reached its properties names its track.
+                let mut header = datagram_bytes;
+                let alias = header.get_vi().and_then(|_| header.get_vi());
+                if let (Some(client), Ok(alias)) = (context_clone.get_client().await, alias)
+                  && let Some(track) =
+                    context_clone.track_manager.get_track_by_alias(connection_id, alias).await
+                {
+                  Self::on_malformed_track(&context_clone, &client, &track).await;
                 }
               }
               Err(e) => {
@@ -802,6 +816,14 @@ impl Session {
               .await;
           }
 
+          // A FETCH the relay sent learns of this through its own sender above.
+          if handler.is_malformed_track()
+            && upstream_sender.is_none()
+            && let Some(track) = &current_track
+          {
+            Self::on_malformed_track(&context, &client, track).await;
+          }
+
           // Close the stream for all subscribers
           if let Some(track_lock) = &current_track {
             let track = &track_lock;
@@ -842,6 +864,28 @@ impl Session {
       return None;
     };
     context.upstream_requests.get_fetch(header.request_id).await
+  }
+
+  /// Drops `publisher`'s copy of a track it sent a malformed Object for, unless another
+  /// stream or datagram of the track already did.
+  async fn on_malformed_track(
+    context: &Arc<SessionContext>,
+    publisher: &MOQTClient,
+    track: &Arc<Track>,
+  ) {
+    if !message_handlers::malformed_track::handle_malformed_track(context, track, publisher).await {
+      return;
+    }
+    warn!(
+      "Publisher {} sent a malformed Object for {:?}; ended its track",
+      publisher.connection_id, track.full_track_name
+    );
+    // A track the relay subscribed to was cancelled above; one pushed with PUBLISH is
+    // cancelled here. Its namespace was a route this relay advertises to cluster peers,
+    // so the adverts are redone, as after a PUBLISH_DONE.
+    if publisher.cancel_publishes_of(&track.full_track_name).await {
+      cluster::refresh(context, &track.full_track_name.namespace).await;
+    }
   }
 
   fn parse_available_protocols(headers: &HashMap<String, String>) -> Vec<String> {

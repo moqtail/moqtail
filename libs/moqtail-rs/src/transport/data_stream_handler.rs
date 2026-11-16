@@ -785,6 +785,11 @@ impl RecvDataStream {
           trace!("Not enough bytes to parse the object, continuing to read...");
           Ok((0, None, None))
         }
+        Err(e @ ParseError::MalformedTrack { .. }) => {
+          is_closed.store(true, Ordering::Relaxed);
+          malformed_track.store(true, Ordering::Relaxed);
+          Err(e)
+        }
         Err(e) => {
           is_closed.store(true, Ordering::Relaxed);
           Err(ParseError::ProtocolViolation {
@@ -1618,5 +1623,44 @@ mod tests {
     for object in sent {
       assert_eq!(receiver.next_object().await.1.unwrap(), object);
     }
+  }
+
+  #[tokio::test]
+  async fn a_mandatory_track_property_on_an_object_marks_the_track_malformed() {
+    let (send, recv) = setup_stream_pair().await;
+    let (subgroup_header, _) = make_subgroup_header_and_request();
+    let mut sender = SendDataStream::new(
+      Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
+      HeaderInfo::Subgroup {
+        header: subgroup_header,
+      },
+    )
+    .await
+    .unwrap();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+
+    let good = make_subgroup_object();
+    let mut bad = make_subgroup_object();
+    bad.object_id = good.object_id + 1;
+    bad.properties = Some(vec![ObjectProperty::Unknown {
+      kvp: KeyValuePair::try_new_varint(0x4000, 1).unwrap(),
+    }]);
+    let good_object = make_object_from_subgroup(&good, &subgroup_header);
+    sender.send_object(&good_object, None).await.unwrap();
+    sender
+      .send_object(
+        &make_object_from_subgroup(&bad, &subgroup_header),
+        Some(good.object_id),
+      )
+      .await
+      .unwrap();
+
+    assert_eq!(receiver.next_object().await.1.unwrap(), good_object);
+    assert!(receiver.next_object().await.1.is_none());
+    assert!(receiver.is_malformed_track());
+    assert!(receiver.was_aborted());
   }
 }

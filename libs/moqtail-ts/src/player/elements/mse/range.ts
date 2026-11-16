@@ -29,8 +29,9 @@ export function vodDuration(pads: readonly Properties[]): number | undefined {
 }
 
 /**
- * Live: from the timeline start, else the buffered start, to the live edge minus the target
- * latency, so seeking to the end never lands right at the edge (proposal 0007).
+ * Live: from the timeline start, else the buffered start, no earlier than the accessible window
+ * before the live edge (MSF 5.2.46), to the live edge minus the target latency, so seeking to the
+ * end never lands right at the edge (proposal 0007).
  */
 export function liveSeekable(
   buffered: TimeRanges,
@@ -39,8 +40,13 @@ export function liveSeekable(
   const ranges = pads.flatMap((p) => p.seekable ?? [])
   const last = buffered.length - 1
   if (ranges.length === 0 && last < 0) return undefined
-  const start = ranges.length > 0 ? Math.max(...ranges.map((r) => r.start)) : buffered.start(0)
   const edge = Math.max(...ranges.map((r) => r.end), last >= 0 ? buffered.end(last) : -Infinity)
+  const windows = pads.flatMap((p) => p.accessibleWindow ?? [])
+  // Without a timeline the window still bounds the start, counted back from the edge
+  const start = Math.max(
+    ranges.length > 0 ? Math.max(...ranges.map((r) => r.start)) : buffered.start(0),
+    windows.length > 0 ? edge - Math.max(...windows) : -Infinity,
+  )
   return { start, end: Math.max(start, edge - targetLatency(pads)) }
 }
 
@@ -80,6 +86,16 @@ if (import.meta.vitest) {
     expect(liveSeekable(buffered, [{ groupDuration: 2, seekable: { start: 0, end: 22 } }])).toEqual({
       start: 0,
       end: 16,
+    })
+    // The accessible window counts back from the edge, unless the timeline starts later
+    expect(liveSeekable(buffered, [{ accessibleWindow: 4 }])).toEqual({ start: 16, end: 20 })
+    expect(liveSeekable(timeRanges([[0, 60]]), [{ accessibleWindow: 30, targetLatency: 2 }])).toEqual({
+      start: 30,
+      end: 58,
+    })
+    expect(liveSeekable(buffered, [{ accessibleWindow: 30, seekable: { start: 12, end: 20 } }])).toEqual({
+      start: 12,
+      end: 20,
     })
     // Too little to subtract: the range shrinks to its start
     expect(liveSeekable(timeRanges([[10, 11]]), [{ targetLatency: 5 }])).toEqual({ start: 10, end: 10 })

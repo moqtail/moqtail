@@ -60,6 +60,8 @@ export interface MediaSinkElement extends EventTarget {
   readonly playbackRate: number
   /** Where the live edge starts (media-ui-extensions proposal 0007); `NaN` on demand. */
   readonly liveEdgeStart: number
+  /** Live with an accessible window (MSF 5.2.46): the seconds it covers. Undefined without DVR. */
+  readonly dvrRange: { start: number; end: number } | undefined
   setPlaybackRate(rate: number): void
   play(): Promise<void>
   pause(): Promise<void>

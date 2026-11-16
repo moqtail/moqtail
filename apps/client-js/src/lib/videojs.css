@@ -1,0 +1,61 @@
+/**
+ * Copyright 2026 The MOQtail Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* Additions to the default video skin, adopted into <moqtail-skin>'s shadow root. */
+
+/* The live skin's button, which the video skin doesn't carry */
+.media-live-button:not([data-live]) {
+  display: none;
+}
+.media-live-button {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--media-spacing) * 1.5);
+  width: auto;
+  padding: calc(var(--media-spacing) * 2) calc(var(--media-spacing) * 3);
+  font-size: calc(var(--media-spacing) * 2.75);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.media-live-button::before {
+  content: '';
+  flex-shrink: 0;
+  width: calc(var(--media-spacing) * 2);
+  height: calc(var(--media-spacing) * 2);
+  border-radius: 9999px;
+  background-color: color-mix(in oklab, currentcolor 40%, transparent);
+  transition: background-color 0.15s cubic-bezier(0, 0, 0.2, 1);
+}
+.media-live-button[data-live-edge]::before {
+  background-color: oklch(65% 0.22 27);
+}
+
+/*
+ * No time slider while nothing is seekable, as <moqtail-video> reports for a live stream without
+ * an accessible window. A spacer takes its place, as in the live skin, so the buttons stay put.
+ */
+.video-controls-spacer {
+  display: none;
+  flex: 1;
+}
+.video-time-slider-group:has(media-time-slider[data-disabled]) {
+  display: none;
+}
+.video-time-slider-group:has(media-time-slider[data-disabled]) + .video-controls-spacer {
+  display: block;
+}

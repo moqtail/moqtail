@@ -22,6 +22,7 @@
 import { Attributes } from 'custom-media-element'
 import { afterEach, beforeAll } from 'vitest'
 import { abr, MlAbrController, ssts, SstsSource, type MOQtailPlayerOptions } from '@/player'
+import { CatalogElement } from '@/player/elements/catalog/element'
 import { LiveBufferController } from '@/player/plugins/buffer/live'
 import { MOQtailVideoElement, defineMOQtailVideo } from '@/player/component'
 import { ch07, ch07_vod, describe, expect, test, warmUp } from './harness/test'
@@ -79,7 +80,7 @@ describe('component', () => {
     expect(early.config).toBe(earlyConfig)
   })
 
-  test('live: autoplay, streamType, duration, seekable, liveEdgeStart, targetLiveWindow, tracks, and renditions', async () => {
+  test('live without an accessible window: no DVR, so targetLiveWindow 0, nothing seekable, and seeks ignored, plus tracks and renditions', async () => {
     const config = { catalogTimeoutMs: 15_000 }
     const el = create({ autoplay: '' }, config)
     const streamType = next(el, 'streamtypechange')
@@ -90,14 +91,17 @@ describe('component', () => {
       15_000,
       'live',
       Infinity,
-      Infinity,
+      0,
     ])
     expect(el.player?.bufferController).toBeInstanceOf(LiveBufferController) // the defaults, attached
     expect(el.player?.abrController).toBeInstanceOf(MlAbrController)
 
     await until(() => !Number.isNaN(el.liveEdgeStart), 'liveEdgeStart')
-    expect(el.seekable.length).toBe(1)
-    expect(el.liveEdgeStart).toBeLessThanOrEqual(el.seekable.end(0))
+    expect(el.seekable.length).toBe(0)
+    const playhead = el.currentTime
+    el.currentTime = 0
+    expect(el.seeking).toBe(false)
+    expect(el.currentTime).toBeGreaterThanOrEqual(playhead)
 
     expect([el.videoTracks.length, el.audioTracks.length, el.textTracks.length]).toEqual([1, 1, 0])
     const renditions = [...el.videoRenditions]
@@ -132,7 +136,7 @@ describe('component', () => {
 
   test('HTMLMediaElement: every member exists, and forwarded properties read as the inner video', async () => {
     const el = create({ preload: 'auto' })
-    el.src = ch07.uri()
+    el.src = ch07_vod.uri()
     await el.play()
     expect(el.paused).toBe(false)
     el.pause()
@@ -203,6 +207,27 @@ describe('component', () => {
     await until(() => source.getRenditions().every((r) => r.selected), 'every rendition selected')
     expect(el.videoRenditions.selectedIndex).toBe(-1)
     expect([el.error, warnings]).toEqual([null, []])
+  })
+
+  test('live with an accessible window: times count from its start, so seekable is [0, its length]', async () => {
+    const el = create({ autoplay: '' })
+    el.src = ch07.uri()
+    const window = (catalog: CatalogElement) =>
+      catalog.tracks.forEach((track) => Object.assign(track, { accessibleWindowTime: 20_000 }))
+    el.player!.on('catalog', window)
+    await next(el, 'playing')
+    await until(() => el.seekable.length === 1, 'the accessible window')
+    expect(el.targetLiveWindow).toBe(Infinity)
+    expect(el.seekable.start(0)).toBe(0)
+    expect(el.seekable.end(0)).toBeLessThanOrEqual(20)
+    const range = el.player!.mediaSink!.dvrRange!
+    expect(el.currentTime).toBeCloseTo(el.nativeEl.currentTime - range.start, 1)
+    expect(el.liveEdgeStart).toBeLessThanOrEqual(el.seekable.end(0))
+    // A seek into the window lands at the same place in media time
+    const seeked = next(el, 'seeked')
+    el.currentTime = el.seekable.end(0) - 4
+    await seeked
+    expect(Math.abs(el.nativeEl.currentTime - el.player!.mediaSink!.dvrRange!.start - el.currentTime)).toBeLessThan(0.5)
   })
 
   test('on-demand: streamType, finite duration, NaN liveEdgeStart and targetLiveWindow, and ended', async () => {

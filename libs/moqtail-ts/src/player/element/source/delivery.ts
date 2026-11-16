@@ -308,12 +308,14 @@ export class Delivery {
     const duration =
       this.duration ?? (!track.isLive && track.trackDuration !== undefined ? track.trackDuration / 1000 : undefined)
     const latency = track.targetLatency ?? track.buffers?.target
+    const window = track.isLive ? track.accessibleWindowTime : undefined
     return {
       track: renditionId(track, this.#context.catalog),
       mimeType: this.#packaging.mimeType(track),
       live: track.isLive,
       ...(duration !== undefined && { duration }),
       ...(latency !== undefined && { targetLatency: latency / 1000 }),
+      ...(window !== undefined && { accessibleWindow: window / 1000 }),
       ...this.#groupProperties(track),
       ...(initData && { initData }),
     }

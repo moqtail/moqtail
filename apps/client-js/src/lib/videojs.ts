@@ -17,7 +17,7 @@
 /**
  * The Video.js v10 integration: `<moqtail-player>` and `<moqtail-skin>` around `<moqtail-video>`.
  * The player is the video preset plus the live feature, and the skin is the default video skin
- * with a Live button, which shows only for live streams.
+ * with a Live button, which shows only for live streams, and no time slider without anything to seek.
  */
 
 import '@videojs/html/video/skin';
@@ -25,26 +25,10 @@ import '@videojs/html/ui/live-button';
 import { createPlayer, liveFeature, MediaAttachMixin } from '@videojs/html';
 import { videoFeatures, VideoSkinElement } from '@videojs/html/video';
 import { MOQtailVideoElement } from 'moqtail/player/component';
+import SKIN_CSS from './videojs.css?raw';
 
-// The live skin's button styles, which the video skin doesn't carry
-const LIVE_BUTTON_CSS = `
-.media-live-button:not([data-live]) { display: none; }
-.media-live-button {
-  display: inline-flex; align-items: center; gap: calc(var(--media-spacing) * 1.5); width: auto;
-  padding: calc(var(--media-spacing) * 2) calc(var(--media-spacing) * 3);
-  font-size: calc(var(--media-spacing) * 2.75); font-weight: 600; line-height: 1;
-  letter-spacing: .05em; text-transform: uppercase;
-}
-.media-live-button::before {
-  content: ''; flex-shrink: 0; width: calc(var(--media-spacing) * 2); height: calc(var(--media-spacing) * 2);
-  border-radius: 9999px; background-color: color-mix(in oklab, currentcolor 40%, transparent);
-  transition: background-color .15s cubic-bezier(0, 0, .2, 1);
-}
-.media-live-button[data-live-edge]::before { background-color: oklch(65% .22 27); }
-`;
-
-const liveButtonSheet = new CSSStyleSheet();
-liveButtonSheet.replaceSync(LIVE_BUTTON_CSS);
+const skinSheet = new CSSStyleSheet();
+skinSheet.replaceSync(SKIN_CSS);
 
 const { PlayerElement } = createPlayer({ features: [...videoFeatures, liveFeature] });
 
@@ -53,13 +37,18 @@ class MOQtailSkinElement extends VideoSkinElement {
     const template = VideoSkinElement.template!.cloneNode(true) as HTMLTemplateElement;
     const button = document.createElement('media-live-button');
     button.className = 'media-button media-live-button';
-    template.content.querySelector('.video-time-slider-group')!.before(button);
+    const spacer = document.createElement('div');
+    spacer.className = 'video-controls-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    const slider = template.content.querySelector('.video-time-slider-group')!;
+    slider.before(button);
+    slider.after(spacer);
     this.template = template;
   }
 
   constructor() {
     super();
-    this.shadowRoot!.adoptedStyleSheets = [...this.shadowRoot!.adoptedStyleSheets, liveButtonSheet];
+    this.shadowRoot!.adoptedStyleSheets = [...this.shadowRoot!.adoptedStyleSheets, skinSheet];
   }
 }
 

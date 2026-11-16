@@ -81,7 +81,7 @@ interface PadState {
 const SPLICE_TOLERANCE = 0.1
 
 /** Media element events the sink dispatches on itself. */
-const RELAYED_EVENTS = ['playing', 'pause', 'stalled', 'waiting', 'timeupdate', 'seeked', 'ended']
+const RELAYED_EVENTS = ['playing', 'pause', 'stalled', 'waiting', 'timeupdate', 'seeking', 'seeked', 'ended']
 
 /**
  * Drives an `HTMLVideoElement` through `ManagedMediaSource` or `MediaSource`: one
@@ -184,6 +184,11 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   get liveEdgeStart(): number {
     if (!this.#live || !this.#seekable) return NaN
     return liveEdgeStart(this.#seekable.end, this.#properties())
+  }
+
+  get dvrRange(): { start: number; end: number } | undefined {
+    const windowed = this.#properties().some((p) => p.accessibleWindow !== undefined)
+    return this.#live && windowed ? this.#seekable : undefined
   }
 
   setPlaybackRate(rate: number): void {
@@ -543,8 +548,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   /**
    * Live only. Native `seekable` is the union of the live range and `buffered` (MSE 10.1), so its
    * end stays at the buffered end; `liveEdgeStart` is taken from this range. The live range is set
-   * only from a media timeline: without one, `seekable` starts at 0, and seeks before the buffer
-   * reach the relay's cache.
+   * only from a media timeline or an accessible window: without either, `seekable` starts at 0,
+   * and seeks before the buffer reach the relay's cache.
    */
   #updateSeekable(): void {
     const source = this.#source
@@ -553,7 +558,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     const range = liveSeekable(this.#video.buffered, properties)
     if (!range || (range.start === this.#seekable?.start && range.end === this.#seekable.end)) return
     this.#seekable = range
-    if (properties.some((p) => p.seekable)) source.setLiveSeekableRange(range.start, range.end)
+    if (properties.some((p) => p.seekable || p.accessibleWindow !== undefined))
+      source.setLiveSeekableRange(range.start, range.end)
   }
 
   #properties(): PadProperties[] {

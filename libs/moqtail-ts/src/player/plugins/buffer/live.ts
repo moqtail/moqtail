@@ -100,6 +100,8 @@ export class LiveBufferController implements BufferController {
   #timeline: TimelineReader | undefined
   /** Set once the controller changed the rate, so `detach()` gives 1 back. */
   #adjusted = false
+  /** Cleared by a seek behind the live edge, set again by one to it (proposal 0007). */
+  #following = true
 
   constructor(catchupRate: number, targetLatency: number) {
     this.#catchupRate = catchupRate
@@ -112,6 +114,7 @@ export class LiveBufferController implements BufferController {
     player.on('catalog', this.#refresh)
     player.on('renditionchange', this.#refresh)
     sink.addEventListener('timeupdate', () => this.#tick(sink), { signal: abort.signal })
+    sink.addEventListener('seeking', () => this.#seeking(sink), { signal: abort.signal })
     this.#refresh()
   }
 
@@ -124,6 +127,7 @@ export class LiveBufferController implements BufferController {
     attached.player.off('renditionchange', this.#refresh)
     if (this.#adjusted) attached.sink.setPlaybackRate(1)
     this.#adjusted = false
+    this.#following = true
     this.#targets = undefined
     this.#timeline = undefined
   }
@@ -147,8 +151,20 @@ export class LiveBufferController implements BufferController {
     })
   }
 
+  /**
+   * Where a seek lands decides, whoever made it: the controller's and the sink's own jumps land at
+   * the edge, a viewer's seek back leaves the rate at 1 until a seek to the edge (the Live button).
+   */
+  #seeking(sink: MediaSinkElement): void {
+    // An unknown edge counts as at it
+    this.#following = !(sink.currentTime < sink.liveEdgeStart)
+    if (this.#following || !this.#adjusted) return
+    sink.setPlaybackRate(1)
+    this.#adjusted = false
+  }
+
   #tick(sink: MediaSinkElement): void {
-    if (sink.paused || sink.seeking) return
+    if (sink.paused || sink.seeking || !this.#following) return
     const { currentTime, buffered } = sink
     const range = rangeAt(currentTime, buffered)
     if (range === -1) return // the sink jumps gaps itself

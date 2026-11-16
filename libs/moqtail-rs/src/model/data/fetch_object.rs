@@ -341,11 +341,12 @@ impl FetchObject {
         });
       }
       let mut header_bytes = bytes.copy_to_bytes(ext_len);
-      let headers = deserialize_object_properties(&mut header_bytes).map_err(|_| {
-        ParseError::ProtocolViolation {
+      let headers = deserialize_object_properties(&mut header_bytes).map_err(|e| match e {
+        ParseError::MalformedTrack { .. } => e,
+        _ => ParseError::ProtocolViolation {
           context: "FetchObject::deserialize(properties)",
           details: "cannot parse object properties".to_string(),
-        }
+        },
       })?;
       Some(headers)
     } else {

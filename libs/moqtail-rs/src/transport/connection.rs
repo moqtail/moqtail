@@ -231,6 +231,23 @@ impl TransportSendStream {
       }
     }
   }
+
+  /// Resolves with the peer's code once it stops this stream (QUIC STOP_SENDING), or
+  /// with `None` once it no longer can: the stream was finished, reset or lost.
+  pub async fn stopped(&mut self) -> Option<u64> {
+    match self {
+      Self::WebTransport(s) => match s.stopped().await {
+        wtransport::error::StreamWriteError::Stopped(code) => Some(code.into_inner()),
+        _ => None,
+      },
+      Self::Quic(s) => s
+        .stopped()
+        .await
+        .ok()
+        .flatten()
+        .map(|code| code.into_inner()),
+    }
+  }
 }
 
 #[derive(Debug)]

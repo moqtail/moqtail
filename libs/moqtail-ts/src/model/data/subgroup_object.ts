@@ -15,7 +15,8 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
+import { KeyValuePair, serializeKvpList } from '../common/pair'
+import { ObjectProperty } from '../property/object_property'
 import { ObjectStatus } from './constant'
 
 function normalizeProperties(properties: KeyValuePair[] | null): KeyValuePair[] | null {
@@ -84,7 +85,7 @@ export class SubgroupObject {
     if (hasProperties) {
       const extLen = buf.getNumberVI()
       const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
-      properties = deserializeKvpListUntilEmpty(headerBytes)
+      properties = ObjectProperty.deserializeRaw(headerBytes)
     }
     const payloadLen = buf.getNumberVI()
     let objectStatus: ObjectStatus | null = null

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::constant::TrackPropertyType;
+use crate::model::common::grease::is_grease;
 use crate::model::common::pair::{
   KeyValuePair, deserialize_kvp_list_until_empty, serialize_kvp_list,
 };
@@ -103,7 +104,9 @@ impl TrackProperty {
         // keep mandatory-range unknowns as UnknownMandatory (handler
         // rejects them); forward ordinary unknowns. Check the full u64 — a u16
         // cast would alias high types into the range (e.g. 0x14000 -> 0x4000).
-        if MANDATORY_TRACK_PROPERTY_RANGE.contains(&type_value) {
+        // A GREASE value in the range is sent to exercise unknown-value handling,
+        // so it is an ordinary unknown, not a reason to refuse the track.
+        if MANDATORY_TRACK_PROPERTY_RANGE.contains(&type_value) && !is_grease(type_value) {
           return Ok(Self::UnknownMandatory { kvp });
         } else {
           return Ok(Self::Unknown { kvp });
@@ -446,6 +449,19 @@ mod tests {
       TrackProperty::deserialize(kvp.clone()).unwrap(),
       TrackProperty::Unknown { kvp }
     );
+    // grease_value(128) = 0x401D (Bytes) and grease_value(129) = 0x409C (VarInt) fall
+    // in the mandatory range; they are still ordinary unknowns, not UnknownMandatory.
+    let in_range = [
+      KeyValuePair::try_new_bytes(grease_value(128).unwrap(), Bytes::from_static(b"x")).unwrap(),
+      KeyValuePair::try_new_varint(grease_value(129).unwrap(), 7).unwrap(),
+    ];
+    for kvp in in_range {
+      assert!(MANDATORY_TRACK_PROPERTY_RANGE.contains(&kvp.get_type()));
+      assert_eq!(
+        TrackProperty::deserialize(kvp.clone()).unwrap(),
+        TrackProperty::Unknown { kvp }
+      );
+    }
   }
 
   #[test]

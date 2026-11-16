@@ -105,11 +105,12 @@ impl SubgroupObject {
         }
 
         let mut header_bytes = bytes.copy_to_bytes(ext_len);
-        let headers = deserialize_object_properties(&mut header_bytes).map_err(|_| {
-          ParseError::ProtocolViolation {
+        let headers = deserialize_object_properties(&mut header_bytes).map_err(|e| match e {
+          ParseError::MalformedTrack { .. } => e,
+          _ => ParseError::ProtocolViolation {
             context: "SubgroupObject::deserialize",
             details: "Failed to parse property".to_string(),
-          }
+          },
         })?;
         Some(headers)
       } else {

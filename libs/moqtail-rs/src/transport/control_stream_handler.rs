@@ -119,6 +119,13 @@ impl ControlStreamHandler {
     }
   }
 
+  /// Resolves with the peer's code once it stops the send half of this request stream
+  /// (STOP_SENDING), or with `None` once it no longer can. A peer that has sent its FIN
+  /// cancels the request this way.
+  pub async fn stopped(&mut self) -> Option<u64> {
+    self.send.stopped().await
+  }
+
   /// Ends this request stream cleanly: FIN on the send half, so everything already
   /// written is delivered. Dropping the handler instead resets the send stream, and
   /// a reset discards bytes the peer has not read yet — which loses the last message
@@ -547,6 +554,32 @@ mod tests {
 
     assert_eq!(buf, [1, 2, 3, 4]);
 
+    Ok(())
+  }
+
+  /// A peer that has sent its FIN cancels the request with STOP_SENDING: `next_message`
+  /// reports the FIN, and `stopped` the cancel with the peer's code.
+  #[tokio::test]
+  async fn a_fin_then_stop_sending_reads_as_fin_then_stopped() -> Result<(), Box<dyn Error>> {
+    let setup = TestSetup::new().await?;
+    let (mut client_send, client_recv) = setup.client.open_bi().await?.await?;
+    // The peer only sees the stream once something is sent on it.
+    client_send.write_all(&[0]).await?;
+    let (mut server_send, server_recv) = setup.server.accept_bi().await?;
+    let mut requester = ControlStreamHandler::new(
+      TransportSendStream::WebTransport(client_send),
+      TransportRecvStream::WebTransport(client_recv),
+    );
+
+    server_send.finish().await?;
+    assert_eq!(
+      requester.next_message().await,
+      Err(TerminationCode::ProtocolViolation)
+    );
+    assert!(!requester.received_malformed_message());
+
+    server_recv.stop(wtransport::VarInt::from_u32(0x5));
+    assert_eq!(requester.stopped().await, Some(0x5));
     Ok(())
   }
 

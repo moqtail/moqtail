@@ -99,6 +99,9 @@ pub struct AppConfig {
   /// Private key PEM file
   #[default("apps/relay/cert/key.pem")]
   pub key_file: String,
+  /// TCP address for WebSocket clients (MoQ over QMux), usually the same as `bind`:
+  /// TCP and UDP ports don't clash. Unset, the default, leaves WebSocket off.
+  pub websocket_bind: Option<SocketAddr>,
   /// QUIC idle timeout
   #[default(Duration::from_secs(7))]
   #[serde(with = "humantime_serde")]
@@ -442,7 +445,7 @@ impl AppConfig {
 /// TLS 1.3 with `h3` ALPN, like wtransport's default, but on aws-lc-rs: ring has no
 /// X25519MLKEM768, so a client offering only that key share (picoquic's default) would
 /// get a HelloRetryRequest instead of a handshake.
-fn server_tls_config(identity: &Identity) -> Result<rustls::ServerConfig> {
+pub(crate) fn server_tls_config(identity: &Identity) -> Result<rustls::ServerConfig> {
   let certs = identity
     .certificate_chain()
     .as_slice()

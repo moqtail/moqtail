@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::error::ProtocolError as WsProtocolError;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, Message};
 
@@ -126,7 +127,15 @@ where
       Some(Ok(Message::Pong(payload))) => shared.with(|s| s.on_pong(&payload)),
       Some(Ok(_)) => shared.with(|s| s.touch()),
       Some(Err(e)) => {
-        shared.with(|s| s.lost(CloseReason::Other(format!("WebSocket read: {e}"))));
+        // The socket dropped without a closing handshake: a reset, as QUIC reports it.
+        let reason = match e {
+          tungstenite::Error::Io(_)
+          | tungstenite::Error::Protocol(WsProtocolError::ResetWithoutClosingHandshake) => {
+            CloseReason::Reset
+          }
+          e => CloseReason::Other(format!("WebSocket read: {e}")),
+        };
+        shared.with(|s| s.lost(reason));
         break;
       }
       None => {
@@ -250,6 +259,29 @@ pub(crate) mod tests {
 
     client.send_datagram(Bytes::from_static(b"dgram")).unwrap();
     assert_eq!(server.receive_datagram().await.unwrap(), "dgram");
+  }
+
+  #[tokio::test]
+  async fn a_dropped_socket_is_a_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+      let (tcp, remote) = listener.accept().await.unwrap();
+      let ws = WebSocketStream::from_raw_socket(tcp, Role::Server, Some(websocket_config())).await;
+      QmuxSession::new(ws, Role::Server, remote, QmuxConfig::default())
+        .await
+        .unwrap()
+    });
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let mut ws = WebSocketStream::from_raw_socket(tcp, Role::Client, None).await;
+    // Act as a bare peer: send our transport parameters, then vanish mid-session.
+    let mut params = Vec::new();
+    super::super::codec::Frame::TransportParameters(Default::default()).encode(&mut params);
+    ws.send(Message::Binary(params.into())).await.unwrap();
+    let server = server.await.unwrap();
+    drop(ws);
+    server.closed().await;
+    assert_eq!(server.close_reason(), Some(CloseReason::Reset));
   }
 
   #[tokio::test]

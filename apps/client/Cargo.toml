@@ -11,6 +11,8 @@ wtransport = { workspace = true, features = ["dangerous-configuration"] }
 tokio.workspace = true
 bytes.workspace = true
 moqtail.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite = { workspace = true, features = ["handshake"] }
 clap.workspace = true
 rand.workspace = true
 serde_json.workspace = true

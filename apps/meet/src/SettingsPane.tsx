@@ -16,16 +16,27 @@
 
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
+import type { TransportMode } from 'moqtail/client';
 
 type SettingsPaneProps = {
   relay: string;
   defaultRelay: string;
-  onSave: (relay: string) => void;
+  transport: TransportMode;
+  transportLabels: Record<TransportMode, string>;
+  onSave: (relay: string, transport: TransportMode) => void;
   onClose: () => void;
 };
 
-export function SettingsPane({ relay, defaultRelay, onSave, onClose }: SettingsPaneProps) {
+export function SettingsPane({
+  relay,
+  defaultRelay,
+  transport,
+  transportLabels,
+  onSave,
+  onClose,
+}: SettingsPaneProps) {
   const [relayDraft, setRelayDraft] = useState(relay);
+  const [transportDraft, setTransportDraft] = useState(transport);
   const isRelayEmpty = !relayDraft.trim();
 
   useEffect(() => {
@@ -39,7 +50,7 @@ export function SettingsPane({ relay, defaultRelay, onSave, onClose }: SettingsP
   function save() {
     if (isRelayEmpty) return;
     // Accept a pasted full URL; the scheme is fixed and shown beside the field.
-    onSave(relayDraft.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''));
+    onSave(relayDraft.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''), transportDraft);
   }
 
   return (
@@ -103,6 +114,27 @@ export function SettingsPane({ relay, defaultRelay, onSave, onClose }: SettingsP
               Reset
             </button>
           </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-neutral-400" htmlFor="transport">
+            Transport
+          </label>
+          <select
+            id="transport"
+            value={transportDraft}
+            onChange={e => setTransportDraft(e.target.value as TransportMode)}
+            className="rounded-lg border border-white/8 bg-neutral-800/60 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-white/20 focus:ring-1 focus:ring-white/10"
+          >
+            {(Object.keys(transportLabels) as TransportMode[]).map(mode => (
+              <option key={mode} value={mode}>
+                {transportLabels[mode]}
+              </option>
+            ))}
+          </select>
+          <span className="text-[11px] text-neutral-600">
+            Auto uses WebSocket when WebTransport isn't available or UDP is blocked.
+          </span>
         </div>
 
         <div className="flex justify-end gap-2">

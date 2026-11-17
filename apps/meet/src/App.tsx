@@ -27,6 +27,7 @@ import {
 } from 'moqtail/model';
 import { createMOQtailClient } from './moq/client';
 import { SettingsPane } from './SettingsPane';
+import type { TransportMode } from 'moqtail/client';
 import { MessageLogPane } from './MessageLogPane';
 import { LogEntry, MessageDirection, toLogEntry, toSignalEntry } from './moq/describe';
 import { ControlMessage, Publish } from 'moqtail/model';
@@ -82,6 +83,39 @@ function saveRelay(relay: string) {
   }
 }
 
+const TRANSPORT_STORAGE_KEY = 'meet.transport';
+
+/** The transport from appsettings.js, `auto` when it sets none. */
+function getDefaultTransport(): TransportMode {
+  return window.appSettings?.transport ?? 'auto';
+}
+
+/** The transport picked in the settings pane, falling back to the default. */
+function getSavedTransport(): TransportMode {
+  try {
+    const saved = localStorage.getItem(TRANSPORT_STORAGE_KEY);
+    if (saved === 'auto' || saved === 'webtransport' || saved === 'websocket') return saved;
+  } catch {
+    // Storage blocked: use the default.
+  }
+  return getDefaultTransport();
+}
+
+function saveTransport(transport: TransportMode) {
+  try {
+    if (transport === getDefaultTransport()) localStorage.removeItem(TRANSPORT_STORAGE_KEY);
+    else localStorage.setItem(TRANSPORT_STORAGE_KEY, transport);
+  } catch {
+    // Storage blocked: the choice still holds for this page load.
+  }
+}
+
+const TRANSPORT_LABELS: Record<TransportMode, string> = {
+  auto: 'Auto',
+  webtransport: 'WebTransport (UDP)',
+  websocket: 'WebSocket (TCP)',
+};
+
 function toRelayUrl(input: string): string {
   return `${RELAY_SCHEME}${input.trim().replace(SCHEME_RE, '')}`;
 }
@@ -123,6 +157,9 @@ export default function App() {
   const [roomInput, setRoomInput] = useState('');
   const [displayRoom, setDisplayRoom] = useState('');
   const [relayInput, setRelayInput] = useState(getSavedRelay);
+  const [transportInput, setTransportInput] = useState(getSavedTransport);
+  /** What the session actually runs on, which `auto` only decides at connect time. */
+  const [connectedTransport, setConnectedTransport] = useState<'webtransport' | 'websocket'>();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [displayUsername, setDisplayUsername] = useState('');
   const [peers, setPeers] = useState<string[]>([]);
@@ -240,12 +277,17 @@ export default function App() {
     setScreen('connecting');
 
     try {
-      const client = await createMOQtailClient(relayUrl, c => {
-        c.on('messagesent', msg => logControlMessage(msg, 'sent'));
-        c.on('messagereceived', msg => logControlMessage(msg, 'received'));
-        c.on('dataevent', event => dataStats.add(event));
-      });
+      const client = await createMOQtailClient(
+        relayUrl,
+        c => {
+          c.on('messagesent', msg => logControlMessage(msg, 'sent'));
+          c.on('messagereceived', msg => logControlMessage(msg, 'received'));
+          c.on('dataevent', event => dataStats.add(event));
+        },
+        transportInput,
+      );
       moqClientRef.current = client;
+      setConnectedTransport(client.transportKind);
 
       // Route incoming publish streams to the correct peer's decode worker
       client.on('peerpublish', (msg, stream) => {
@@ -647,6 +689,7 @@ export default function App() {
             className="-mt-2 max-w-full truncate text-[11px] text-neutral-600 transition-colors hover:text-neutral-400"
           >
             Relay: {relayInput}
+            {transportInput !== 'auto' && ` · ${TRANSPORT_LABELS[transportInput]}`}
           </button>
 
           {error && (
@@ -660,9 +703,13 @@ export default function App() {
           <SettingsPane
             relay={relayInput}
             defaultRelay={getDefaultRelay()}
-            onSave={relay => {
+            transport={transportInput}
+            transportLabels={TRANSPORT_LABELS}
+            onSave={(relay, transport) => {
               setRelayInput(relay);
               saveRelay(relay);
+              setTransportInput(transport);
+              saveTransport(transport);
               setError(null);
               setIsSettingsOpen(false);
             }}
@@ -700,6 +747,19 @@ export default function App() {
           <span className="text-xs text-neutral-300 select-none">{displayRoom}</span>
           <span className="text-neutral-700 select-none">·</span>
           <span className="text-xs text-neutral-400 select-none">{displayUsername}</span>
+          {connectedTransport && (
+            <>
+              <span className="text-neutral-700 select-none">·</span>
+              <span
+                className="text-xs text-neutral-500 select-none"
+                title="The transport this call runs on"
+              >
+                {connectedTransport === 'websocket'
+                  ? TRANSPORT_LABELS.websocket
+                  : TRANSPORT_LABELS.webtransport}
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {isPublishing && (

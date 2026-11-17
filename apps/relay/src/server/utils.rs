@@ -36,7 +36,8 @@ impl CloseSession for TransportConnection {
   fn close_session(&self, error_code: u32, reason: &[u8]) {
     match self {
       Self::WebTransport(c) => c.close_session(error_code, reason),
-      Self::Quic(_) => self.close(error_code, reason),
+      // Raw QUIC and QMux both carry the code in their own CONNECTION_CLOSE.
+      Self::Quic(_) | Self::WebSocket(_) => self.close(error_code, reason),
     }
   }
 }

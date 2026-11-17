@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Transport-agnostic wrappers over the two QUIC-based backends MOQtail speaks:
-//! WebTransport (via `wtransport`) and raw QUIC (via `wtransport::quinn`, the exact
-//! quinn crate wtransport uses internally). Both backends have near-identical APIs
-//! (wtransport's stream types are literal newtypes over quinn's), so these enums just
-//! pick the right inner call and normalize the handful of places where the two
-//! diverge (error types, and `finish`/`set_priority` sync-vs-async).
+//! Transport-agnostic wrappers over the backends MOQtail speaks: WebTransport (via
+//! `wtransport`), raw QUIC (via `wtransport::quinn`, the exact quinn crate wtransport
+//! uses internally) and QMux over WebSocket for clients that can't use QUIC. The two
+//! QUIC backends have near-identical APIs (wtransport's stream types are literal
+//! newtypes over quinn's); QMux mirrors them. These enums pick the right inner call and
+//! normalize the places where the backends diverge (error types, `finish`/
+//! `set_priority` sync-vs-async, and statistics only QUIC can measure).
 
+use crate::transport::qmux::{QmuxRecvStream, QmuxSendStream, QmuxSession};
 use bytes::Bytes;
 use std::net::SocketAddr;
 use thiserror::Error;
@@ -29,6 +31,7 @@ use wtransport::quinn;
 pub enum TransportKind {
   WebTransport,
   Quic,
+  WebSocket,
 }
 
 impl std::fmt::Display for TransportKind {
@@ -36,6 +39,7 @@ impl std::fmt::Display for TransportKind {
     match self {
       TransportKind::WebTransport => write!(f, "webtransport"),
       TransportKind::Quic => write!(f, "quic"),
+      TransportKind::WebSocket => write!(f, "websocket"),
     }
   }
 }
@@ -53,7 +57,7 @@ pub struct TransportStats {
   pub lost_bytes: Option<u64>,
   pub sent_bytes: u64,
   pub received_bytes: u64,
-  /// Packets on the wire: UDP datagrams for QUIC.
+  /// Packets on the wire: UDP datagrams for QUIC, messages for WebSocket.
   pub sent_packets: u64,
   pub received_packets: u64,
 }
@@ -193,6 +197,7 @@ impl From<quinn::ReadError> for TransportReadError {
 pub enum TransportSendStream {
   WebTransport(wtransport::SendStream),
   Quic(quinn::SendStream),
+  WebSocket(QmuxSendStream),
 }
 
 impl TransportSendStream {
@@ -201,6 +206,7 @@ impl TransportSendStream {
     match self {
       Self::WebTransport(s) => s.quic_stream().id().into(),
       Self::Quic(s) => s.id().into(),
+      Self::WebSocket(s) => s.id(),
     }
   }
 
@@ -208,6 +214,7 @@ impl TransportSendStream {
     match self {
       Self::WebTransport(s) => s.write_all(buf).await.map_err(Into::into),
       Self::Quic(s) => s.write_all(buf).await.map_err(Into::into),
+      Self::WebSocket(s) => s.write_all(buf).await,
     }
   }
 
@@ -217,6 +224,7 @@ impl TransportSendStream {
     let stream = match self {
       Self::WebTransport(s) => s.quic_stream_mut(),
       Self::Quic(s) => s,
+      Self::WebSocket(s) => return s.write_all_chunks(bufs).await,
     };
     stream.write_all_chunks(bufs).await.map_err(Into::into)
   }
@@ -225,6 +233,7 @@ impl TransportSendStream {
     match self {
       Self::WebTransport(s) => s.finish().await.map_err(Into::into),
       Self::Quic(s) => s.finish().map_err(Into::into),
+      Self::WebSocket(s) => s.finish(),
     }
   }
 
@@ -232,6 +241,7 @@ impl TransportSendStream {
     let result = match self {
       Self::WebTransport(s) => s.flush().await,
       Self::Quic(s) => s.flush().await,
+      Self::WebSocket(s) => return s.flush().await,
     };
     result.map_err(|e| TransportWriteError::Other(e.to_string()))
   }
@@ -243,6 +253,7 @@ impl TransportSendStream {
       Self::Quic(s) => {
         let _ = s.set_priority(priority);
       }
+      Self::WebSocket(s) => s.set_priority(priority),
     }
   }
 
@@ -262,6 +273,7 @@ impl TransportSendStream {
           .map_err(|_| TransportWriteError::Other("reset code exceeds VarInt max".to_string()))?;
         s.reset(vi).map_err(Into::into)
       }
+      Self::WebSocket(s) => s.reset(code),
     }
   }
 
@@ -279,6 +291,7 @@ impl TransportSendStream {
         .ok()
         .flatten()
         .map(|code| code.into_inner()),
+      Self::WebSocket(s) => s.stopped().await,
     }
   }
 }
@@ -287,6 +300,7 @@ impl TransportSendStream {
 pub enum TransportRecvStream {
   WebTransport(wtransport::RecvStream),
   Quic(quinn::RecvStream),
+  WebSocket(QmuxRecvStream),
 }
 
 impl TransportRecvStream {
@@ -295,6 +309,7 @@ impl TransportRecvStream {
     match self {
       Self::WebTransport(s) => s.quic_stream().id().into(),
       Self::Quic(s) => s.id().into(),
+      Self::WebSocket(s) => s.id(),
     }
   }
 
@@ -302,6 +317,7 @@ impl TransportRecvStream {
     match self {
       Self::WebTransport(s) => s.read(buf).await.map_err(Into::into),
       Self::Quic(s) => s.read(buf).await.map_err(Into::into),
+      Self::WebSocket(s) => s.read(buf).await,
     }
   }
 
@@ -322,6 +338,7 @@ impl TransportRecvStream {
           let _ = s.stop(vi);
         }
       }
+      Self::WebSocket(s) => s.stop(code),
     }
   }
 }
@@ -330,6 +347,7 @@ impl TransportRecvStream {
 pub enum TransportConnection {
   WebTransport(wtransport::Connection),
   Quic(quinn::Connection),
+  WebSocket(QmuxSession),
 }
 
 impl TransportConnection {
@@ -337,6 +355,7 @@ impl TransportConnection {
     match self {
       Self::WebTransport(_) => TransportKind::WebTransport,
       Self::Quic(_) => TransportKind::Quic,
+      Self::WebSocket(_) => TransportKind::WebSocket,
     }
   }
 
@@ -344,9 +363,9 @@ impl TransportConnection {
   /// (bytes that may be in flight) divided by the smoothed RTT, i.e. the
   /// bandwidth-delay product. Returns 0 when the estimate is unavailable.
   pub fn bandwidth_estimate_kbps(&self) -> u64 {
-    let conn = match self {
-      Self::WebTransport(c) => c.quic_connection(),
-      Self::Quic(c) => c,
+    // shortcut: no estimate over WebSocket; TCP_INFO could give one on Linux.
+    let Some(conn) = self.quic() else {
+      return 0;
     };
     let window_bytes = conn.congestion_state().window();
     let rtt = conn.rtt().max(std::time::Duration::from_millis(1));
@@ -354,16 +373,21 @@ impl TransportConnection {
     window_bytes.saturating_mul(8_000) / u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX).max(1)
   }
 
-  fn quic(&self) -> &quinn::Connection {
+  fn quic(&self) -> Option<&quinn::Connection> {
     match self {
-      Self::WebTransport(c) => c.quic_connection(),
-      Self::Quic(c) => c,
+      Self::WebTransport(c) => Some(c.quic_connection()),
+      Self::Quic(c) => Some(c),
+      Self::WebSocket(_) => None,
     }
   }
 
   /// The connection's statistics: RTT, congestion window, losses and bytes.
   pub fn transport_stats(&self) -> TransportStats {
-    let stats = self.quic().stats();
+    let conn = match self {
+      Self::WebSocket(s) => return s.transport_stats(),
+      _ => self.quic().expect("QUIC backend"),
+    };
+    let stats = conn.stats();
     TransportStats {
       rtt: Some(stats.path.rtt),
       cwnd: Some(stats.path.cwnd),
@@ -380,7 +404,11 @@ impl TransportConnection {
   /// Why the connection closed; `None` while it is open.
   pub fn close_reason(&self) -> Option<CloseReason> {
     use quinn::ConnectionError as E;
-    Some(match self.quic().close_reason()? {
+    let conn = match self {
+      Self::WebSocket(s) => return s.close_reason(),
+      _ => self.quic().expect("QUIC backend"),
+    };
+    Some(match conn.close_reason()? {
       E::ApplicationClosed(close) => CloseReason::ByPeer {
         code: close.error_code.into_inner(),
         reason: String::from_utf8_lossy(&close.reason).into_owned(),
@@ -400,6 +428,7 @@ impl TransportConnection {
     match self {
       Self::WebTransport(c) => c.stable_id(),
       Self::Quic(c) => c.stable_id(),
+      Self::WebSocket(c) => c.stable_id(),
     }
   }
 
@@ -407,6 +436,7 @@ impl TransportConnection {
     match self {
       Self::WebTransport(c) => c.remote_address(),
       Self::Quic(c) => c.remote_address(),
+      Self::WebSocket(c) => c.remote_address(),
     }
   }
 
@@ -415,6 +445,7 @@ impl TransportConnection {
     match self {
       Self::WebTransport(c) => c.close(error_code.into(), reason),
       Self::Quic(c) => c.close(error_code.into(), reason),
+      Self::WebSocket(c) => c.close(error_code, reason),
     }
   }
 
@@ -427,6 +458,7 @@ impl TransportConnection {
       Self::Quic(c) => {
         c.closed().await;
       }
+      Self::WebSocket(c) => c.closed().await,
     }
   }
 
@@ -446,6 +478,13 @@ impl TransportConnection {
         Ok((
           TransportSendStream::Quic(send),
           TransportRecvStream::Quic(recv),
+        ))
+      }
+      Self::WebSocket(c) => {
+        let (send, recv) = c.open_bi().await?;
+        Ok((
+          TransportSendStream::WebSocket(send),
+          TransportRecvStream::WebSocket(recv),
         ))
       }
     }
@@ -469,6 +508,13 @@ impl TransportConnection {
           TransportRecvStream::Quic(recv),
         ))
       }
+      Self::WebSocket(c) => {
+        let (send, recv) = c.accept_bi().await?;
+        Ok((
+          TransportSendStream::WebSocket(send),
+          TransportRecvStream::WebSocket(recv),
+        ))
+      }
     }
   }
 
@@ -482,6 +528,7 @@ impl TransportConnection {
         let send = c.open_uni().await?;
         Ok(TransportSendStream::Quic(send))
       }
+      Self::WebSocket(c) => Ok(TransportSendStream::WebSocket(c.open_uni().await?)),
     }
   }
 
@@ -489,6 +536,7 @@ impl TransportConnection {
     match self {
       Self::WebTransport(c) => Ok(TransportRecvStream::WebTransport(c.accept_uni().await?)),
       Self::Quic(c) => Ok(TransportRecvStream::Quic(c.accept_uni().await?)),
+      Self::WebSocket(c) => Ok(TransportRecvStream::WebSocket(c.accept_uni().await?)),
     }
   }
 
@@ -496,6 +544,7 @@ impl TransportConnection {
     match self {
       Self::WebTransport(c) => Ok(Bytes::from(c.receive_datagram().await?.payload().to_vec())),
       Self::Quic(c) => Ok(c.read_datagram().await?),
+      Self::WebSocket(c) => c.receive_datagram().await,
     }
   }
 
@@ -503,6 +552,7 @@ impl TransportConnection {
     match self {
       Self::WebTransport(c) => c.send_datagram(payload).map_err(Into::into),
       Self::Quic(c) => c.send_datagram(payload).map_err(Into::into),
+      Self::WebSocket(c) => c.send_datagram(payload),
     }
   }
 }
@@ -595,6 +645,14 @@ mod tests {
     ))
   }
 
+  async fn websocket_pair() -> (TransportConnection, TransportConnection) {
+    let (client, server) = crate::transport::qmux::test_pair().await;
+    (
+      TransportConnection::WebSocket(client),
+      TransportConnection::WebSocket(server),
+    )
+  }
+
   async fn roundtrip_bi(client: TransportConnection, server: TransportConnection) {
     // Raw QUIC sends nothing on the wire for an opened-but-unwritten stream (unlike
     // WebTransport, whose open_bi() writes a stream-type header immediately), so write
@@ -680,6 +738,43 @@ mod tests {
   async fn webtransport_reset_code_round_trips() {
     let (client, server) = webtransport_pair().await.expect("webtransport_pair");
     reset_roundtrip(client, server).await;
+  }
+
+  #[tokio::test]
+  async fn websocket_backend_roundtrip() {
+    let (client, server) = websocket_pair().await;
+    roundtrip_bi(client, server).await;
+  }
+
+  #[tokio::test]
+  async fn websocket_reset_code_round_trips() {
+    let (client, server) = websocket_pair().await;
+    reset_roundtrip(client, server).await;
+  }
+
+  #[tokio::test]
+  async fn websocket_close_reason_and_stats() {
+    let (client, server) = websocket_pair().await;
+    assert_eq!(client.kind(), TransportKind::WebSocket);
+    roundtrip_bi(client.clone(), server.clone()).await;
+    let stats = client.transport_stats();
+    assert!(stats.sent_bytes > 0 && stats.sent_packets > 0);
+    assert_eq!(
+      stats.cwnd, None,
+      "WebSocket can't see the congestion window"
+    );
+    assert_eq!(client.bandwidth_estimate_kbps(), 0);
+
+    client.close(0x10, b"bye");
+    server.closed().await;
+    assert_eq!(client.close_reason(), Some(CloseReason::Local));
+    assert_eq!(
+      server.close_reason(),
+      Some(CloseReason::ByPeer {
+        code: 0x10,
+        reason: "bye".to_string()
+      })
+    );
   }
 
   #[tokio::test]

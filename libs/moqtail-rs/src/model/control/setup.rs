@@ -74,7 +74,8 @@ impl Setup {
         Err(_) => continue,
       };
 
-      if sender == SetupSender::Server || transport == TransportKind::WebTransport {
+      // Over WebTransport and WebSocket the HTTP request already carried them.
+      if sender == SetupSender::Server || transport != TransportKind::Quic {
         return Err(code);
       }
     }
@@ -228,6 +229,24 @@ mod tests {
         .unwrap_err(),
       TerminationCode::InvalidAuthority
     );
+  }
+
+  #[test]
+  fn authority_and_path_over_websocket_are_rejected() {
+    for (option, code) in [
+      (
+        SetupOptionType::Authority,
+        TerminationCode::InvalidAuthority,
+      ),
+      (SetupOptionType::Path, TerminationCode::InvalidPath),
+    ] {
+      assert_eq!(
+        setup_with(option)
+          .validate_incoming(SetupSender::Client, TransportKind::WebSocket)
+          .unwrap_err(),
+        code
+      );
+    }
   }
 
   #[test]

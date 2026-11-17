@@ -564,9 +564,8 @@ impl RecvDataStream {
           biased;
 
           _ = sleep_until(timeout_at) => {
-            info!("Timeout while waiting for data");
             is_closed.store(true, Ordering::Relaxed);
-            return Err(RecvDataStreamReadError::ParseError(ParseError::Timeout { context: "RecvDataStream::new(header_read)" }));
+            return Err(RecvDataStreamReadError::ParseError(ParseError::Timeout { context: "RecvDataStream::read(idle)" }));
           }
 
           read_result = stream.read(&mut recv_buf[..]) => {
@@ -597,7 +596,7 @@ impl RecvDataStream {
                 if matches!(e, TransportReadError::NotConnected) {
                   return Err(RecvDataStreamReadError::StreamClosed);
                 }
-                return Err(RecvDataStreamReadError::ParseError(ParseError::Other { context: "RecvDataStream::new(header_read)", msg:e.to_string() }));
+                return Err(RecvDataStreamReadError::ParseError(ParseError::Other { context: "RecvDataStream::read", msg:e.to_string() }));
               }
             }
           }
@@ -855,13 +854,17 @@ impl RecvDataStream {
           }
           Err(e) => {
             read_outcome.store(READ_ABORTED, Ordering::Release);
-            error!("RecvDataStream read task encountered an error: {:?}", e);
             notify.notify_waiters();
-            // if not connected error, do nothing and return, let the caller handle it
-            if matches!(e, RecvDataStreamReadError::StreamClosed) {
-              debug!("Stream is closed, returning EOF");
-            } else {
-              error!("RecvDataStream read task encountered an error: {:?}", e);
+            match e {
+              // Not connected: nothing to report, the caller handles it.
+              RecvDataStreamReadError::StreamClosed => debug!("Stream is closed, returning EOF"),
+              // A publisher may leave a stream open between Objects; going quiet is not a
+              // fault, so it is reported, not logged as an error.
+              RecvDataStreamReadError::ParseError(ParseError::Timeout { .. }) => info!(
+                "Data stream closed after {}s without data",
+                DATA_STREAM_TIMEOUT.as_secs()
+              ),
+              e => error!("RecvDataStream read task encountered an error: {:?}", e),
             }
           }
         }

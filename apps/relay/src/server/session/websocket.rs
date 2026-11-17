@@ -28,19 +28,23 @@ use moqtail::transport::qmux::tokio_tungstenite::tungstenite::handshake::server:
 };
 use moqtail::transport::qmux::tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode};
 use moqtail::transport::qmux::{
-  QmuxConfig, QmuxSession, Role, tokio_tungstenite, websocket_config,
+  QmuxConfig, QmuxSession, Role, WebSocketStream, tokio_tungstenite, websocket_config,
 };
 use socket2::{Domain, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::server::TlsStream;
 use tracing::{error, info, warn};
 use wtransport::Identity;
 
 /// The QMux version this relay speaks, as moq-dev puts it in front of the MoQ version.
 const QMUX_PREFIX: &str = "qmux-02.";
+/// How long TLS and the WebSocket upgrade together may take.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Accepts WebSocket clients on `bind` until `shutdown` fires.
 pub(crate) async fn serve(server: Server, bind: SocketAddr, mut shutdown: watch::Receiver<bool>) {
@@ -104,6 +108,28 @@ async fn accept(
   server: Server,
 ) -> Result<()> {
   tcp.set_nodelay(true)?;
+  // A client that opens TCP and goes quiet must not hold a task and a socket forever.
+  let handshake = upgrade(tcp, remote, acceptor);
+  let (ws, chosen) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake)
+    .await
+    .context("TLS and WebSocket handshake timed out")??;
+  info!("WebSocket session from {remote} speaks {chosen}");
+
+  let config = QmuxConfig {
+    max_streams_bidi: server.app_config.max_request_stream_limit().into_inner(),
+    ..QmuxConfig::default()
+  };
+  let qmux = QmuxSession::new(ws, Role::Server, remote, config).await?;
+  Session::start(TransportConnection::WebSocket(qmux), server, None).await?;
+  Ok(())
+}
+
+/// TLS, then the WebSocket upgrade; returns the socket and the subprotocol chosen.
+async fn upgrade(
+  tcp: TcpStream,
+  remote: SocketAddr,
+  acceptor: TlsAcceptor,
+) -> Result<(WebSocketStream<TlsStream<TcpStream>>, String)> {
   let tls = acceptor.accept(tcp).await.context("TLS handshake")?;
 
   let mut chosen = None;
@@ -137,18 +163,7 @@ async fn accept(
     tokio_tungstenite::accept_hdr_async_with_config(tls, pick_version, Some(websocket_config()))
       .await
       .context("WebSocket upgrade")?;
-  info!(
-    "WebSocket session from {remote} speaks {}",
-    chosen.unwrap_or_default()
-  );
-
-  let config = QmuxConfig {
-    max_streams_bidi: server.app_config.max_request_stream_limit().into_inner(),
-    ..QmuxConfig::default()
-  };
-  let qmux = QmuxSession::new(ws, Role::Server, remote, config).await?;
-  Session::start(TransportConnection::WebSocket(qmux), server, None).await?;
-  Ok(())
+  Ok((ws, chosen.unwrap_or_default()))
 }
 
 /// The first subprotocol offered whose MoQ version the relay speaks, as offered. Both

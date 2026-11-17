@@ -26,6 +26,7 @@ import {
   encodeFrame,
   varintLength,
 } from './codec'
+import { logger } from '@/util/logger'
 
 /**
  * A QMux connection over anything that carries whole records: QUIC-style streams, flow
@@ -724,11 +725,14 @@ export class QmuxSession {
 
   #sendDatagram(payload: Uint8Array): void {
     if (this.#close) throw this.#closedError()
+    // Throwing here would error the whole writable, failing every later datagram; like
+    // WebTransport, a datagram that can't be sent is dropped instead.
     const peer = this.#peer
-    if (!peer || peer.maxDatagramFrameSize === 0) throw new QmuxSessionError('peer does not accept datagrams')
     const frameLength = 1 + varintLength(payload.length) + payload.length
-    if (frameLength > Math.min(peer.maxDatagramFrameSize, peer.maxRecordSize))
-      throw new QmuxSessionError('datagram too large')
+    if (!peer || frameLength > Math.min(peer.maxDatagramFrameSize, peer.maxRecordSize)) {
+      logger.warn('QmuxSession', `dropped a ${payload.length}-byte datagram the peer won't accept`)
+      return
+    }
     this.#datagramsOut.push(payload.slice())
     if (this.#datagramsOut.length > DATAGRAM_QUEUE) this.#datagramsOut.shift()
     this.#schedule()
@@ -980,6 +984,16 @@ if (import.meta.vitest) {
         server.onRecord(w.finish())
       }
       expect((await server.closed).closeCode).toBe(QmuxErrorCode.FLOW_CONTROL_ERROR)
+    })
+
+    test('a datagram too large is dropped and later ones still go through', async () => {
+      const [client, server] = pair()
+      await Promise.all([client.ready, server.ready])
+      const writer = client.datagrams.writable.getWriter()
+      await writer.write(new Uint8Array(DEFAULT_MAX_RECORD_SIZE + 1))
+      await writer.write(new Uint8Array([7]))
+      const { value } = await server.datagrams.readable.getReader().read()
+      expect([...value!]).toEqual([7])
     })
 
     test('close reaches the peer with its code and reason, and fails pending work', async () => {

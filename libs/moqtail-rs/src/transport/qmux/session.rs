@@ -291,6 +291,9 @@ pub(crate) struct State {
   pub(crate) stats: TransportStats,
   ping: Option<(u64, Instant)>,
   ping_seq: u64,
+  /// The newest peer ping not yet answered. One reply covers every earlier ping, so a
+  /// peer flooding pings while not reading can't grow our queue.
+  ping_reply: Option<u64>,
   last_rx: Instant,
   wakes: Wakes,
 }
@@ -341,6 +344,7 @@ impl State {
       stats: TransportStats::default(),
       ping: None,
       ping_seq: 0,
+      ping_reply: None,
       last_rx: Instant::now(),
       local,
       wakes: Wakes::default(),
@@ -570,7 +574,10 @@ impl State {
         }
         self.wakes.datagram = true;
       }
-      Frame::PingRequest(seq) => self.queue_control(Frame::PingResponse(seq)),
+      Frame::PingRequest(seq) => {
+        self.ping_reply = Some(self.ping_reply.map_or(seq, |r| r.max(seq)));
+        self.wakes.writer = true;
+      }
     }
     Ok(())
   }
@@ -1094,6 +1101,9 @@ impl State {
     }
 
     self.queue_credit();
+    if let Some(seq) = self.ping_reply.take() {
+      self.control.push_back(Frame::PingResponse(seq));
+    }
     while let Some(frame) = self.control.front() {
       if !out.is_empty() && out.len() + frame.encoded_len() > max {
         break;
@@ -1691,6 +1701,20 @@ mod tests {
     Frame::MaxData(1).encode(&mut record);
     server.on_record(Bytes::from(record));
     assert!(matches!(&server.close, Some(CloseReason::Other(r)) if r.contains("0xa")));
+  }
+
+  #[test]
+  fn a_ping_flood_queues_one_reply() {
+    let mut p = Pair::new();
+    let mut record = Vec::new();
+    for seq in 1..=500 {
+      Frame::PingRequest(seq).encode(&mut record);
+    }
+    p.server.on_record(Bytes::from(record));
+    assert!(p.server.close.is_none());
+    let reply = decode_record(Bytes::from(p.server.build_record().unwrap().record)).unwrap();
+    assert_eq!(reply, vec![Frame::PingResponse(500)]);
+    assert!(p.server.build_record().is_none(), "nothing else was queued");
   }
 
   #[test]

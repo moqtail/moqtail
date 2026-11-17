@@ -48,6 +48,8 @@ export type MoqtTransport = Pick<
 
 /** The QMux version this client speaks, as moq-dev puts it in front of the MoQ version. */
 const QMUX_PREFIX = 'qmux-02.'
+/** How long to wait for the relay's QMux transport parameters once the WebSocket is open. */
+const QMUX_HANDSHAKE_TIMEOUT_MS = 10000
 
 /** WebSocket subprotocols for the MoQ `versions`: moq-dev's prefixed form first, then bare. */
 export function webSocketProtocols(versions: readonly string[]): string[] {
@@ -91,7 +93,13 @@ export async function connectWebSocket(url: string, versions: readonly string[])
   }
   ws.onclose = (e) => session.onSocketClosed(`WebSocket closed: ${e.code} ${e.reason}`)
   ws.onerror = null
-  await session.ready
+  // A server that agrees on a subprotocol but never speaks QMux must not hang init().
+  try {
+    await withTimeout(session.ready, QMUX_HANDSHAKE_TIMEOUT_MS, 'The relay sent no QMux transport parameters')
+  } catch (error) {
+    session.close()
+    throw error
+  }
   return session
 }
 

@@ -21,6 +21,7 @@ import {
   MoqtObject,
   Location,
   ObjectForwardingPreference,
+  ObjectStatus,
   LocationFilter,
   LocationFilterType,
   GroupOrder,
@@ -100,6 +101,19 @@ export async function setupSignalling(
         0,
         null,
         payload,
+      ),
+    );
+    // Each message is a group of its own: saying so lets its stream close at once
+    // instead of idling until the next message.
+    signalController.enqueue(
+      MoqtObject.newWithStatus(
+        signalFTN,
+        new Location(groupId, objectId + 1n),
+        1,
+        ObjectForwardingPreference.Subgroup,
+        0,
+        null,
+        ObjectStatus.EndOfGroup,
       ),
     );
   }

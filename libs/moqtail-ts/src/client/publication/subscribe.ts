@@ -327,8 +327,8 @@ export class SubscribePublication {
         await sendStream.write(obj.tryIntoSubgroupObject())
         await this.#lock.release()
 
-        if (this.#endLocation && obj.location.equals(this.#endLocation)) {
-          // The filter's last Object: nothing follows on this stream.
+        if ((this.#endLocation && obj.location.equals(this.#endLocation)) || obj.isEndOfGroup() || obj.isEndOfTrack()) {
+          // The filter's last Object, or the group's or track's: nothing follows on this stream.
           await this.#closeGroupStream(obj.location.group)
         } else if (this.latestLocation && this.latestLocation.group !== obj.location.group) {
           // TODO: Maybe don't close the previous stream, discuss

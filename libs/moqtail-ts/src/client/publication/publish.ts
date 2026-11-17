@@ -303,6 +303,17 @@ export class PublishPublication {
           await this.#lock.release()
         }
 
+        // Nothing follows an end-of-group or end-of-track Object on this stream, so it
+        // closes now; otherwise it would idle until the next group, and a quiet track
+        // leaves it open long enough for the relay to time it out.
+        if (obj.isEndOfGroup() || obj.isEndOfTrack()) {
+          await this.#lock.acquire()
+          const stream = this.#streams.get(obj.location.group)
+          this.#streams.delete(obj.location.group)
+          await this.#lock.release()
+          await stream?.close().catch((err) => logger.warn('publication/publish', 'error in closing stream', err))
+        }
+
         // Close previous group's stream if the group ID has incremented
         if (this.latestLocation && this.latestLocation.group !== obj.location.group) {
           const prevGroup = this.latestLocation.group
@@ -342,11 +353,38 @@ export class PublishPublication {
 
 if (import.meta.vitest) {
   const { describe, test, expect, vi } = import.meta.vitest
-  const { FullTrackName, Forward, ObjectForwardingPreference, SubgroupHeaderType } = await import('@/model')
+  const { FullTrackName, Forward, ObjectForwardingPreference, ObjectStatus, SubgroupHeaderType } =
+    await import('@/model')
   const { RequestUpdate } = await import('@/model/control')
   const { LiveTrackSource } = await import('@/client/track/content_source')
   const { SubgroupHeader: Header } = await import('@/model/data/subgroup_header')
   const { FrozenByteBuffer } = await import('@/model/common/byte_buffer')
+
+  describe('PublishPublication stream closing', () => {
+    test('an end-of-group Object closes its stream without waiting for the next group', async () => {
+      const ftn = FullTrackName.tryNew('room/alice', 'signalling')
+      let closed = 0
+      const webTransport = {
+        createUnidirectionalStream: async () => new WritableStream<Uint8Array>({ close: () => void closed++ }),
+      }
+      let source!: ReadableStreamDefaultController<MoqtObject>
+      const live = new LiveTrackSource(new ReadableStream<MoqtObject>({ start: (controller) => (source = controller) }))
+      const track: Track = { fullTrackName: ftn, trackSource: { live }, publisherPriority: 0, trackAlias: 1n }
+      const client = { webTransport, publications: new Map(), emit: () => {} } as unknown as MOQtailClient
+      new PublishPublication(client, track, { requestId: 0n, parameters: [] } as unknown as Publish)
+
+      const at = (object: number) => new Location(5n, BigInt(object))
+      source.enqueue(
+        MoqtObject.newWithPayload(ftn, at(0), 0, ObjectForwardingPreference.Subgroup, 0n, null, new Uint8Array([1])),
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      expect(closed).toBe(0)
+      source.enqueue(
+        MoqtObject.newWithStatus(ftn, at(1), 0, ObjectForwardingPreference.Subgroup, 0n, null, ObjectStatus.EndOfGroup),
+      )
+      await vi.waitFor(() => expect(closed).toBe(1))
+    })
+  })
 
   describe('PublishPublication FIRST_OBJECT', () => {
     const ftn = FullTrackName.tryNew('room/alice', 'video')

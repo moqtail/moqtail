@@ -116,7 +116,6 @@ pub(crate) struct MOQTClient {
   pub connected_at: std::time::SystemTime,
   pub transport_kind: TransportKind,
   pub connection: Arc<TransportConnection>,
-  #[allow(dead_code)]
   pub client_setup: Arc<Setup>,
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
   pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client

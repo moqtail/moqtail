@@ -93,7 +93,7 @@ pub struct SstsState {
 
 /// The SSTS algorithms the client's SETUP advertises; an empty list (or the
 /// absence of the option) prohibits SSTS.
-fn advertised_algorithms(setup: &Setup) -> Vec<u64> {
+pub(crate) fn advertised_algorithms(setup: &Setup) -> Vec<u64> {
   use moqtail::model::parameter::setup_option::SetupOption;
   setup
     .setup_options

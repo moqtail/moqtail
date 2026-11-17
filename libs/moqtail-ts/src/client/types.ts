@@ -42,6 +42,7 @@ import type {
   FetchHeader,
 } from '@/model'
 import type { MOQtailClient } from './client'
+import type { TransportMode } from './qmux/transport'
 import type { DataEvent } from './data_event'
 import type { FetchRequest } from '@/client/request/fetch'
 import type { PublishRequest } from '@/client/request/publish'
@@ -177,6 +178,15 @@ export type MOQtailClientOptions = {
   fillOpenTimeoutMs?: number
   /** If true, enables datagram support for the session. */
   enableDatagrams?: boolean
+  /**
+   * Which transport to open. `auto`, the default, uses WebTransport when the runtime has
+   * it and it connects within {@link MOQtailClientOptions.webTransportTimeoutMs},
+   * otherwise MoQ over WebSocket (QMux), which also works where UDP is blocked. The
+   * relay needs its WebSocket listener turned on for that.
+   */
+  transport?: TransportMode
+  /** How long `auto` waits for WebTransport before trying WebSocket, in milliseconds. Defaults to 3000. */
+  webTransportTimeoutMs?: number
   /** The default {@link ObjectOrdering} of the session's subscriptions and fetches. Without one, objects pass through unordered. */
   ordering?: ObjectOrdering | 'none'
 }

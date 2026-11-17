@@ -63,6 +63,20 @@ describe('buffer controller', () => {
     s.since(settled).expectSmooth()
   })
 
+  test('liveBuffer leaves a seek back alone, and follows again after a seek to the end', async ({ open }) => {
+    const buffer = withTargets({ target: 1500 }, new LiveBufferController(1.5, 1))
+    const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(buffer)] } })
+    await s.until(() => Math.abs(s.latency() - 1.5) < 0.15, 'latency at 1.5 s')
+    await s.seekLive(-10)
+    await s.played(3)
+    // Neither a jump back to the edge nor a faster rate
+    expect(s.latency()).toBeGreaterThan(8)
+    expect(s.video.playbackRate).toBe(1)
+    const seekable = s.video.seekable
+    await s.seek(seekable.end(seekable.length - 1))
+    await s.until(() => Math.abs(s.latency() - 1.5) < 0.15 && s.video.playbackRate === 1, 'latency back at 1.5 s')
+  })
+
   test("the attached controller's backBuffer replaces the sink's", async ({ open }) => {
     const buffer: BufferController = { attach() {}, detach() {}, backBuffer: () => 1 }
     const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(buffer)] } })

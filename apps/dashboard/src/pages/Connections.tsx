@@ -146,8 +146,8 @@ export function Connections() {
                   <td>{c.implementation ?? '–'}</td>
                   <td>{c.transport}</td>
                   <td>{ago(c.connected_at_ms)}</td>
-                  <td>{ms(c.quic.rtt_ms)}</td>
-                  <td>{count(c.quic.lost_packets)}</td>
+                  <td>{ms(c.stats.rtt_ms)}</td>
+                  <td>{count(c.stats.lost_packets)}</td>
                   <td>{c.subscriptions}</td>
                   <td>
                     {c.requests.ok} / {c.requests.error}
@@ -155,8 +155,8 @@ export function Connections() {
                       <Badge tone="bad">{c.control_messages.parse_errors} parse errors</Badge>
                     )}
                   </td>
-                  <td>{bytes(c.quic.sent_bytes)}</td>
-                  <td>{bytes(c.quic.received_bytes)}</td>
+                  <td>{bytes(c.stats.sent_bytes)}</td>
+                  <td>{bytes(c.stats.received_bytes)}</td>
                 </tr>
               ))}
             </tbody>

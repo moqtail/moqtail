@@ -96,17 +96,17 @@ export function Connection(props: { id: string }) {
             ]}
           />
         </Card>
-        <Card title="QUIC">
+        <Card title="Transport">
           <Facts
             rows={[
-              ['RTT', ms(c.quic.rtt_ms)],
-              ['Congestion window', bytes(c.quic.cwnd)],
-              ['Congestion events', count(c.quic.congestion_events)],
-              ['Lost', `${count(c.quic.lost_packets)} packets, ${bytes(c.quic.lost_bytes)}`],
-              ['Sent', `${bytes(c.quic.sent_bytes)} in ${count(c.quic.sent_datagrams)} datagrams`],
+              ['RTT', ms(c.stats.rtt_ms)],
+              ['Congestion window', bytes(c.stats.cwnd)],
+              ['Congestion events', count(c.stats.congestion_events)],
+              ['Lost', `${count(c.stats.lost_packets)} packets, ${bytes(c.stats.lost_bytes)}`],
+              ['Sent', `${bytes(c.stats.sent_bytes)} in ${count(c.stats.sent_packets)} packets`],
               [
                 'Received',
-                `${bytes(c.quic.received_bytes)} in ${count(c.quic.received_datagrams)} datagrams`,
+                `${bytes(c.stats.received_bytes)} in ${count(c.stats.received_packets)} packets`,
               ],
             ]}
           />

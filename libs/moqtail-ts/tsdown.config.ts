@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { defineConfig } from 'tsdown'
+import { gzipSync } from 'node:zlib'
+import { defineConfig, Rolldown } from 'tsdown'
 
 export default defineConfig({
   entry: {
@@ -35,4 +36,17 @@ export default defineConfig({
     'import.meta.vitest': 'undefined',
   },
   target: false,
+  hooks: {
+    'build:done': async ({ options }) => {
+      if (options.format !== 'es') return
+      const { output } = await Rolldown.build({
+        input: 'dist/player.mjs',
+        write: false,
+        output: { minify: true },
+      })
+      const code = output[0].code
+      const kb = (bytes: number) => `${(bytes / 1000).toFixed(2)} kB`
+      console.log(`moqtail/player bundle: ${kb(Buffer.byteLength(code))} min │ gzip: ${kb(gzipSync(code).length)}`)
+    },
+  },
 })

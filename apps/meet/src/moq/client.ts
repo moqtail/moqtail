@@ -14,16 +14,18 @@
  * limitations under the License.
  */
 
-import { MOQtailClient } from 'moqtail/client';
+import { MOQtailClient, type TransportMode } from 'moqtail/client';
 
 export async function createMOQtailClient(
   relayUrl?: string,
   listen?: (client: MOQtailClient) => void,
+  transport: TransportMode = 'auto',
 ): Promise<MOQtailClient> {
   const client = new MOQtailClient({
     url: relayUrl ?? window.appSettings.relayUrl,
     transportOptions: {},
     enableDatagrams: false,
+    transport,
   });
   // Listeners attach before init() so SETUP, the first message each way, is observed too.
   listen?.(client);

@@ -8,6 +8,9 @@
 bind: '[::]:4433'
 cert_file: apps/relay/cert/cert.pem
 key_file: apps/relay/cert/key.pem
+# TCP address for WebSocket clients (MoQ over QMux), for clients that can't use
+# QUIC; usually the same as bind. Unset leaves WebSocket off.
+# websocket_bind: '[::]:4433'
 log_folder: /tmp
 
 # QUIC

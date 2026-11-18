@@ -14,8 +14,12 @@
  * limitations under the License.
  */
 
+import type { TransportMode } from 'moqtail/client';
+
 export interface AppSettings {
   relayUrl: string;
+  /** `websocket` forces TCP for everyone, e.g. where UDP is blocked. Unset means `auto`. */
+  transport?: TransportMode;
   audioEncoderConfig: AudioEncoderConfig;
   audioDecoderConfig: AudioDecoderConfig;
   videoEncoderConfig: VideoEncoderConfig;

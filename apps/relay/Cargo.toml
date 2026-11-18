@@ -31,6 +31,8 @@ moka.workspace = true
 fnv.workspace = true
 hex.workspace = true
 socket2.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite = { workspace = true, features = ["handshake"] }
 figment.workspace = true
 serde.workspace = true
 smart-default.workspace = true

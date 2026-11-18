@@ -34,12 +34,6 @@ import { RefObject } from 'react';
 import DecodeWorker from '@/workers/decoderWorker?worker';
 import PCMPlayerProcessorURL from '@/workers/pcmPlayerProcessor?url';
 
-export async function connectToRelay(url: string) {
-  const client = new MOQtailClient({ url, enableDatagrams: false });
-  await client.init();
-  return client;
-}
-
 export async function announceNamespaces(moqClient: MOQtailClient, namespace: Tuple) {
   await moqClient.publishNamespace(namespace);
 }

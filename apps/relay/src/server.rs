@@ -177,6 +177,11 @@ impl Server {
       }));
     }
 
+    if let Some(bind) = self.app_config.websocket_bind {
+      let serve = session::websocket::serve(self.clone(), bind, shutdown_rx.clone());
+      accept_loops.push(tokio::spawn(serve));
+    }
+
     self.accepting.store(true, Ordering::Relaxed);
 
     // SIGTERM drains the relay: broadcast GOAWAY, reject new requests, then exit

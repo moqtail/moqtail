@@ -13,6 +13,8 @@ license = "Apache-2.0"
 doctest = false
 
 [dependencies]
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
 bytes.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
@@ -21,3 +23,8 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# moq-dev's QMux implementation, used only as an interop peer in tests.
+qmux = { version = "0.6", default-features = false, features = ["ws"] }
+web-transport-trait = "0.5"

@@ -25,6 +25,11 @@ use moqtail::model::{
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::qlog;
+use moqtail::transport::qmux::tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use moqtail::transport::qmux::tokio_tungstenite::tungstenite::http::HeaderValue;
+use moqtail::transport::qmux::{
+  QmuxConfig, QmuxSession, Role, tokio_tungstenite, websocket_config,
+};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,6 +42,8 @@ use wtransport::quinn::congestion::BbrConfig;
 use wtransport::{ClientConfig, Endpoint, tls};
 
 const CLIENT_SUPPORTED_VERSIONS: &str = "moqt-22";
+/// The QMux version this client speaks, as moq-dev puts it in front of the MoQ version.
+const QMUX_PREFIX: &str = "qmux-02.";
 
 pub struct MoqConnection {
   pub connection: Arc<TransportConnection>,
@@ -86,6 +93,10 @@ impl MoqConnection {
         // WebTransport derives an https:// URI from the moqt:// URL; the CONNECT
         // request carries the authority/path, so no AUTHORITY/PATH setup options.
         Self::connect_webtransport(&url.to_https(), no_cert_validation).await?
+      }
+      Transport::WebSocket => {
+        // Like WebTransport, the HTTP upgrade carries the authority and path.
+        Self::connect_websocket(&url, no_cert_validation).await?
       }
     };
 
@@ -212,19 +223,59 @@ impl MoqConnection {
     Ok(TransportConnection::WebTransport(connection))
   }
 
+  /// Connects over a WebSocket (`wss://authority[/path]`) and runs QMux on it. The
+  /// subprotocol names the MoQ version, in moq-dev's `qmux-02.moqt-22` form first and
+  /// bare second, so either kind of relay accepts it.
+  async fn connect_websocket(
+    url: &MoqtUrl,
+    no_cert_validation: bool,
+  ) -> Result<TransportConnection> {
+    let (host, port) = split_authority(&url.authority)?;
+    let remote = resolve_host_port(host, port).await?;
+    info!("Connecting via WebSocket to {}:{}", host, port);
+    let tcp = tokio::net::TcpStream::connect(remote).await?;
+    tcp.set_nodelay(true)?;
+
+    let mut tls_config = if no_cert_validation {
+      tls::client::build_default_tls_config(
+        Arc::new(tls::rustls::RootCertStore::empty()),
+        Some(Arc::new(tls::client::NoServerVerification::new())),
+      )
+    } else {
+      tls::client::build_default_tls_config(Arc::new(tls::build_native_cert_store()), None)
+    };
+    tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let server_name = tls::rustls::pki_types::ServerName::try_from(host.to_string())?;
+    let tls = tokio_rustls::TlsConnector::from(Arc::new(tls_config))
+      .connect(server_name, tcp)
+      .await?;
+
+    let subprotocols: Vec<String> = CLIENT_SUPPORTED_VERSIONS
+      .split(',')
+      .map(str::trim)
+      .flat_map(|v| [format!("{QMUX_PREFIX}{v}"), v.to_string()])
+      .collect();
+    let mut request =
+      format!("wss://{}{}", url.authority, url.path_and_query()).into_client_request()?;
+    request.headers_mut().insert(
+      "sec-websocket-protocol",
+      HeaderValue::from_str(&subprotocols.join(", "))?,
+    );
+    let (ws, response) =
+      tokio_tungstenite::client_async_with_config(request, tls, Some(websocket_config())).await?;
+    info!(
+      "WebSocket subprotocol: {:?}",
+      response.headers().get("sec-websocket-protocol")
+    );
+    let session = QmuxSession::new(ws, Role::Client, remote, QmuxConfig::default()).await?;
+    Ok(TransportConnection::WebSocket(session))
+  }
+
   /// Connects over raw QUIC (`moqt://authority[/path]`). ALPN here is
   /// the MOQT version string itself (no `h3`) -- that's what the relay's ALPN demux
   /// uses to route the connection to the raw-QUIC path instead of WebTransport.
   async fn connect_quic(authority: &str, no_cert_validation: bool) -> Result<TransportConnection> {
-    let (host, port) = match authority.rsplit_once(':') {
-      Some((host, port)) => (
-        host,
-        port
-          .parse::<u16>()
-          .map_err(|_| anyhow::anyhow!("invalid port in moqt:// authority: {}", authority))?,
-      ),
-      None => (authority, 443u16),
-    };
+    let (host, port) = split_authority(authority)?;
 
     let mut tls_config = if no_cert_validation {
       tls::client::build_default_tls_config(
@@ -295,6 +346,19 @@ async fn watch_control_stream(
       }
     }
   }
+}
+
+/// `host[:port]`, port 443 when absent.
+fn split_authority(authority: &str) -> Result<(&str, u16)> {
+  Ok(match authority.rsplit_once(':') {
+    Some((host, port)) => (
+      host,
+      port
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("invalid port in moqt:// authority: {}", authority))?,
+    ),
+    None => (authority, 443u16),
+  })
 }
 
 async fn resolve_host_port(host: &str, port: u16) -> Result<SocketAddr> {

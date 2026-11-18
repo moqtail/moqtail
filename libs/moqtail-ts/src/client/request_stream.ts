@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import type { MoqtTransport } from './qmux/transport'
 import { ControlMessage } from '@/model/control/control_message'
 import { ControlMessageType } from '@/model/control/constant'
 import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
@@ -74,7 +75,7 @@ export class RequestStream {
    * Table 5 marks `First`; those are the only ones allowed to open a request stream.
    */
   static async open(
-    webTransport: WebTransport,
+    webTransport: MoqtTransport,
     first: ControlMessage,
     events?: Emitter<ClientEvents>,
   ): Promise<RequestStream> {

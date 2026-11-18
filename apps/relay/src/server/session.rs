@@ -16,6 +16,7 @@ pub(crate) mod client;
 pub(crate) mod client_manager;
 pub(crate) mod request_stream;
 pub(crate) mod session_context;
+pub(crate) mod websocket;
 
 use crate::server::cluster;
 use crate::server::config::AppConfig;

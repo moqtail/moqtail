@@ -21,17 +21,23 @@ import {
   MoqtObject,
   Location,
   ObjectForwardingPreference,
+  ObjectStatus,
   LocationFilter,
   LocationFilterType,
   GroupOrder,
   RequestError,
+  MessageParameter,
 } from 'moqtail/model';
 
 const SIGNALLING_TRACK_NAME = 'signalling';
 const PUBLISH_TO_SUBSCRIBE_DELAY_MS = 500;
 const SUBSCRIBE_TO_JOIN_DELAY_MS = 500;
-// We need a random starting point for group ids not to collide with other publisher's group ids
-const BASE_GROUP_ID = BigInt(Math.ceil(Math.random() * 1000000));
+// Everyone in the room publishes on one shared track, and the relay drops what falls
+// before a subscriber's start (the track's largest location when it subscribed). So
+// each message's group goes above every group seen on the track, in steps of 1000, and
+// a fixed random slot within the step keeps two peers answering the same join apart.
+const GROUP_STEP = 1000n;
+const GROUP_SLOT = BigInt(Math.floor(Math.random() * Number(GROUP_STEP)));
 
 // Signal formats:
 //   join:          {sender}:{senderToken}:join
@@ -59,7 +65,11 @@ export async function setupSignalling(
   const signalFTN = FullTrackName.tryNew(Tuple.fromUtf8Path(roomNamespace), SIGNALLING_TRACK_NAME);
 
   // 1. Register the shared signalling track locally
-  let lastGroupId = BASE_GROUP_ID;
+  /** The highest group sent or seen on the track. */
+  let lastGroupId = 0n;
+  const noteGroup = (group: bigint) => {
+    if (group > lastGroupId) lastGroupId = group;
+  };
   let objectId = 0n;
   let signalController: ReadableStreamDefaultController<MoqtObject> | null = null;
   const signalStream = new ReadableStream<MoqtObject>({
@@ -81,7 +91,7 @@ export async function setupSignalling(
   function sendSignal(text: string) {
     if (!signalController) return;
 
-    let groupId = lastGroupId + 1n;
+    const groupId = (lastGroupId / GROUP_STEP + 1n) * GROUP_STEP + GROUP_SLOT;
 
     objectId = 0n;
     lastGroupId = groupId;
@@ -100,6 +110,19 @@ export async function setupSignalling(
         0,
         null,
         payload,
+      ),
+    );
+    // Each message is a group of its own: saying so lets its stream close at once
+    // instead of idling until the next message.
+    signalController.enqueue(
+      MoqtObject.newWithStatus(
+        signalFTN,
+        new Location(groupId, objectId + 1n),
+        1,
+        ObjectForwardingPreference.Subgroup,
+        0,
+        null,
+        ObjectStatus.EndOfGroup,
       ),
     );
   }
@@ -135,13 +158,17 @@ export async function setupSignalling(
   if (subResponse instanceof RequestError) {
     console.warn('signalling: subscribe failed', subResponse);
   } else {
-    const { stream } = subResponse;
+    const { stream, subscribeOk } = subResponse;
+    // Start above everything already on the track, so our join isn't before anyone's start.
+    const largest = subscribeOk.parameters.find(MessageParameter.isLargestObject);
+    if (largest) noteGroup(largest.location.group);
     const reader = stream.getReader();
     (async () => {
       try {
         for (;;) {
           const { done, value } = await reader.read();
           if (done || !value) break;
+          noteGroup(value.location.group);
           if (!value.payload) continue;
           const text = new TextDecoder().decode(value.payload);
           callbacks.onSignal?.(text, 'received', value.location.group);

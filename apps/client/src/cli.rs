@@ -91,12 +91,17 @@ pub enum DeliveryMode {
   Datagram,
 }
 
+// The variant names are the CLI's values (`web-transport`, `quic`, `websocket`).
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Transport {
   /// WebTransport over HTTP/3 (derives an https:// URI from the moqt:// URL)
   WebTransport,
   /// Native QUIC (carries authority/path in Setup Options)
   Quic,
+  /// QMux over a WebSocket on TCP, for networks that block UDP (derives a wss:// URI)
+  #[value(name = "websocket")]
+  WebSocket,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

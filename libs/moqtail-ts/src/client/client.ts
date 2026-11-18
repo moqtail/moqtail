@@ -16,6 +16,7 @@
 
 import { ControlRecvStream, ControlSendStream, ControlStream } from './control_stream'
 import { RequestStream } from './request_stream'
+import { DEFAULT_WEBTRANSPORT_TIMEOUT_MS, type MoqtTransport, openTransport } from './qmux/transport'
 import {
   PublishNamespace,
   Namespace,
@@ -237,8 +238,13 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    */
   readonly #namespaceRequestIds: Map<string, bigint> = new Map()
 
-  /** Underlying WebTransport session (set by {@link MOQtailClient.init}). */
-  webTransport!: WebTransport
+  /**
+   * Underlying session (set by {@link MOQtailClient.init}): a `WebTransport`, or a QMux
+   * session over WebSocket with the same members.
+   */
+  webTransport!: MoqtTransport
+  /** Which transport {@link MOQtailClient.init} opened. */
+  transportKind: 'webtransport' | 'websocket' | undefined
   /** Validated Setup message the server sent back during handshake (protocol parameters negotiated). */
   #serverSetup!: Setup
   /** Setup message this client sent during handshake. */
@@ -438,6 +444,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       switchDrainTimeoutMs,
       fillOpenTimeoutMs,
       enableDatagrams,
+      transport,
+      webTransportTimeoutMs,
     } = this.#options
     // The protocols are sent in wt-available-protocols header
     if (!transportOptions) {
@@ -462,8 +470,15 @@ export class MOQtailClient extends Emitter<ClientEvents> {
           )
       }
 
-      this.webTransport = new WebTransport(transportUrl, transportOptions)
-      await this.webTransport.ready
+      const opened = await openTransport(
+        transportUrl,
+        transportOptions,
+        transport ?? 'auto',
+        webTransportTimeoutMs ?? DEFAULT_WEBTRANSPORT_TIMEOUT_MS,
+      )
+      this.webTransport = opened.transport
+      this.transportKind = opened.kind
+      logger.log('MOQtailClient', `Connected over ${opened.kind}`)
 
       if (dataStreamTimeoutMs) this.dataStreamTimeoutMs = dataStreamTimeoutMs
       if (controlStreamTimeoutMs) this.controlStreamTimeoutMs = controlStreamTimeoutMs

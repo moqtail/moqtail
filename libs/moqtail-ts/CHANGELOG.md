@@ -1,5 +1,31 @@
 # moqtail-ts
 
+## 0.17.0
+
+### Minor Changes
+
+- [#476](https://github.com/moqtail/moqtail/pull/476) [`09d667c`](https://github.com/moqtail/moqtail/commit/09d667c4932000dff4ba18eb0013b07469adecb9) Thanks [@zafergurel](https://github.com/zafergurel)! - React to GOAWAY instead of waiting for the relay to close the session. The Rust test client logs the GOAWAY's new session URI and timeout, stops its command and closes the session; subscribe and publish commands then reconnect to the new session URI and run again, and leave when none is given. The player leaves the session on GOAWAY and reopens it at the new session URI (or the current one when none is given), so players see `reconnecting` and `reconnected` as for a lost session.
+
+- [#479](https://github.com/moqtail/moqtail/pull/479) [`d949ba2`](https://github.com/moqtail/moqtail/commit/d949ba236afd8eacfee15946918c16e2d316a855) Thanks [@DenizUgur](https://github.com/DenizUgur)! - The player plays LOCMAF tracks (draft-einarsson-moq-locmaf-01, `locmafVersion` 0.3): a built-in `locmaf` source rebuilds each object into its canonical CMAF chunk for the MSE sink. Where a catalog offers the same media as CMAF and LOCMAF, the LOCMAF switching set is chosen; the two never share a set.
+
+### Patch Changes
+
+- [#480](https://github.com/moqtail/moqtail/pull/480) [`e278673`](https://github.com/moqtail/moqtail/commit/e2786739384d953ab2208086fccd6ad900d95787) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Implement the ABR controller: `abr()`, which `<moqtail-video>` installs by default, is now `MlAbrController` (replacing `DefaultAbrController`), a small neural network that switches live renditions and probes for room with FETCHes below live priority. Live switching sets now start at their middle bitrate. Also improve stuck playback scenarios by nudging the playback so that it lands inside a buffered region.
+
+- [`d2b115c`](https://github.com/moqtail/moqtail/commit/d2b115cb5a3897900630e66892b043ef73bdbdcf) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Mark the package `sideEffects: false` so bundlers can tree-shake unused modules.
+
+- [#482](https://github.com/moqtail/moqtail/pull/482) [`e2b467a`](https://github.com/moqtail/moqtail/commit/e2b467a50e3efc58efc5f7c3f1cf08219aa013a0) Thanks [@zafergurel](https://github.com/zafergurel)! - Encode the TRACK_NAMESPACE_PREFIX parameter in REQUEST_UPDATE as a bare Track Namespace, with the field count right after the parameter type. It was written with a length in front, so prefix updates from other implementations failed to parse at the relay.
+
+- [#491](https://github.com/moqtail/moqtail/pull/491) [`254f577`](https://github.com/moqtail/moqtail/commit/254f577fb2aa36847bc1e6ca6d0b265ad4fd835a) Thanks [@zafergurel](https://github.com/zafergurel)! - Reject received Objects that carry a Mandatory Track Property (other than a GREASE value), directly or inside Immutable Properties, or whose property block is malformed. A truncated property block is now a protocol violation instead of stalling the data stream while it waits for bytes that will never come.
+
+- [#492](https://github.com/moqtail/moqtail/pull/492) [`2623df4`](https://github.com/moqtail/moqtail/commit/2623df4271b5f7459c910cc136f50d1d35b6395d) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Make `<moqtail-video>` follow the catalog's `accessibleWindowTime` (MSF 5.2.46) on live streams. With a window, its `currentTime`, `seekable`, `buffered` and `liveEdgeStart` count from the window's start, so seekbars that start at 0, such as Video.js's, cover only the accessible range, and `targetLiveWindow` is `Infinity`. Without a window there is no DVR: `seekable` is empty, `targetLiveWindow` is `0`, and setting `currentTime` is ignored. The MSE sink bounds the live seekable range by the window even without a media timeline. client-js hides the Video.js time slider while nothing is seekable, leaving a spacer in its place as the live skin does, and its skin styles move to `videojs.css`.
+
+- [`3cd43a3`](https://github.com/moqtail/moqtail/commit/3cd43a375eeada367be7bd8d5c08d35e5527e82e) Thanks [@DenizUgur](https://github.com/DenizUgur)! - add support for msf draft-02
+
+- [#488](https://github.com/moqtail/moqtail/pull/488) [`68d08b9`](https://github.com/moqtail/moqtail/commit/68d08b989de649e34baf8da7371683fbf5301ba3) Thanks [@zafergurel](https://github.com/zafergurel)! - Deliver the objects of tracks the peer pushes with PUBLISH again; their data streams failed with "Cannot read properties of undefined (reading 'objects')". A pushed track's stream now also ends on its PUBLISH_DONE. `allocatePseudoRequestId()` is removed.
+
+- [#493](https://github.com/moqtail/moqtail/pull/493) [`4d5a57e`](https://github.com/moqtail/moqtail/commit/4d5a57e8c548a488bfc219a8828893d6b05544d2) Thanks [@DenizUgur](https://github.com/DenizUgur)! - The live buffer controller no longer speeds up or jumps back to live after a seek behind the live edge, and resumes following the edge after a seek to it (the Live button, or the end of the seekbar).
+
 ## 0.16.0
 
 ### Minor Changes

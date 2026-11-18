@@ -1,5 +1,36 @@
 # moqtail-rs
 
+## 0.19.0
+
+### Minor Changes
+
+- [#477](https://github.com/moqtail/moqtail/pull/477) [`118c7a7`](https://github.com/moqtail/moqtail/commit/118c7a7088c4407a21abc9c68836fded1d388e5c) Thanks [@zafergurel](https://github.com/zafergurel)! - Hooks for observability: a live feed of qlog events, a control-message observer, QUIC statistics and close reasons on `TransportConnection`, and a `metrics` module that encodes metrics as MoQ objects.
+
+- [#473](https://github.com/moqtail/moqtail/pull/473) [`94eb2d5`](https://github.com/moqtail/moqtail/commit/94eb2d59c8b25510af430d9ef103db235f83eb2a) Thanks [@zafergurel](https://github.com/zafergurel)! - qlog traces. Set `qlog_folder` in the relay config, or pass `--qlog-folder` to the client, to write one JSON-SEQ `.sqlog` file per connection in the MoQT qlog event format; unset, nothing is recorded. A trace holds a `moqt:control_message_created`/`_parsed` event (decoded message plus raw bytes) for every control message, a `moqt:subgroup_header_*`/`moqt:fetch_header_*` event for every data stream opened or accepted (one per stream, not per object), how each data stream ended (`moqtail:stream_end_created`/`_parsed`: FIN, RESET_STREAM or STOP_SENDING, with the error code) and why the connection closed (`moqtail:connection_closed`). The relay names its files `server_conn<id>.sqlog` and never overwrites an earlier trace: an id seen again after a restart gets a `_2`, `_3`, … suffix. `qlog_max_file_bytes` stops a file at about that size with a last `moqtail:trace_truncated` event; 0, the default, means no limit, and `qlog::init` takes it as a third argument. In debug builds the relay also writes a QUIC packet-level qlog per connection (`*_quic.sqlog`: packets sent, received and lost, RTT and congestion window). `scripts/qlog-summary.py <folder>` prints each connection's peer SETUP, requests with their responses, data streams per track and parse errors.
+
+  The per-message hex dumps at INFO level are removed, and the relay logs to stdout only; it no longer writes a rolling `relay.log` into `log_folder`. `TransportWriteError` gains `Stopped(code)` for a stream the peer stopped with STOP_SENDING.
+
+- [#467](https://github.com/moqtail/moqtail/pull/467) [`bca5642`](https://github.com/moqtail/moqtail/commit/bca5642ba085d00f7f107972becfa6e85d6f5a77) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Relays can form a mesh. Set `hop_id` to declare this relay's Hop ID in SETUP and list other relays in `peers` to dial them. Namespaces announced or PUBLISHed on one relay are advertised to peers with HOP_PATH and ROUTE_COST (accumulating each sender's RELAY_COST, `relay_cost`), never back through a relay already on the path, and SUBSCRIBE/FETCH/TRACK_STATUS go to the one source the draft's path selection picks. `moqtail-rs` gains the HOP_PATH/ROUTE_COST message parameters and NAMESPACE's optional parameter block.
+
+  A relay acts on GOAWAY from a peer: it closes the link at once, so routes through the peer are withdrawn within moments, and redials the new URI the GOAWAY names, or the same peer once the GOAWAY's timeout has passed.
+
+- [#491](https://github.com/moqtail/moqtail/pull/491) [`254f577`](https://github.com/moqtail/moqtail/commit/254f577fb2aa36847bc1e6ca6d0b265ad4fd835a) Thanks [@zafergurel](https://github.com/zafergurel)! - An Object carrying a Mandatory Track Property, other than a GREASE value, now makes its track malformed instead of being forwarded. The relay ends downstream subscriptions with PUBLISH_DONE MALFORMED_TRACK and cancels the upstream request, whether it subscribed to the track or the publisher pushed it with PUBLISH, for subgroup streams and datagrams alike, withdraws a pushed track's route from cluster peers, and refuses a later PUBLISH of that track from the same session with MALFORMED_TRACK. `ParseError::MalformedTrack` marks such errors. A GREASE value in the Mandatory Track Property range is an ordinary unknown property, on a track as on an Object, so a PUBLISH, SUBSCRIBE_OK or FETCH_OK carrying one is no longer refused. The test client still sends a property in that range when `--object-property` asks for one. The test client stops delivering when its PUBLISH or a SUBSCRIBE it serves is cancelled by a stream reset, and keeps delivering through a FIN or a REQUEST_UPDATE; after a FIN it watches for STOP_SENDING, which `ControlStreamHandler::stopped` now reports.
+
+### Patch Changes
+
+- [#485](https://github.com/moqtail/moqtail/pull/485) [`aaa84ea`](https://github.com/moqtail/moqtail/commit/aaa84eaaacf2cef477b28d20525903217a3293bf) Thanks [@zafergurel](https://github.com/zafergurel)! - Accept FILL_PARAMETERS whose parameters have no leading count, as some peers send, instead of closing the session with PROTOCOL_VIOLATION. FILL_PARAMETERS is still sent with a count.
+
+- [#482](https://github.com/moqtail/moqtail/pull/482) [`e2b467a`](https://github.com/moqtail/moqtail/commit/e2b467a50e3efc58efc5f7c3f1cf08219aa013a0) Thanks [@zafergurel](https://github.com/zafergurel)! - Encode the TRACK_NAMESPACE_PREFIX parameter in REQUEST_UPDATE as a bare Track Namespace, with the field count right after the parameter type. It was written with a length in front, so prefix updates from other implementations failed to parse at the relay.
+
+- [#472](https://github.com/moqtail/moqtail/pull/472) [`6520af0`](https://github.com/moqtail/moqtail/commit/6520af00de7d587fd3ee8471782acf0a36765170) Thanks [@DenizUgur](https://github.com/DenizUgur)! - fetch messages now use the priority requested by the FETCH request
+
+- [#483](https://github.com/moqtail/moqtail/pull/483) [`9672149`](https://github.com/moqtail/moqtail/commit/9672149afc9849bded68256baef2de4b8ec6cf75) Thanks [@zafergurel](https://github.com/zafergurel)! - Fixes found by the moq-web interop tests:
+
+  - A fill opened by REQUEST_UPDATE now carries the REQUEST_UPDATE's Request ID in its FETCH_HEADER, not the subscription's, so the subscriber can match it.
+  - A message on a request stream that does not parse, such as one carrying an unknown parameter, now closes the session with PROTOCOL_VIOLATION. It used to be dropped, or taken as the peer cancelling the request.
+  - A padding stream is read to its end and discarded instead of being rejected as a malformed data stream.
+  - A subscriber's NEW_GROUP_REQUEST now reaches the publisher: on the publisher's PUBLISH stream or the relay's upstream SUBSCRIBE as a REQUEST_UPDATE, or with the first upstream SUBSCRIBE. It is passed on only when the track has DYNAMIC_GROUPS, the value is 0 or past the largest group, and no larger request is still waiting for its group.
+
 ## 0.18.0
 
 ### Minor Changes

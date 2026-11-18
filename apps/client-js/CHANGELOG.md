@@ -1,5 +1,13 @@
 # client-js
 
+## 0.2.3
+
+### Patch Changes
+
+- [#480](https://github.com/moqtail/moqtail/pull/480) [`e278673`](https://github.com/moqtail/moqtail/commit/e2786739384d953ab2208086fccd6ad900d95787) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Implement the ABR controller: `abr()`, which `<moqtail-video>` installs by default, is now `MlAbrController` (replacing `DefaultAbrController`), a small neural network that switches live renditions and probes for room with FETCHes below live priority. Live switching sets now start at their middle bitrate. Also improve stuck playback scenarios by nudging the playback so that it lands inside a buffered region.
+
+- [#492](https://github.com/moqtail/moqtail/pull/492) [`2623df4`](https://github.com/moqtail/moqtail/commit/2623df4271b5f7459c910cc136f50d1d35b6395d) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Make `<moqtail-video>` follow the catalog's `accessibleWindowTime` (MSF 5.2.46) on live streams. With a window, its `currentTime`, `seekable`, `buffered` and `liveEdgeStart` count from the window's start, so seekbars that start at 0, such as Video.js's, cover only the accessible range, and `targetLiveWindow` is `Infinity`. Without a window there is no DVR: `seekable` is empty, `targetLiveWindow` is `0`, and setting `currentTime` is ignored. The MSE sink bounds the live seekable range by the window even without a media timeline. client-js hides the Video.js time slider while nothing is seekable, leaving a spacer in its place as the live skin does, and its skin styles move to `videojs.css`.
+
 ## 0.2.2
 
 ### Patch Changes

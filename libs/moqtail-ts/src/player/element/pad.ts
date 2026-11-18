@@ -48,6 +48,8 @@ export interface PadProperties {
   groupDuration?: number
   /** Seconds: the media timeline's range, after `accessibleWindowTime`. */
   seekable?: { start: number; end: number }
+  /** Seconds: the catalog's `accessibleWindowTime` (MSF 5.2.46). Live only; absent means no DVR. */
+  accessibleWindow?: number
 }
 
 /** @public Written to a source pad, delivered in order with the packets around it. */

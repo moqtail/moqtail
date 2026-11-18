@@ -21,6 +21,7 @@ use crate::server::cluster;
 use crate::server::config::AppConfig;
 use crate::server::inspect;
 use crate::server::utils::CloseSession;
+use crate::server::ssts;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
@@ -190,7 +191,7 @@ impl Session {
     let streams = async {
       if let Some((authority, path)) = dialed {
         let mut send_stream = context.connection.open_uni().await?;
-        let mut setup = Self::relay_setup(context.server_config);
+        let mut setup = Self::relay_setup(context.server_config, None);
         setup.setup_options.extend([
           SetupOption::new_authority(authority).try_into().unwrap(),
           SetupOption::new_path(path).try_into().unwrap(),
@@ -905,35 +906,32 @@ impl Session {
   }
 
   /// The SETUP this relay sends, as server or, toward a dialed peer, as client.
-  fn relay_setup(config: &AppConfig) -> Setup {
-    let moqt_implementation_param =
-      SetupOption::new_moqt_implementation(env!("MOQTAIL_VERSION").to_string())
-        .try_into()
-        .unwrap();
-
-    let max_filter_ranges = SetupOption::new_max_filter_ranges(config.max_filter_ranges)
-      .try_into()
-      .unwrap();
-    let max_request_updates_param = SetupOption::new_max_request_updates(0u64)
-      .try_into()
-      .unwrap();
-
+  /// As server (`peer` is the client's SETUP), SSTS and HOP_ID/RELAY_COST are
+  /// only sent back when the client sent them; as client, they are always offered.
+  fn relay_setup(config: &AppConfig, peer: Option<&Setup>) -> Setup {
     let mut setup_options = vec![
-      max_filter_ranges,
-      moqt_implementation_param,
-      max_request_updates_param,
-    ];
-    if config.ssts_enable {
-      setup_options.push(
-        moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(
-          config.ssts_algorithms.clone(),
-        )
+      SetupOption::new_max_filter_ranges(config.max_filter_ranges)
         .try_into()
         .unwrap(),
+      SetupOption::new_moqt_implementation(env!("MOQTAIL_VERSION").to_string())
+        .try_into()
+        .unwrap(),
+      SetupOption::new_max_request_updates(0u64)
+        .try_into()
+        .unwrap(),
+    ];
+
+    if config.ssts_enable && peer.is_none_or(|s| !ssts::advertised_algorithms(s).is_empty()) {
+      setup_options.push(
+        SetupOption::new_ssts_algorithms(config.ssts_algorithms.clone())
+          .try_into()
+          .unwrap(),
       );
     }
 
-    if let Some(hop_id) = config.hop_id {
+    if let Some(hop_id) = config.hop_id
+      && peer.is_none_or(|s| cluster::setup_varint(s, cluster::HOP_ID).is_some())
+    {
       setup_options.push(KeyValuePair::VarInt {
         type_value: cluster::HOP_ID,
         value: hop_id,
@@ -978,7 +976,7 @@ impl Session {
 
     utils::print_msg_bytes(&client_setup);
 
-    let server_setup = Self::relay_setup(context.server_config);
+    let server_setup = Self::relay_setup(context.server_config, Some(&client_setup));
 
     trace!("client setup: {:?}", client_setup);
     trace!("server setup: {:?}", server_setup);

@@ -84,16 +84,49 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
 
   /** Proposal 0007: where the live edge starts, in seconds; `NaN` on demand. */
   get liveEdgeStart(): number {
-    return this.#player?.mediaSink?.liveEdgeStart ?? NaN
+    return (this.#player?.mediaSink?.liveEdgeStart ?? NaN) - this.#offset()
   }
 
   /**
-   * Proposal 0007: `Infinity` while live, since earlier groups stay seekable through FETCH; `NaN`
-   * otherwise. Players such as Video.js treat a media as live only when it has this and `liveEdgeStart`.
+   * Proposal 0007: live, `Infinity` with an accessible window (DVR) and `0` without; `NaN` otherwise.
+   * Players such as Video.js treat a media as live only when it has this and `liveEdgeStart`.
    */
   get targetLiveWindow(): number {
-    // shortcut: a sliding window (`accessibleWindowTime`) should be 0; read the catalog once a player needs it
-    return this.#streamType === 'live' ? Infinity : NaN
+    if (this.#streamType !== 'live') return NaN
+    return this.#dvrRange ? Infinity : 0
+  }
+
+  /**
+   * Live with an accessible window, the element's times count from the window's start: seekbars
+   * such as Video.js's start at 0. The inner video and the player keep media time.
+   */
+  override get currentTime(): number {
+    return this.nativeEl.currentTime - this.#offset()
+  }
+
+  override set currentTime(value: number) {
+    // Live without an accessible window has no DVR (MSF 5.2.46)
+    if (this.#streamType === 'live' && !this.#dvrRange) return
+    this.nativeEl.currentTime = value + this.#offset()
+  }
+
+  /** Live, the accessible window, or nothing without one. */
+  override get seekable(): TimeRanges {
+    if (this.#streamType !== 'live') return this.nativeEl.seekable
+    const range = this.#dvrRange
+    return timeRanges(range ? [[0, range.end - range.start]] : [])
+  }
+
+  override get buffered(): TimeRanges {
+    const offset = this.#offset()
+    const native = this.nativeEl.buffered
+    if (offset === 0) return native
+    const pairs: [number, number][] = []
+    for (let i = 0; i < native.length; i++) {
+      const end = native.end(i) - offset
+      if (end > 0) pairs.push([Math.max(0, native.start(i) - offset), end])
+    }
+    return timeRanges(pairs)
   }
 
   override get error(): MediaError | null {
@@ -166,6 +199,14 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     if (player) this.#destroyed = player.destroy().catch(() => {}) // destroy() is callable in any state
   }
 
+  get #dvrRange(): { start: number; end: number } | undefined {
+    return this.#streamType === 'live' ? this.#player?.mediaSink?.dvrRange : undefined
+  }
+
+  #offset(): number {
+    return this.#dvrRange?.start ?? 0
+  }
+
   #setStreamType(type: StreamType): void {
     if (type === this.#streamType) return
     this.#streamType = type
@@ -184,6 +225,16 @@ function asPlayerError(error: unknown): PlayerError {
     element: 'component',
     cause: error,
   })
+}
+
+/** `TimeRanges` can't be constructed either. */
+function timeRanges(pairs: readonly [number, number][]): TimeRanges {
+  const at = (i: number, edge: 0 | 1) => {
+    const pair = pairs[i]
+    if (!pair) throw new DOMException(`No range ${i}`, 'IndexSizeError')
+    return pair[edge]
+  }
+  return { length: pairs.length, start: (i) => at(i, 0), end: (i) => at(i, 1) }
 }
 
 /** `MediaError` can't be constructed, so this has its shape. */

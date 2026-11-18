@@ -18,7 +18,7 @@
 
 # MOQtail
 
-MOQtail is an IETF-compliant MOQT toolkit for building publisher, subscriber and relay applications. The repository includes Rust and TypeScript libraries, reference clients and a relay that can be run locally or pulled as a container image from GHCR. The relay and Rust client support both WebTransport (`https://`) and raw QUIC (`moqt://`) on the same port.
+MOQtail is an IETF-compliant MOQT toolkit for building publisher, subscriber and relay applications. The repository includes Rust and TypeScript libraries, reference clients and a relay that can be run locally or pulled as a container image from GHCR. The relay and the Rust test client support both WebTransport and raw QUIC, and the relay serves both on the same port.
 
 > [!WARNING]
 > **Branch status:** `main` is tracking draft-22, we continue to work on it until the next draft is released. For previous drafts, you can use the following branches:
@@ -32,25 +32,44 @@ MOQtail is an IETF-compliant MOQT toolkit for building publisher, subscriber and
 >
 > **Zafer Gurel, Deniz Ugur and Ali C. Begen, "MOQtail: open-source, IETF-compliant MOQT protocol libraries," in _Proc. ACM Multimedia Systems Conf. (MMSys)_, Hong Kong, Hong Kong, Apr. 2026 ([DOI: 10.1145/3793853.3799817](https://doi.org/10.1145/3793853.3799817))**
 
-## Components
+## Packages
 
-### moqtail-ts
+| Package                                                                                     | Install                             | What it is                                                                                     |
+| ------------------------------------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------- |
+| [`moqtail`](https://www.npmjs.com/package/moqtail) (npm)                                    | [Browser library](#browser-library) | MOQT client and MSF/CMSF player for the browser, with the `<moqtail-video>` web component      |
+| [`moqtail`](https://crates.io/crates/moqtail) (crates.io)                                   | [Rust library](#rust-library)       | The MOQT protocol in Rust: control messages, data streams, parameters, properties and catalogs |
+| [`ghcr.io/moqtail/relay`](https://github.com/orgs/moqtail/packages/container/package/relay) | [Relay](#relay)                     | The deployable relay that forwards MoQ traffic between publishers and subscribers              |
 
-The TypeScript library includes the MOQT client and the player: the `<moqtail-video>` web component and the Player API.
+## Browser library
 
-**`<moqtail-video>`**
+Runs in Chrome and Safari 26.4+ (WebTransport). Source: [`libs/moqtail-ts`](libs/moqtail-ts).
+
+```bash
+npm install moqtail
+```
+
+The `<moqtail-video>` web component needs two optional peer dependencies:
+
+```bash
+npm install custom-media-element media-tracks
+```
+
+**`<moqtail-video>`**: a `<video>` that takes a `moqt://` URL and installs the default buffer and ABR plugins.
 
 ```html
 <script type="module">
+  import { defineMOQtailVideo } from 'moqtail/player/component'
   defineMOQtailVideo()
 </script>
 
 <moqtail-video src="moqt://relay.moqtail.dev#msf:moqtail-ch07--catalog" autoplay muted playsinline></moqtail-video>
 ```
 
-**Player API**
+**Player API**: build the chain yourself and pick the plugins.
 
 ```ts
+import { MOQtailPlayer, liveBuffer } from 'moqtail/player'
+
 const player = new MOQtailPlayer({ plugins: [liveBuffer()] })
   .source('moqt://relay.moqtail.dev#msf:moqtail-ch07_vod--catalog')
   .sink(video)
@@ -58,76 +77,78 @@ const player = new MOQtailPlayer({ plugins: [liveBuffer()] })
 await player.play()
 ```
 
-The client, events, elements and plugins are in [libs/moqtail-ts/README.md](libs/moqtail-ts/README.md).
+The client on its own (subscribe, fetch, publish), events, elements and plugins are in [libs/moqtail-ts/README.md](libs/moqtail-ts/README.md).
 
-### moqtail-rs
+## Rust library
 
-The Rust library provides the core protocol implementation and utilities used by the relay and other Rust applications in this workspace.
-
-Library documentation: [libs/moqtail-rs/README.md](libs/moqtail-rs/README.md)
-
-### Relay
-
-The relay is the deployable Rust service that forwards MoQ messages between publishers and subscribers. It accepts both WebTransport and raw QUIC connections on the same UDP socket/port, demultiplexing them via ALPN.
-
-Local run:
+Published on crates.io as `moqtail`. It provides the draft-22 protocol (wire models for control messages, data streams, parameters, properties and MSF/CMSF catalogs) and the transport handlers the relay is built on. Source: [`libs/moqtail-rs`](libs/moqtail-rs).
 
 ```bash
-cargo run -p relay -- --cert-file apps/relay/cert/cert.pem --key-file apps/relay/cert/key.pem
+cargo add moqtail
 ```
 
-Container image:
+> [!NOTE]
+> The library is under active development and its API may change between releases.
+
+## Relay
+
+The relay accepts WebTransport and raw QUIC connections on the same UDP port and tells them apart by ALPN. It needs a TLS certificate and key; for local development, [apps/relay/cert/README.md](apps/relay/cert/README.md) shows how to make them with mkcert and how to make browsers trust them.
+
+### With Docker
 
 ```bash
 docker run --rm \
 	-p 4433:4433/udp \
-	-v "$PWD/apps/relay/cert/cert.pem:/certs/cert.pem:ro" \
-	-v "$PWD/apps/relay/cert/key.pem:/certs/key.pem:ro" \
+	-v "$PWD/cert.pem:/certs/cert.pem:ro" \
+	-v "$PWD/key.pem:/certs/key.pem:ro" \
 	ghcr.io/moqtail/relay:latest
 ```
 
-Release images are published to `ghcr.io/moqtail/relay` with `latest` and version tags from `relay@*` releases. Branch and commit SHA tags are also published for CI builds.
-
-To build the image locally from the workspace root:
+To pass a config file, mount it and add the flags after the image name (they replace the default arguments, so keep the certificate flags):
 
 ```bash
-docker build -f apps/relay/Dockerfile -t moqtail-relay .
+docker run --rm \
+	-p 4433:4433/udp \
+	-v "$PWD/cert.pem:/certs/cert.pem:ro" \
+	-v "$PWD/key.pem:/certs/key.pem:ro" \
+	-v "$PWD/relay.yaml:/relay.yaml:ro" \
+	ghcr.io/moqtail/relay:latest --config /relay.yaml --cert-file /certs/cert.pem --key-file /certs/key.pem
 ```
 
-For local certificate generation and browser trust setup, see [apps/relay/cert/README.md](apps/relay/cert/README.md).
+Release images are tagged `latest` and with the version of each `relay@*` release. Branch and commit SHA tags are also published for CI builds.
 
-#### Transports: WebTransport and raw QUIC
+### From source
 
-The relay and the Rust test client (`apps/client`) support two transports on the same port:
-
-- **WebTransport** — connect with an `https://` server URL (e.g. `https://127.0.0.1:4433`). Used by browser clients and `moqtail-ts`.
-- **Raw QUIC** — connect with a `moqt://` server URL (e.g. `moqt://127.0.0.1:4433/path`). Since raw QUIC has no HTTP CONNECT to carry the authority/path, the client sends them as CLIENT_SETUP parameters instead.
-
-```bash
-# WebTransport
-cargo run --bin client -- -c publish --server https://127.0.0.1:4433
-
-# Raw QUIC
-cargo run --bin client -- -c publish --server moqt://127.0.0.1:4433
-```
-
-## Getting Started
-
-### Prerequisites
-
-- [Rust](https://www.rust-lang.org/tools/install)
-- [Node.js](https://nodejs.org/) 22 or newer
-- [npm](https://www.npmjs.com/)
-- [Docker](https://www.docker.com/) for containerized relay builds and runs
-
-### Installation
+Requires [Rust](https://www.rust-lang.org/tools/install).
 
 ```bash
 git clone https://github.com/moqtail/moqtail.git
 cd moqtail
-npm install
+cargo run -p relay --release -- --cert-file apps/relay/cert/cert.pem --key-file apps/relay/cert/key.pem
 ```
+
+To build the image yourself, run `docker build -f apps/relay/Dockerfile -t moqtail-relay .` from the repository root.
+
+### Configuration
+
+Every setting lives in one YAML file passed with `--config`; `--bind`, `--cert-file` and `--key-file` override it. [apps/relay/relay.example.yaml](apps/relay/relay.example.yaml) lists every key with its default, including the cache, load limits, SSTS, relay mesh (`hop_id`, `peers`) and the HTTP API.
+
+### Transports: WebTransport and raw QUIC
+
+Clients address the relay with a `moqt://` URL either way; the transport is chosen separately.
+
+- **WebTransport** (ALPN `h3`): used by browsers and `moqtail` on npm. The `moqt://` URL becomes an `https://` URL for the HTTP CONNECT request, which carries the authority and path.
+- **Raw QUIC**: raw QUIC has no HTTP CONNECT, so the client sends the authority and path as CLIENT_SETUP parameters instead.
+
+The Rust test client in [`apps/client`](apps/client) speaks both and picks one with `--transport` (`web-transport` by default, or `quic`):
+
+```bash
+cargo run --bin client -- -c publish --server moqt://127.0.0.1:4433
+cargo run --bin client -- -c publish --server moqt://127.0.0.1:4433 --transport quic
+```
+
+Its commands (publish, publish-namespace, subscribe, subscribe-namespace, subscribe-tracks, fetch) and options are in [apps/client/README.md](apps/client/README.md).
 
 ## Contributing
 
-Contributions are welcome. Open an issue or submit a pull request for improvements, bug fixes, documentation, or interoperability work.
+Contributions are welcome. Open an issue or submit a pull request for improvements, bug fixes, documentation, or interoperability work. [CONTRIBUTING.md](CONTRIBUTING.md) covers the repository layout, building and testing.

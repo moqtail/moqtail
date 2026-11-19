@@ -25,6 +25,7 @@ pub enum LOCPropertyId {
   VideoConfig = 0x0D,
   AudioConfig = 0x0F,
   Timestamp = 0x10,
+  CodecString = 0x11,
 }
 
 impl TryFrom<u64> for LOCPropertyId {
@@ -38,6 +39,7 @@ impl TryFrom<u64> for LOCPropertyId {
       0x0D => Ok(LOCPropertyId::VideoConfig),
       0x0F => Ok(LOCPropertyId::AudioConfig),
       0x10 => Ok(LOCPropertyId::Timestamp),
+      0x11 => Ok(LOCPropertyId::CodecString),
       _ => Err(ParseError::InvalidType {
         context: "LOCPropertyId::try_from(u64)",
         details: format!("Invalid type, got {value}"),

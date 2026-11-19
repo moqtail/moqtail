@@ -21,8 +21,10 @@ import { VideoFrameMarking } from './video_frame_marking'
 import { AudioLevel } from './audio_level'
 import { VideoConfig } from './video_config'
 import { AudioConfig } from './audio_config'
+import { CodecString } from './codec_string'
 
-export type LOCProperty = Timestamp | Timescale | VideoFrameMarking | AudioLevel | VideoConfig | AudioConfig
+export type LOCProperty =
+  Timestamp | Timescale | VideoFrameMarking | AudioLevel | VideoConfig | AudioConfig | CodecString
 
 export namespace LOCProperty {
   export function fromKeyValuePair(pair: KeyValuePair): LOCProperty | undefined {
@@ -32,7 +34,8 @@ export namespace LOCProperty {
       VideoFrameMarking.fromKeyValuePair(pair) ||
       AudioLevel.fromKeyValuePair(pair) ||
       VideoConfig.fromKeyValuePair(pair) ||
-      AudioConfig.fromKeyValuePair(pair)
+      AudioConfig.fromKeyValuePair(pair) ||
+      CodecString.fromKeyValuePair(pair)
     )
   }
 
@@ -57,6 +60,9 @@ export namespace LOCProperty {
   }
   export function isAudioConfig(header: LOCProperty): header is AudioConfig {
     return header instanceof AudioConfig
+  }
+  export function isCodecString(header: LOCProperty): header is CodecString {
+    return header instanceof CodecString
   }
 }
 
@@ -86,6 +92,10 @@ export class LOCProperties {
   }
   addAudioConfig(config: Uint8Array): this {
     this.kvps.push(new AudioConfig(config).toKeyValuePair())
+    return this
+  }
+  addCodecString(codec: string): this {
+    this.kvps.push(new CodecString(codec).toKeyValuePair())
     return this
   }
   addRaw(pair: KeyValuePair): this {
@@ -119,14 +129,16 @@ if (import.meta.vitest) {
         .addAudioLevel(audioLevel)
         .addVideoConfig(videoConfig)
         .addAudioConfig(audioConfig)
+        .addCodecString('opus')
         .build()
       const parsed = LOCProperties.fromKeyValuePairs(kvps)
-      expect(parsed.length).toBe(5)
+      expect(parsed.length).toBe(6)
       expect(parsed[0] && LOCProperty.isTimestamp(parsed[0]) && parsed[0].timestamp === timestamp).toBe(true)
       expect(parsed[1] && LOCProperty.isVideoFrameMarking(parsed[1]) && parsed[1].independent).toBe(true)
       expect(parsed[2] && LOCProperty.isAudioLevel(parsed[2]) && parsed[2].audioLevel === audioLevel).toBe(true)
       expect(parsed[3] && LOCProperty.isVideoConfig(parsed[3]) && parsed[3].config === videoConfig).toBe(true)
       expect(parsed[4] && LOCProperty.isAudioConfig(parsed[4]) && parsed[4].config === audioConfig).toBe(true)
+      expect(parsed[5] && LOCProperty.isCodecString(parsed[5]) && parsed[5].codec === 'opus').toBe(true)
     })
 
     test('addVideoFrameMarking writes the RFC 9626 short form', () => {

@@ -136,6 +136,12 @@
         "value": "0x0F",
         "scope": "Track, Object",
         "spec": "draft-ietf-moq-loc"
+      },
+      {
+        "name": "CODEC_STRING",
+        "value": "0x11",
+        "scope": "Track, Object",
+        "spec": "draft-ietf-moq-loc"
       }
     ]
   }

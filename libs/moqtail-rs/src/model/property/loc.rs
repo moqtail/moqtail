@@ -40,6 +40,10 @@ pub enum LOCProperty {
   AudioConfig {
     value: Bytes,
   },
+  /// A UTF-8 WebCodecs codec string.
+  CodecString {
+    value: Bytes,
+  },
 }
 
 impl LOCProperty {
@@ -60,7 +64,8 @@ impl LOCProperty {
       }
       LOCProperty::VideoFrameMarking { value }
       | LOCProperty::VideoConfig { value }
-      | LOCProperty::AudioConfig { value } => {
+      | LOCProperty::AudioConfig { value }
+      | LOCProperty::CodecString { value } => {
         buf.put_vi(self.id())?;
         buf.put_vi(value.len())?;
         buf.extend_from_slice(value);
@@ -76,6 +81,7 @@ impl LOCProperty {
       LOCProperty::AudioLevel { .. } => LOCPropertyId::AudioLevel,
       LOCProperty::VideoConfig { .. } => LOCPropertyId::VideoConfig,
       LOCProperty::AudioConfig { .. } => LOCPropertyId::AudioConfig,
+      LOCProperty::CodecString { .. } => LOCPropertyId::CodecString,
     }
   }
 
@@ -91,7 +97,8 @@ impl LOCProperty {
     match loc_property_id {
       LOCPropertyId::VideoFrameMarking
       | LOCPropertyId::VideoConfig
-      | LOCPropertyId::AudioConfig => {
+      | LOCPropertyId::AudioConfig
+      | LOCPropertyId::CodecString => {
         let payload_length = payload.get_vi()?;
         let payload_length: usize =
           payload_length
@@ -113,6 +120,7 @@ impl LOCProperty {
         Ok(match loc_property_id {
           LOCPropertyId::VideoFrameMarking => LOCProperty::VideoFrameMarking { value },
           LOCPropertyId::AudioConfig => LOCProperty::AudioConfig { value },
+          LOCPropertyId::CodecString => LOCProperty::CodecString { value },
           _ => LOCProperty::VideoConfig { value },
         })
       }
@@ -154,6 +162,7 @@ impl TryFrom<KeyValuePair> for LOCProperty {
           LOCPropertyId::VideoFrameMarking => Ok(LOCProperty::VideoFrameMarking { value }),
           LOCPropertyId::VideoConfig => Ok(LOCProperty::VideoConfig { value }),
           LOCPropertyId::AudioConfig => Ok(LOCProperty::AudioConfig { value }),
+          LOCPropertyId::CodecString => Ok(LOCProperty::CodecString { value }),
           _ => Err(ParseError::InvalidType {
             context: "LOCProperty::try_from(KeyValuePair::Bytes)",
             details: format!("Invalid type, got {type_value}"),
@@ -208,6 +217,9 @@ mod tests {
       },
       LOCProperty::AudioConfig {
         value: Bytes::from_static(&[0x11, 0x90]),
+      },
+      LOCProperty::CodecString {
+        value: Bytes::from_static(b"opus"),
       },
     ] {
       let mut buf = loc.serialize().unwrap();

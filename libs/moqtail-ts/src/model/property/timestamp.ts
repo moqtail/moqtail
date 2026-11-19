@@ -17,12 +17,22 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCPropertyId } from './constant'
 
+/** In Timescale units when one applies, else wall-clock µs since the Unix epoch (LOC 2.3.1.1). */
 export class Timestamp {
   static readonly TYPE = LOCPropertyId.Timestamp
   constructor(public readonly timestamp: bigint) {}
 
   toKeyValuePair(): KeyValuePair {
     return KeyValuePair.tryNewVarInt(Timestamp.TYPE, this.timestamp)
+  }
+
+  /** `timescale` is the object's Timescale, else the track's (LOC 2.3.1.2). */
+  toMicros(timescale?: bigint): number {
+    if (timescale === undefined) {
+      return Number(this.timestamp)
+    }
+    // Multiply in bigint: a 90 kHz media time times 1e6 exceeds 2^53
+    return Number((this.timestamp * 1_000_000n) / timescale)
   }
 
   static fromKeyValuePair(pair: KeyValuePair): Timestamp | undefined {
@@ -43,6 +53,18 @@ if (import.meta.vitest) {
       const header = Timestamp.fromKeyValuePair(pair)
       expect(header).toBeInstanceOf(Timestamp)
       expect(header?.timestamp).toBe(value)
+    })
+
+    test('toMicros returns the value as is without a timescale', () => {
+      expect(new Timestamp(1_700_000_000_000_000n).toMicros()).toBe(1_700_000_000_000_000)
+    })
+
+    test('toMicros converts from the timescale', () => {
+      expect(new Timestamp(90_000n).toMicros(90_000n)).toBe(1_000_000)
+    })
+
+    test('toMicros stays exact for an epoch-sized 90 kHz value', () => {
+      expect(new Timestamp(153_000_000_000_198n).toMicros(90_000n)).toBe(1_700_000_000_002_200)
     })
   })
 }

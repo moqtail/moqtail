@@ -444,6 +444,7 @@ if (import.meta.vitest) {
         sink.items().map((item) => {
           if (item.type === 'packet') return `${item.packet.location.group}.${item.packet.location.object}`
           if (item.type === 'properties') return `props ${item.properties.track ?? ''}`.trim()
+          if (item.type === 'frame') return 'frame'
           return item.event.type === 'discontinuity' ? item.event.reason : item.event.type
         }),
     }

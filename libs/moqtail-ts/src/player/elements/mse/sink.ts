@@ -218,6 +218,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     const state = this.#pads.get(pad)
     if (!state) return
     if (item.type === 'properties') return this.#applyProperties(state, item.properties)
+    if (item.type !== 'packet') return
     if (state.seeks > 0) return
     const epoch = state.epoch
     await this.#buffers.promise

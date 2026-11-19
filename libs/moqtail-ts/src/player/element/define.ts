@@ -42,7 +42,13 @@ export interface Capability {
 
 /** @public */
 export type Capabilities = Capability[]
-/** @public Each bundle describes one pad the element can create. */
+/**
+ * @public
+ * Each bundle describes, in one direction, a pad the element takes or creates. Capabilities of a
+ * bundle with the same code are alternatives, different codes must all hold. A transform's output
+ * pad has its input pad's capabilities, each value its `out` bundle doesn't list replaced by the
+ * bundle's one value for that code.
+ */
 export type CapabilityBundles = Capabilities[]
 
 type UnionToIntersection<U> = (U extends any ? (x: U) => void : never) extends (x: infer I) => void ? I : never
@@ -148,6 +154,11 @@ function validate(definition: ElementDefinition & { probe?: unknown }): void {
   if (!Array.isArray(definition.capabilities) || !definition.capabilities.every(Array.isArray)) {
     throw new TypeError(`${label}: capabilities must be an array of capability bundles`)
   }
+  for (const bundle of definition.capabilities) {
+    if (bundle.length === 0 || bundle.some((c) => c.direction !== bundle[0]!.direction)) {
+      throw new TypeError(`${label}: each capability bundle needs capabilities, all in one direction`)
+    }
+  }
   if (typeof definition.init !== 'function') throw new TypeError(`${label}: init must be a function`)
 }
 
@@ -188,6 +199,19 @@ if (import.meta.vitest) {
       ['source without probe', { ...source, probe: undefined }],
       ['sink with probe', { ...source, type: 'sink' }],
       ['capabilities not bundles', { ...source, capabilities: [{ direction: 'in', code: 0, value: 'x' }] }],
+      ['an empty bundle', { ...source, capabilities: [[]] }],
+      [
+        'a bundle mixing directions',
+        {
+          ...source,
+          capabilities: [
+            [
+              { direction: 'in', code: 0, value: 'x' },
+              { direction: 'out', code: 0, value: 'y' },
+            ],
+          ],
+        },
+      ],
     ])('rejects %s', (_, definition) => {
       expect(() => defineElement(definition)).toThrow(TypeError)
     })

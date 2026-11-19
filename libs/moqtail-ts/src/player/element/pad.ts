@@ -27,18 +27,30 @@ import type { MoqtObject } from '@/model/data/object'
 import type { BaseElement } from './base'
 import type { Capabilities } from './define'
 
-/** @public The media of one object, as elements pass it on. */
-export interface Packet {
+/** @public An object as elements pass it on, without its media. */
+export interface PacketBase {
   /** The `track` property the pad carries for the object's track. */
   readonly track: string
   readonly location: Location
   /** As received, empty when the object has none. */
   readonly properties: readonly KeyValuePair[]
+}
+
+/** @public The media of one object, as elements pass it on. */
+export interface Packet extends PacketBase {
   readonly payload: Uint8Array
 }
 
+/** @public A decoded object. The receiver owns `payload` and closes it. */
+export interface Frame extends PacketBase {
+  readonly payload: VideoFrame | AudioData
+}
+
 /** @public What an element receives on a sink pad. */
-export type PadItem = { type: 'packet'; packet: Packet } | { type: 'properties'; properties: Partial<PadProperties> }
+export type PadItem =
+  | { type: 'packet'; packet: Packet }
+  | { type: 'frame'; frame: Frame }
+  | { type: 'properties'; properties: Partial<PadProperties> }
 
 /** @public What an element can write to a source pad. */
 export type PadOutput = PadItem | { type: 'event'; event: PadEvent }
@@ -104,14 +116,22 @@ export class Pad {
     readonly capabilities: Capabilities,
   ) {}
 
-  /** Source pads only. Resolves once every connection has room, await it to apply backpressure. */
+  /**
+   * Source pads only. Resolves once every connection has room, await it to apply backpressure.
+   * A frame goes to the first connection and a clone to each other one, and is closed without any.
+   */
   async write(item: PadOutput): Promise<void> {
     if (this.direction !== 'src') throw new TypeError('write() is only for source pads')
     if (this.#routed) {
       await this.#routed
       return this.write(item)
     }
-    await Promise.all(Array.from(this.#connections.values(), (c) => c.push(item)))
+    const connections = [...this.#connections.values()]
+    if (connections.length === 0) {
+      closeFrame(item)
+      return
+    }
+    await Promise.all(connections.map((c, i) => c.push(i === 0 ? item : cloned(item))))
   }
 
   /**
@@ -209,6 +229,16 @@ export function packetOf(track: string, object: MoqtObject, payload: Uint8Array)
   return { track, location: object.location, properties: object.properties ?? [], payload }
 }
 
+function cloned(item: PadOutput): PadOutput {
+  if (item.type !== 'frame') return item
+  return { type: 'frame', frame: { ...item.frame, payload: item.frame.payload.clone() } }
+}
+
+/** Drops a frame no consumer will receive, since only its receiver would close it. */
+function closeFrame(item: PadOutput): void {
+  if (item.type === 'frame') item.frame.payload.close()
+}
+
 function remove<T>(list: T[], item: T): boolean {
   const index = list.indexOf(item)
   if (index !== -1) list.splice(index, 1)
@@ -231,7 +261,10 @@ class Connection {
   }
 
   push(item: PadOutput): Promise<void> {
-    if (this.#closed) return Promise.resolve()
+    if (this.#closed) {
+      closeFrame(item)
+      return Promise.resolve()
+    }
     this.#queue.push(item)
     this.#wake?.()
     if (this.#queue.length < CONNECTION_CAPACITY) return Promise.resolve()
@@ -241,7 +274,7 @@ class Connection {
   /** Drops the queue, ends the loop, and releases waiting producers so they don't hang. */
   close(): void {
     this.#closed = true
-    this.#queue.length = 0
+    for (const item of this.#queue.splice(0)) closeFrame(item)
     for (const resolve of this.#waiting.splice(0)) resolve()
     this.#wake?.()
   }
@@ -356,6 +389,51 @@ if (import.meta.vitest) {
       expect(sink!.items()).toEqual([packet(1), eos])
       sink!.consumeSignals = false
       expect(source!.pads[0]!.signal({ type: 'flush' })).toBe(false)
+    })
+
+    test('a frame goes to the first connection and a clone to the others, and is closed once dropped', async () => {
+      const { Location } = await import('@/model/common/location')
+      const { CapabilityCode } = await import('./define')
+      const closed: string[] = []
+      const fake = (name: string): Frame['payload'] =>
+        ({ name, close: () => closed.push(name), clone: () => fake(`${name} clone`) }) as unknown as Frame['payload']
+      const base = { track: 'v1', location: new Location(1n, 0n), properties: [] }
+      const frame = (name: string): PadOutput => ({ type: 'frame', frame: { ...base, payload: fake(name) } })
+
+      const sinks: import('@/player/testing/elements').CollectingSink[] = []
+      let source: import('@/player/testing/elements').TestSource | undefined
+      const { chain } = testChain()
+      const script = (s: import('@/player/testing/elements').TestSource) => {
+        source = s
+        s.addPad()
+        s.emit('nomorepads')
+      }
+      chain.addSource(testSource({ script }), {})
+      chain.addSink(collectingSink({ setup: (k) => sinks.push(k) }))
+      chain.addSink(collectingSink({ setup: (k) => sinks.push(k) }))
+      await chain.init(new AbortController().signal)
+      const pad = source!.pads[0]!
+
+      const first = frame('a')
+      await pad.write(first)
+      await flush()
+      expect(sinks[0]!.items()).toEqual([first])
+      expect(sinks[1]!.items()).toEqual([
+        { type: 'frame', frame: { ...base, payload: expect.objectContaining({ name: 'a clone' }) } },
+      ])
+
+      await source!
+        .addPad([{ direction: 'out', code: CapabilityCode.PACKAGING, value: 'raw' }])
+        .write(frame('unlinked'))
+      const blocked = gate()
+      for (const sink of sinks) sink.slow = () => blocked.promise
+      void pad.write(frame('received'))
+      void pad.write(frame('queued'))
+      await flush()
+      await chain.destroy()
+      await pad.write(frame('late'))
+      blocked.resolve()
+      expect(closed.sort()).toEqual(['late', 'queued', 'queued clone', 'unlinked'])
     })
   })
 }

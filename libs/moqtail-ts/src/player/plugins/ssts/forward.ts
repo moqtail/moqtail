@@ -88,6 +88,7 @@ export class Forwarder {
       if (child === this.arriving && !seekChild) await pad.write(item)
       return
     }
+    if (item.type !== 'packet') return
     if (seekChild) return // the set waits behind the seek child's history
     if (child !== this.arriving) {
       // The relay switched tracks: the pad carries the new one from here
@@ -210,6 +211,7 @@ export class Forwarder {
       if (seekChild.started) await pad.write(item)
       return
     }
+    if (item.type !== 'packet') return
     if (!seekChild.started) {
       seekChild.started = true
       await pad.write({ type: 'properties', properties: seekChild.properties })

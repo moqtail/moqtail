@@ -46,15 +46,20 @@ describe('webcodecs', () => {
     }
   })
 
-  test('Opus decodes into AudioData with the LOC timestamps and object locations', async () => {
+  test('Opus decodes every object into AudioData with its LOC timestamp, though they are not sample exact', async () => {
     const chunks = await encodedAudio(10)
-    const packets = chunks.map((chunk, i) => packetOf(i, chunk, bytesOf(chunk)))
+    // Wall-clock stamps, off the sample count: Chromium's decoder stamps by the sample count
+    const stamps = chunks.map((chunk, i) => chunk.timestamp + (i % 3) * 1700)
+    const packets = chunks.map((chunk, i) => ({
+      ...packetOf(i, chunk, bytesOf(chunk)),
+      properties: [new Timestamp(BigInt(stamps[i]!)).toKeyValuePair()],
+    }))
     const frames = await decoded('audio', { codec: 'opus', sampleRate: 48_000, numberOfChannels: 2 }, packets)
-    expect(frames.length).toBeGreaterThan(0)
+    expect(frames.length).toBe(packets.length)
     for (const frame of frames) {
       const packet = packets.find((p) => p.location.equals(frame.location))!
       expect(frame.payload).toBeInstanceOf(AudioData)
-      expect(frame.payload.timestamp).toBe(chunks[packets.indexOf(packet)]!.timestamp)
+      expect(frame.payload.timestamp).toBe(stamps[packets.indexOf(packet)])
       frame.payload.close()
     }
   })

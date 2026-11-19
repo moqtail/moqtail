@@ -174,16 +174,22 @@ export class Decoding {
    * its chunk's timestamp, but B-frames come out in presentation order, and a decoder may skip a
    * corrupt chunk, so pairing in input order would drift. Outputs come in presentation order, so
    * the objects decoded and stamped before a frame will never be output and are dropped with it.
+   * Audio pairs in input order instead, and takes its object's timestamp (see `restamped`).
    */
-  #decoded(payload: VideoFrame | AudioData): void {
-    const index = this.#pending.findIndex((p) => p.timestamp === payload.timestamp)
-    if (index === -1) {
-      payload.close()
+  #decoded(output: VideoFrame | AudioData): void {
+    const audio = this.#kind === 'audio'
+    const index = audio ? 0 : this.#pending.findIndex((p) => p.timestamp === output.timestamp)
+    const pending = this.#pending[index]
+    if (!pending) {
+      output.close()
       return
     }
-    const { base, timescale } = this.#pending[index]!
+    const { base, timescale } = pending
     // Objects decoded after it stay, so one stray timestamp can't drop the frames behind it
-    this.#pending = this.#pending.filter((p, i) => i > index || p.timestamp > payload.timestamp)
+    this.#pending = audio
+      ? this.#pending.slice(1)
+      : this.#pending.filter((p, i) => i > index || p.timestamp > output.timestamp)
+    const payload = audio ? restamped(output as AudioData, pending.timestamp) : output
     // Frames carry no clock of their own (LOC 2.3.1.1, 2.3.1.2)
     if (timescale !== undefined && timescale !== this.#outputTimescale) {
       this.#outputTimescale = timescale
@@ -230,6 +236,23 @@ export class Decoding {
         : new PlayerError('MEDIA_FAILURE', this.#failure(), { element: 'webcodecs', cause: error }),
     )
   }
+}
+
+/**
+ * `data` at its object's `timestamp`. Chromium stamps decoded audio from the first chunk on by
+ * the samples decoded, not with each chunk's own timestamp, so lost objects and the publisher's
+ * clock would drift it off the video's timeline.
+ */
+function restamped(data: AudioData, timestamp: number): AudioData {
+  if (data.timestamp === timestamp) return data
+  const { sampleRate, numberOfChannels, numberOfFrames } = data
+  const planes = new Float32Array(numberOfChannels * numberOfFrames)
+  for (let planeIndex = 0; planeIndex < numberOfChannels; planeIndex++) {
+    const plane = planes.subarray(planeIndex * numberOfFrames, (planeIndex + 1) * numberOfFrames)
+    data.copyTo(plane, { planeIndex, format: 'f32-planar' })
+  }
+  data.close()
+  return new AudioData({ format: 'f32-planar', sampleRate, numberOfChannels, numberOfFrames, timestamp, data: planes })
 }
 
 /**

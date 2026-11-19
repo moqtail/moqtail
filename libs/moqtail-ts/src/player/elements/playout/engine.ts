@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ProcessorMessage, ProcessorReport } from './worklet'
+import { PREROLL, type ProcessorMessage, type ProcessorReport } from './worklet'
 
 export type Role = 'video' | 'audio'
 
@@ -130,6 +130,7 @@ export class PlayoutEngine {
   async end(role: Role): Promise<void> {
     this.#ended.add(role)
     this.#starving.delete(role)
+    if (role === 'audio') this.#post({ type: 'end' })
   }
 
   /** Drops what the role has queued: what comes next replaces it. */
@@ -267,11 +268,17 @@ export class PlayoutEngine {
   /**
    * Draws the latest due frame and closes the ones before it: drawing one per animation frame
    * falls further behind whenever frames come faster than the display refreshes. Without a clock
-   * the next frame is due, and the wall clock starts at it.
+   * the next frame is due once `PREROLL` is queued, and the wall clock starts at it.
    */
   #present(now: number | undefined): void {
     let due: VideoFrame | undefined
     if (now === undefined) {
+      const [first, last] = [this.#frames[0], this.#frames.at(-1)]
+      const prerolled =
+        this.#ended.has('video') ||
+        this.#frames.length >= RENDER_QUEUE_LIMIT ||
+        (first && last && seconds(last.timestamp - first.timestamp) >= PREROLL)
+      if (!prerolled) return
       due = this.#frames.shift()
       if (due) this.#wall = { media: seconds(due.timestamp), reference: performance.now() / 1000, skew: 0 }
     } else {

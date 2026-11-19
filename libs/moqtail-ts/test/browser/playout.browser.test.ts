@@ -128,7 +128,8 @@ describe('playout', () => {
     for (const options of [{ audio: false }, { properties: { timescale: 1_000_000 } }]) {
       const s = await open(options)
       // Audio that started well before the video: following it would hold the video back
-      const feed = live(s, { audioOffset: -5 })
+      // Ahead of the preroll, so the wall clock starts at once
+      const feed = live(s, { audioOffset: -5, lead: 0.6 })
       await s.sink.play()
       const drawn = spyDraws(s.sink)
       await new Promise((resolve) => setTimeout(resolve, 1000))
@@ -171,7 +172,8 @@ describe('playout', () => {
       await s.sink.play()
       await until(() => s.sink.currentTime > s.base + 0.3, 'playing')
       const [waiting, playing] = [count(s.sink, 'waiting'), count(s.sink, 'playing')]
-      feed.skip.video = FPS / 2
+      // Longer than the preroll ahead of the clock
+      feed.skip.video = FPS
       await until(() => waiting() === 1, 'waiting')
       const time = s.sink.currentTime
       await until(() => playing() === 1, 'playing again')
@@ -189,11 +191,11 @@ describe('playout', () => {
     await s.sink.play()
     await until(() => s.sink.currentTime > s.base + 0.3, 'playing')
     const [waiting, playing] = [count(s.sink, 'waiting'), count(s.sink, 'playing')]
-    // With the lead, one chunk missing runs the audio out for less than a chunk
+    // The preroll covers one chunk missing; five run the audio out for longer than a chunk
     feed.skip.audio = 1
     await new Promise((resolve) => setTimeout(resolve, 500))
     expect([waiting(), playing()]).toEqual([0, 0])
-    feed.skip.audio = 4
+    feed.skip.audio = 5
     await until(() => playing() === 1, 'playing again')
     expect(waiting()).toBe(1)
     feed.stop()

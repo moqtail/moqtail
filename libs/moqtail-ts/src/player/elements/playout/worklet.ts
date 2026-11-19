@@ -14,12 +14,15 @@
  * limitations under the License.
  */
 
+import { createStretch, type Stretch } from './wsola'
+
 /** What the engine posts to the processor. Times in media seconds. */
 export type ProcessorMessage =
   | { type: 'samples'; planes: Float32Array[]; timestamp: number; duration: number }
   | { type: 'rate'; rate: number }
   | { type: 'seek'; time: number }
   | { type: 'flush' }
+  | { type: 'end' }
 
 /** What the processor posts back. Times in seconds. */
 export type ProcessorReport =
@@ -44,14 +47,17 @@ interface AudioWorkletProcessorBase {
 
 export const PROCESSOR_NAME = 'moqtail-playout'
 
+/** Media seconds queued before the clock starts or restarts after a stall; liveBuffer's stall threshold. */
+export const PREROLL = 0.5
+
 /** The module the worklet loads. */
-export const PROCESSOR_SOURCE = `(${processorModule.toString()})(${JSON.stringify(PROCESSOR_NAME)})`
+export const PROCESSOR_SOURCE = `(${processorModule.toString()})(${JSON.stringify(PROCESSOR_NAME)}, ${PREROLL}, ${createStretch.toString()})`
 
 /**
  * Runs in the `AudioWorkletGlobalScope` from its source text, so it references nothing outside
  * itself and avoids syntax a bundler lowers to helpers, such as `#private` fields.
  */
-function processorModule(name: string): void {
+function processorModule(name: string, preroll: number, createStretch: (sampleRate: number) => Stretch): void {
   interface Chunk {
     planes: Float32Array[]
     timestamp: number
@@ -79,6 +85,9 @@ function processorModule(name: string): void {
     declare duration: number
     declare consumed: number
     declare reported: number
+    /** Set by `end`: no preroll to wait for. */
+    declare ending: boolean
+    declare stretch: Stretch
 
     constructor() {
       super()
@@ -91,6 +100,8 @@ function processorModule(name: string): void {
       this.starved = false
       this.consumed = 0
       this.reported = 0
+      this.ending = false
+      this.stretch = createStretch(sampleRate)
       this.restart()
       this.port.onmessage = (event: MessageEvent<ProcessorMessage>) => this.receive(event.data)
     }
@@ -109,10 +120,13 @@ function processorModule(name: string): void {
         this.dropBefore = message.time
         this.restart()
         this.trim()
+      } else if (message.type === 'end') {
+        this.ending = true
       } else {
         while (this.chunks.length > 0) this.shift()
         this.position = 0
         this.end = undefined
+        this.ending = false
         this.restart()
       }
       this.reportConsumed()
@@ -123,16 +137,19 @@ function processorModule(name: string): void {
       const length = output[0]!.length
       const skew = this.gap - this.drift
       let played = 0
-      const head = this.head()
+      let head = this.head()
+      // Silence while refilling after a stall counts as drift, so the clock holds
+      if (head && (!this.started || this.starved) && !this.ending && this.end! - this.mediaTime(head) < preroll)
+        head = undefined
       if (head && !this.started) {
         this.started = true
         this.gap = 0
         this.port.postMessage({ type: 'start', contextTime: currentTime, mediaTime: this.mediaTime(head) })
       }
-      for (; played < length; played++) {
+      for (; head && played < length; played++) {
         const chunk = this.head()
         if (!chunk) break
-        for (let channel = 0; channel < output.length; channel++) output[channel]![played] = this.sample(chunk, channel)
+        this.write(output, played, chunk)
         this.position += this.rate
       }
       for (let i = played; i < length; i++) for (const channel of output) channel[i] = 0
@@ -156,7 +173,38 @@ function processorModule(name: string): void {
       return chunk
     }
 
-    // shortcut: linear interpolation moves the pitch with the rate; a time-stretch such as WSOLA keeps it, upgrade if catch-up is audible
+    write(output: Float32Array[], at: number, chunk: Chunk): void {
+      const stretch = this.stretch
+      if (stretch.running(this.rate) && stretch.due()) {
+        const input = this.window(stretch.span)
+        // Too little queued to stretch: played at the rate's pitch until the queue refills
+        if (input) stretch.fill(input, this.rate)
+        else stretch.reset()
+      }
+      if (!stretch.due()) stretch.write(output, at)
+      else for (let channel = 0; channel < output.length; channel++) output[channel]![at] = this.sample(chunk, channel)
+    }
+
+    /** `length` samples per channel from the position on, or undefined if fewer are queued. */
+    window(length: number): Float32Array[] | undefined {
+      const start = Math.floor(this.position)
+      let queued = -start
+      for (const chunk of this.chunks) queued += chunk.planes[0]!.length
+      if (queued < length) return undefined
+      const planes = this.chunks[0]!.planes.map(() => new Float32Array(length))
+      let offset = -start
+      for (const chunk of this.chunks) {
+        if (offset >= length) break
+        for (const [channel, plane] of planes.entries()) {
+          const source = chunk.planes[channel] ?? chunk.planes[0]!
+          plane.set(source.subarray(Math.max(0, -offset), length - offset), Math.max(0, offset))
+        }
+        offset += chunk.planes[0]!.length
+      }
+      return planes
+    }
+
+    /** Interpolated: the position is fractional after a rate other than 1. */
     sample(chunk: Chunk, channel: number): number {
       const plane = chunk.planes[channel] ?? chunk.planes[0]!
       const index = Math.floor(this.position)
@@ -214,6 +262,7 @@ function processorModule(name: string): void {
 
     /** The next sample played starts the clock again. */
     restart(): void {
+      this.stretch.reset()
       this.started = false
       this.drift = 0
       this.gap = 0
@@ -276,7 +325,16 @@ if (import.meta.vitest) {
     return [...output[0]!]
   }
 
-  test('plays chunks back to back, then counts silence as drift and reports a stall past a chunk', () => {
+  test('waits for PREROLL queued before it starts, unless no more samples come', () => {
+    post(samples(100, 1))
+    expect(quantum(2)).toEqual([0, 0])
+    expect(reports).toEqual([])
+    post({ type: 'end' })
+    expect(quantum(2)).toEqual([1, 0])
+    expect(reports[0]).toEqual({ type: 'start', contextTime: 10, mediaTime: 100 })
+  })
+
+  test('plays chunks back to back, counts silence as drift, and refills PREROLL after a stall', () => {
     post(samples(100, 1, 2))
     post(samples(100.5, 3, 4))
     expect(quantum()).toEqual([1, 2, 3, 4])
@@ -286,8 +344,10 @@ if (import.meta.vitest) {
     expect(quantum(1)).toEqual([0])
     expect(reports.slice(2)).toEqual([{ type: 'drift', contextTime: 10, drift: 0.75, gap: 0 }, { type: 'starved' }])
     post(samples(101, 5))
-    expect(quantum(2)).toEqual([5, 0])
-    expect(reports.slice(4)).toEqual([{ type: 'fed' }, { type: 'drift', contextTime: 10, drift: 1, gap: 0 }])
+    expect(quantum(1)).toEqual([0])
+    post(samples(101.25, 6))
+    expect(quantum(2)).toEqual([5, 6])
+    expect(reports.slice(4)).toEqual([{ type: 'drift', contextTime: 10, drift: 1, gap: 0 }, { type: 'fed' }])
   })
 
   test('audio that never arrived counts as a gap once playback reaches it', () => {
@@ -299,11 +359,21 @@ if (import.meta.vitest) {
     expect(reports.at(-1)).toEqual({ type: 'drift', contextTime: 10, drift: 0, gap: 0.5 })
   })
 
-  test('a rate other than 1 interpolates between neighbours, across chunks', () => {
+  test('a rate other than 1 is stretched across chunks, and back at 1 plays the samples once that winds down', () => {
+    Object.assign(globalThis, { sampleRate: 48_000 })
+    new Function(PROCESSOR_SOURCE)()
+    // A ramp of 20 ms chunks: played in order, it steps by 1; resampled at 1.5, by 1.5
+    for (let i = 0; i < 50; i++) {
+      const planes = [Float32Array.from({ length: 960 }, (_, j) => i * 960 + j)]
+      post({ type: 'samples', planes, timestamp: 100 + i * 0.02, duration: 0.02 })
+    }
+    const steps = (length: number) => quantum(length).flatMap((v, i, all) => (i > 0 ? [v - all[i - 1]!] : []))
     post({ type: 'rate', rate: 1.5 })
-    post(samples(100, 0, 2, 4))
-    post(samples(100.75, 6, 8, 10))
-    expect(quantum()).toEqual([0, 3, 6, 9])
+    expect(steps(128).every((step) => step === 1)).toBe(true)
+    for (let i = 0; i < 75; i++) quantum(128)
+    post({ type: 'rate', rate: 1 })
+    for (let i = 0; i < 40; i++) quantum(128)
+    for (const step of steps(128)) expect(step).toBeCloseTo(1, 1)
   })
 
   test('reports the seconds it played out or dropped, once per change', () => {

@@ -23,17 +23,18 @@
 
 import { KeyValuePair } from '@/model/common/pair'
 import { Location } from '@/model/common/location'
-import { MoqtObject } from '@/model/data/object'
+import type { MoqtObject } from '@/model/data/object'
 import { findProperty } from '@/model/property/find'
 import { MEDIA_PRIORITY } from '@/player/constants'
 import { PlayerError } from '@/player/error'
 import { parseJsonArray } from '@/player/util/json'
+import { renditionId } from '@/player/util/track'
 import { TrackReader } from '@/player/util/track_reader'
 import { SourceElement } from './base'
 import type { ElementContext } from './context'
 import { CapabilityCode, definitionOf, type Capabilities } from './define'
 import type { CatalogTrack } from './interfaces'
-import type { Pad } from './pad'
+import { packetOf, type Pad } from './pad'
 
 /** @public One event timeline record (MSF 8.2): exactly one of `T` (wallclock), `L`, or `M` (media time, ms). */
 export interface TimelineRecord {
@@ -153,16 +154,10 @@ export abstract class EventTimelineElement extends SourceElement {
       this.#headerRead = true
     }
     if (this.#pad.peers.length > 0) {
-      const decompressed = MoqtObject.newWithPayload(
-        object.fullTrackName,
-        object.location,
-        object.publisherPriority,
-        object.objectForwardingPreference,
-        object.subgroupId,
-        object.properties,
-        payload,
-      )
-      void this.#pad.write({ type: 'packet', object: decompressed })
+      void this.#pad.write({
+        type: 'packet',
+        packet: packetOf(renditionId(this.track, this.context.catalog), object, payload),
+      })
     }
     const json = parseJsonArray(payload, 'An event timeline must be a JSON array of records (MSF 8.2)')
     const eventType = this.track.eventType ?? ''
@@ -302,7 +297,7 @@ if (import.meta.vitest) {
         .sink()!
         .items()
         .filter((i) => i.type === 'packet')
-      expect(packets.map((p) => (p.type === 'packet' ? p.object.location.group : -1))).toEqual([1n, 2n])
+      expect(packets.map((p) => (p.type === 'packet' ? p.packet.location.group : -1))).toEqual([1n, 2n])
     })
   })
 }

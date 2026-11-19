@@ -20,7 +20,9 @@ import type { MoqtObject } from '@/model/data/object'
 import type { TrackProperty } from '@/model/property/track_property'
 import type { Capabilities } from '@/player/element/define'
 import type { CatalogTrack } from '@/player/element/interfaces'
+import { packetOf, type Packet } from '@/player/element/pad'
 import { SwitchingSetSource } from '@/player/element/source/switching_set'
+import { renditionId } from '@/player/util/track'
 import { fragmentTime, mediaTimescale } from './bmff'
 import { acceptedInitData, objectInitData } from './init_data'
 import { cmafCapabilities, mimeTypeOf } from './track'
@@ -47,13 +49,12 @@ export class CmafSource extends SwitchingSetSource {
     return track.init?.type === 'object-property'
   }
 
-  mediaTime(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): number | undefined {
-    if (!object.payload) return undefined
-    return fragmentTime(object.payload, track.timescale ?? (initData && mediaTimescale(initData)))
+  mediaTime(track: CatalogTrack, packet: Packet, initData: Uint8Array | undefined): number | undefined {
+    return fragmentTime(packet.payload, track.timescale ?? (initData && mediaTimescale(initData)))
   }
 
-  packet(_track: CatalogTrack, object: MoqtObject, _initData: Uint8Array | undefined): MoqtObject | undefined {
-    return object
+  packet(track: CatalogTrack, object: MoqtObject, _initData: Uint8Array | undefined): Packet | undefined {
+    return packetOf(renditionId(track, this.context.catalog), object, object.payload!)
   }
 }
 

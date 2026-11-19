@@ -26,7 +26,7 @@ import { SourceElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import type { Capabilities } from '@/player/element/define'
 import type { CatalogTrack, MediaSourceElement, MediaSourceOptions, Rendition } from '@/player/element/interfaces'
-import type { Pad } from '@/player/element/pad'
+import type { Packet, Pad } from '@/player/element/pad'
 import { PlayerError } from '@/player/error'
 import { bitrateOf, rendition, renditionId, trackKey } from '@/player/util/track'
 import { Delivery } from './delivery'
@@ -49,10 +49,10 @@ export interface Packaging {
   objectInitData(track: CatalogTrack, object: MoqtObject): Uint8Array | undefined
   /** Whether the track's packets can't be decoded before the first `objectInitData`. */
   initOnObjects(track: CatalogTrack): boolean
-  /** The media time of `object` in seconds, given the init data the pad carries; undefined if unknown. */
-  mediaTime(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): number | undefined
-  /** The object the pad carries for `object`, given the init data that applies to it; undefined drops it. */
-  packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): MoqtObject | undefined
+  /** The media time of `packet` in seconds, given the init data the pad carries; undefined if unknown. */
+  mediaTime(track: CatalogTrack, packet: Packet, initData: Uint8Array | undefined): number | undefined
+  /** The packet the pad carries for `object`, given the init data that applies to it; undefined drops it. */
+  packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): Packet | undefined
 }
 
 /** What `planSource` worked out before the source starts: the URL ranges and their duration. */
@@ -126,8 +126,8 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
   abstract acceptedInitData(track: CatalogTrack, trackProperties: TrackProperty[]): Uint8Array | undefined
   abstract objectInitData(track: CatalogTrack, object: MoqtObject): Uint8Array | undefined
   abstract initOnObjects(track: CatalogTrack): boolean
-  abstract mediaTime(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): number | undefined
-  abstract packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): MoqtObject | undefined
+  abstract mediaTime(track: CatalogTrack, packet: Packet, initData: Uint8Array | undefined): number | undefined
+  abstract packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): Packet | undefined
 
   getRenditions(): Rendition[] {
     return this.#tracks.filter((t) => this.#head(t) === t).map((track) => this.#rendition(track))

@@ -21,13 +21,24 @@
  * bypass connections and reach the peer pad's `onSignal` listeners immediately.
  */
 
+import type { Location } from '@/model/common/location'
+import type { KeyValuePair } from '@/model/common/pair'
 import type { MoqtObject } from '@/model/data/object'
 import type { BaseElement } from './base'
 import type { Capabilities } from './define'
 
+/** @public The media of one object, as elements pass it on. */
+export interface Packet {
+  /** The `track` property the pad carries for the object's track. */
+  readonly track: string
+  readonly location: Location
+  /** As received, empty when the object has none. */
+  readonly properties: readonly KeyValuePair[]
+  readonly payload: Uint8Array
+}
+
 /** @public What an element receives on a sink pad. */
-export type PadItem =
-  { type: 'packet'; object: MoqtObject } | { type: 'properties'; properties: Partial<PadProperties> }
+export type PadItem = { type: 'packet'; packet: Packet } | { type: 'properties'; properties: Partial<PadProperties> }
 
 /** @public What an element can write to a source pad. */
 export type PadOutput = PadItem | { type: 'event'; event: PadEvent }
@@ -183,6 +194,11 @@ export function removePad(pad: Pad, failed = false): void {
     if (pad.direction === 'src') removePad(peer, failed)
   }
   pad.element.emit('padremoved', pad, failed)
+}
+
+/** The packet of `object`, carrying `payload`, which may be a rebuilt or decompressed one. */
+export function packetOf(track: string, object: MoqtObject, payload: Uint8Array): Packet {
+  return { track, location: object.location, properties: object.properties ?? [], payload }
 }
 
 function remove<T>(list: T[], item: T): boolean {

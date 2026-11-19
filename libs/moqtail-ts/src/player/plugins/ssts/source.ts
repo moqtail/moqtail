@@ -382,6 +382,7 @@ if (import.meta.vitest) {
   const { SetupOptions } = await import('@/model/parameter/setup_option')
   const { PublishDoneStatusCode } = await import('@/model/control/constant')
   const { Cmaf } = await import('@/player/elements/cmaf')
+  const { packetOf } = await import('@/player/element/pad')
   const { SSTS_ALGORITHMS } = await import('./algorithms')
   const { cmafTrack, fakeCatalog, requested, twoSecondTimeline } = await import('@/player/testing/cmaf')
   const { FakeClient, mediaObject } = await import('@/player/testing/client')
@@ -441,7 +442,7 @@ if (import.meta.vitest) {
         client.requests.filter((r) => r.kind === 'subscribe' && requested(r.options) === name).at(-1)!,
       trace: () =>
         sink.items().map((item) => {
-          if (item.type === 'packet') return `${item.object.location?.group}.${item.object.location?.object}`
+          if (item.type === 'packet') return `${item.packet.location.group}.${item.packet.location.object}`
           if (item.type === 'properties') return `props ${item.properties.track ?? ''}`.trim()
           return item.event.type === 'discontinuity' ? item.event.reason : item.event.type
         }),
@@ -628,7 +629,8 @@ if (import.meta.vitest) {
         if (options?.['ranges']) throw new PlayerError('UNSUPPORTED_SOURCE', 'no history')
         const pad = s.addPad()
         s.emit('nomorepads')
-        void pad.write({ type: 'packet', object: mediaObject(5) })
+        const object = mediaObject(5)
+        void pad.write({ type: 'packet', packet: packetOf('v1', object, object.payload!) })
       },
     })
     const c = await sstsChain([[v('v1')]], {

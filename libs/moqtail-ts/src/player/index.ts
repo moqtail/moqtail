@@ -63,6 +63,7 @@ export { BaseElement, SourceElement, TransformElement, SinkElement, type Element
 export {
   Pad,
   CONNECTION_CAPACITY,
+  type Packet,
   type PadItem,
   type PadOutput,
   type PadProperties,

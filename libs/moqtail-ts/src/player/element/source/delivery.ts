@@ -30,7 +30,7 @@ import { FillParameters } from '@/model/parameter/message/fill_parameters'
 import { LocationFilter } from '@/model/parameter/message/location_filter'
 import type { ElementContext } from '@/player/element/context'
 import type { CatalogTrack, RequestHooks, TimelineReader } from '@/player/element/interfaces'
-import type { Pad, PadProperties } from '@/player/element/pad'
+import type { Packet, Pad, PadProperties } from '@/player/element/pad'
 import { DEFAULT_MEDIA_ORDERING, MEDIA_PRIORITY } from '@/player/constants'
 import { trackIdentifier } from '@/player/msf_url'
 import { renditionId, trackKey } from '@/player/util/track'
@@ -482,7 +482,7 @@ export class Delivery {
       await this.#setProperties({ initData })
       this.#initFor = key
     }
-    await this.pad.write({ type: 'packet', object: packet })
+    await this.pad.write({ type: 'packet', packet })
     const previous = this.#last
     this.#last = { track: key, location: object.location }
     this.delivered = true
@@ -509,9 +509,9 @@ export class Delivery {
   }
 
   /** The media time of a group's first delivered object. */
-  #recordTime(track: CatalogTrack, object: MoqtObject): void {
-    const time = this.#packaging.mediaTime(track, object, this.#properties?.initData)
-    if (time !== undefined) this.times.record(trackKey(track), object.location.group, time)
+  #recordTime(track: CatalogTrack, packet: Packet): void {
+    const time = this.#packaging.mediaTime(track, packet, this.#properties?.initData)
+    if (time !== undefined) this.times.record(trackKey(track), packet.location.group, time)
   }
 
   /** Writes what changed; the first item carries everything. */
@@ -714,7 +714,12 @@ if (import.meta.vitest) {
       const catalog = Object.assign(fakeCatalog(), { namespace: new Tuple([TupleField.fromUtf8('other')]) })
       const c = await cmafChain([cmafTrack('v1')], { catalog })
       await flush()
+      c.client.last.push(mediaObject(1))
+      await flush()
       expect(c.sink.items()[0]).toMatchObject({ properties: { track: 'ns--v1' } })
+      expect(c.sink.items()).toContainEqual(
+        expect.objectContaining({ packet: expect.objectContaining({ track: 'ns--v1' }) }),
+      )
     })
   })
 

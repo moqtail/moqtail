@@ -18,14 +18,13 @@
 
 import type { MOQtailClient } from '@/client/client'
 import { Tuple, TupleField } from '@/model/common/tuple'
-import type { MoqtObject } from '@/model/data/object'
 import { Emitter } from '@/util/emitter'
 import { SinkElement, SourceElement, TransformElement } from '@/player/element/base'
 import { Chain, type ChainHost } from '@/player/element/chain'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode, defineElement, type Capabilities, type Identifiers } from '@/player/element/define'
 import { ABR, MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
-import type { Pad, PadItem, PadOutput, PadSignal } from '@/player/element/pad'
+import type { Packet, Pad, PadItem, PadOutput, PadSignal } from '@/player/element/pad'
 import type { PlayerEvents } from '@/player/player'
 import { definePlugin, type AbrController, type BufferController } from '@/player/plugin'
 import { timeRanges } from './media'
@@ -267,8 +266,8 @@ export async function settle(): Promise<void> {
   for (let i = 0; i < 5; i++) await flush()
 }
 
-/** A packet whose object is only a marker; the runtime never looks inside. */
-export const packet = (n: number): PadItem => ({ type: 'packet', object: { n } as unknown as MoqtObject })
+/** A packet that is only a marker; the runtime never looks inside. */
+export const packet = (n: number): PadItem => ({ type: 'packet', packet: { n } as unknown as Packet })
 
 /** A catalog track in namespace `ns`. */
 export function track(name: string, ns = 'ns'): CatalogTrack {

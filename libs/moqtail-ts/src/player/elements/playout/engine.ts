@@ -14,12 +14,19 @@
  * limitations under the License.
  */
 
+import type { PadEvent, PadItem, PadSignal } from '@/player/element/pad'
+import type { Engine, EngineInit } from '@/player/element/worker/host'
+import { PlayerError } from '@/player/error'
 import { PREROLL, type ProcessorMessage, type ProcessorReport } from './worklet'
 
-export type Role = 'video' | 'audio'
+type Role = 'video' | 'audio'
+
+export interface PlayoutEngineOptions {
+  canvas: HTMLCanvasElement | OffscreenCanvas
+}
 
 /** Which tracks play, and which clock video follows. */
-export interface PlayoutTracks {
+interface PlayoutTracks {
   video: boolean
   audio: boolean
   clock: 'audio' | 'wall'
@@ -27,6 +34,8 @@ export interface PlayoutTracks {
 
 /** What the engine tells the element. Times in media seconds. */
 export type EngineReport =
+  | { type: 'first'; role: string }
+  | { type: 'audio'; sampleRate: number; numberOfChannels: number }
   | { type: 'presentation'; currentTime: number | undefined; bufferedEnd: number | undefined }
   | { type: 'playing' }
   | { type: 'waiting' }
@@ -57,18 +66,25 @@ export const RENDER_QUEUE_LIMIT = 60
 const AUDIO_QUEUE_LIMIT = 2
 
 /**
- * Renders what the element hands it: video on a canvas on each animation frame, and audio by
+ * Renders the `raw` pads' items: video on a canvas on each animation frame, and audio by
  * posting samples to the playout processor, whose reports drive the audio clock. Video follows
  * that clock while it runs and the tracks share it, a wall clock otherwise. It's driven only by
  * calls the element awaits and reports through one callback, and uses only what a dedicated
  * worker has.
  */
-export class PlayoutEngine {
+export class PlayoutEngine implements Engine {
   readonly #canvas: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
   readonly #report: (report: EngineReport) => void
   /** The render queue, oldest first. */
   readonly #frames: VideoFrame[] = []
   readonly #ended = new Set<Role>()
+  readonly #taken = new Set<string>()
+  /** Roles whose pad has a `timescale`: their clock isn't the epoch. */
+  readonly #timescaled = new Set<string>()
+  /** Resolved by `attachAudio()`, or by `close()`. */
+  readonly #attached = Promise.withResolvers<void>()
+  #roles: readonly string[] = []
+  #audioFormat: 'unknown' | 'reported' = 'unknown'
   /** The processor's `drift` reports not heard yet, oldest first. */
   readonly #skews: { contextTime: number; skew: number }[] = []
   readonly #starving = new Set<Role>()
@@ -96,64 +112,64 @@ export class PlayoutEngine {
   #playingReported = false
   #done = false
 
-  constructor(
-    canvas: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
-    report: (report: EngineReport) => void,
-  ) {
-    this.#canvas = canvas
-    this.#report = report
+  constructor(init: EngineInit<PlayoutEngineOptions>) {
+    // Both canvases give the same 2D API, and the element ruled out a context of another kind
+    const canvas = init.options.canvas as OffscreenCanvas
+    this.#canvas = canvas.getContext('2d')!
+    this.#report = init.report
   }
 
   async attachAudio(port: MessagePort): Promise<void> {
     this.#port = port
     port.onmessage = (event: MessageEvent<ProcessorReport>) => this.#processorReport(event.data)
     this.#post({ type: 'rate', rate: this.#rate })
+    this.#attached.resolve()
   }
 
-  async setTracks(tracks: PlayoutTracks): Promise<void> {
-    this.#tracks = tracks
+  /** The roles of the element's pads. Video follows the audio clock when both are on the epoch clock. */
+  async setTracks(roles: readonly string[]): Promise<void> {
+    this.#roles = roles
+    this.#updateTracks()
   }
 
-  async receive(payload: VideoFrame | AudioData): Promise<void> {
-    if (this.#state === 'paused' || this.#done) {
-      payload.close()
+  async receive(item: PadItem, role: string): Promise<void> {
+    if (item.type === 'properties') {
+      // Liveness can't be checked in `negotiate`: pads are routed before their properties arrive
+      if (item.properties.live === false)
+        throw new PlayerError('UNSUPPORTED_SOURCE', 'The playout sink plays live streams only', { element: 'playout' })
+      if (!('timescale' in item.properties)) return
+      if (item.properties.timescale === undefined) this.#timescaled.delete(role)
+      else this.#timescaled.add(role)
+      this.#updateTracks()
       return
     }
-    if (payload instanceof AudioData) await this.#receiveAudio(payload)
-    else await this.#receiveVideo(payload)
+    if (item.type !== 'frame') return
+    const { payload } = item.frame
+    if (payload instanceof AudioData && !this.#port) await this.#audioAttached(payload)
+    await this.#media(payload)
+    if (this.#taken.has(role)) return
+    this.#taken.add(role)
+    this.#report({ type: 'first', role })
+  }
+
+  async event(event: PadEvent, role: string): Promise<void> {
+    if (event.type === 'eos') this.#end(role as Role)
+  }
+
+  async signal(role: string, signal: PadSignal): Promise<void> {
+    if (signal.type === 'flush') this.#flush(role as Role)
   }
 
   async outputTimestamp(timestamp: OutputTimestamp): Promise<void> {
     this.#output = timestamp
   }
 
-  async end(role: Role): Promise<void> {
-    this.#ended.add(role)
-    this.#starving.delete(role)
-    if (role === 'audio') this.#post({ type: 'end' })
-  }
-
-  /** Drops what the role has queued: what comes next replaces it. */
-  async flush(role: Role): Promise<void> {
-    if (role === 'audio') {
-      this.#post({ type: 'flush' })
-      this.#audio = undefined
-      this.#skews.length = 0
-      this.#audioEnd = undefined
-      return
-    }
-    for (const frame of this.#frames.splice(0)) frame.close()
-    this.#latest = undefined
-    this.#interval = undefined
-    this.#roomMade()
-  }
-
   /** Resuming after a pause starts over at the live edge. */
   async play(): Promise<void> {
     if (this.#state === 'playing') return
     if (this.#state === 'paused') {
-      await this.flush('video')
-      await this.flush('audio')
+      this.#flush('video')
+      this.#flush('audio')
       this.#wall = undefined
       this.#output = undefined
       this.#starving.clear()
@@ -167,7 +183,7 @@ export class PlayoutEngine {
   async pause(): Promise<void> {
     this.#state = 'paused'
     this.#stopLoop()
-    await this.flush('video')
+    this.#flush('video')
   }
 
   /** Forward only: drops what's before `time`, and the clock starts again at the first media from there. */
@@ -205,9 +221,56 @@ export class PlayoutEngine {
   async close(): Promise<void> {
     this.#stopLoop()
     this.#done = true
+    this.#attached.resolve()
     for (const frame of this.#frames.splice(0)) frame.close()
     this.#roomMade()
     if (this.#port) this.#port.onmessage = null
+  }
+
+  #end(role: Role): void {
+    this.#ended.add(role)
+    this.#starving.delete(role)
+    if (role === 'audio') this.#post({ type: 'end' })
+  }
+
+  /** Drops what the role has queued: what comes next replaces it. */
+  #flush(role: Role): void {
+    if (role === 'audio') {
+      this.#post({ type: 'flush' })
+      this.#audio = undefined
+      this.#skews.length = 0
+      this.#audioEnd = undefined
+      return
+    }
+    for (const frame of this.#frames.splice(0)) frame.close()
+    this.#latest = undefined
+    this.#interval = undefined
+    this.#roomMade()
+  }
+
+  async #media(payload: VideoFrame | AudioData): Promise<void> {
+    if (this.#state === 'paused' || this.#done) {
+      payload.close()
+      return
+    }
+    if (payload instanceof AudioData) await this.#receiveAudio(payload)
+    else await this.#receiveVideo(payload)
+  }
+
+  /** The element makes the audio output at the first chunk's format, on the thread that has `AudioContext`. */
+  async #audioAttached(data: AudioData): Promise<void> {
+    if (this.#audioFormat === 'unknown') {
+      this.#audioFormat = 'reported'
+      this.#report({ type: 'audio', sampleRate: data.sampleRate, numberOfChannels: data.numberOfChannels })
+    }
+    await this.#attached.promise
+  }
+
+  #updateTracks(): void {
+    // shortcut: a Timescale's epoch is the application's (LOC 2.3.1.2), so such tracks play unsynced on the wall clock
+    const shared = !this.#roles.some((role) => this.#timescaled.has(role))
+    const audio = this.#roles.includes('audio')
+    this.#tracks = { video: this.#roles.includes('video'), audio, clock: audio && shared ? 'audio' : 'wall' }
   }
 
   async #receiveVideo(frame: VideoFrame): Promise<void> {
@@ -444,6 +507,7 @@ function seconds(micros: number): number {
 if (import.meta.vitest) {
   const { test, expect, beforeEach, afterEach, vi } = import.meta.vitest
   const { settle } = await import('@/player/testing/elements')
+  type Frame = import('@/player/element/pad').Frame
   let now: number
   let frame: (() => void) | undefined
   let reports: EngineReport[]
@@ -484,15 +548,16 @@ if (import.meta.vitest) {
   })
 
   /** A playing engine on the audio clock, and a way to send it processor reports. */
-  async function playing(tracks: Partial<PlayoutTracks> = {}) {
-    const canvas = { canvas: { width: 0, height: 0 }, drawImage: () => {} } as unknown as CanvasRenderingContext2D
-    const engine = new PlayoutEngine(canvas, (report) => reports.push(report))
+  async function playing(roles: readonly Role[] = ['video', 'audio']) {
+    const context = { canvas: { width: 0, height: 0 }, drawImage: () => {} }
+    const canvas = { getContext: () => context } as unknown as OffscreenCanvas
+    const engine = new PlayoutEngine({ outputs: [], options: { canvas }, report: (report) => reports.push(report) })
     const port = {
       onmessage: null as ((event: { data: ProcessorReport }) => void) | null,
       postMessage: (message: ProcessorMessage) => posted.push(message),
     }
     await engine.attachAudio(port as unknown as MessagePort)
-    await engine.setTracks({ video: true, audio: true, clock: 'audio', ...tracks })
+    await engine.setTracks(roles)
     await engine.play()
     const processor = (report: ProcessorReport) => port.onmessage!({ data: report })
     /** The context is heard at `contextTime` now, and runs with the wall clock. */
@@ -501,7 +566,10 @@ if (import.meta.vitest) {
     return { engine, processor, running }
   }
 
-  const audio = (time: number, duration = 0.5) => new FakeAudioData(time, duration) as unknown as AudioData
+  const audio = (time: number, duration = 0.5): PadItem => ({
+    type: 'frame',
+    frame: { payload: new FakeAudioData(time, duration) as unknown as AudioData } as Frame,
+  })
   /** The current time an animation frame presents. */
   const presented = () => {
     frame!()
@@ -526,7 +594,7 @@ if (import.meta.vitest) {
   })
 
   test('a seek holds the time at its target until the processor starts there, and settles at once while paused', async () => {
-    const { engine, processor, running } = await playing({ video: false })
+    const { engine, processor, running } = await playing(['audio'])
     processor({ type: 'start', contextTime: 5, mediaTime: 100 })
     await running(5)
     now += 1000
@@ -545,32 +613,32 @@ if (import.meta.vitest) {
 
   test('audio past the queue limit holds receive() until the processor consumes some, or a pause', async () => {
     const { engine, processor } = await playing()
-    for (const time of [0, 0.5, 1]) await engine.receive(audio(time))
+    for (const time of [0, 0.5, 1]) await engine.receive(audio(time), 'audio')
     let held = true
-    const fourth = engine.receive(audio(1.5)).then(() => {
+    const fourth = engine.receive(audio(1.5), 'audio').then(() => {
       held = false
     })
     await settle()
     expect(held).toBe(true)
     processor({ type: 'consumed', seconds: 0.5 })
     await fourth
-    const fifth = engine.receive(audio(2))
+    const fifth = engine.receive(audio(2), 'audio')
     await engine.pause()
     await fifth
   })
 
   test('ended waits for the audio queued on a running context, but not on one that never ran', async () => {
     const never = await playing()
-    await never.engine.receive(audio(0))
-    for (const role of ['video', 'audio'] as const) await never.engine.end(role)
+    await never.engine.receive(audio(0), 'audio')
+    for (const role of ['video', 'audio']) await never.engine.event({ type: 'eos' }, role)
     frame!()
     expect(ended()).toBe(true)
 
     reports = []
     const { engine, processor, running } = await playing()
-    await engine.receive(audio(0))
+    await engine.receive(audio(0), 'audio')
     await running(5)
-    for (const role of ['video', 'audio'] as const) await engine.end(role)
+    for (const role of ['video', 'audio']) await engine.event({ type: 'eos' }, role)
     frame!()
     expect(ended()).toBe(false)
     processor({ type: 'consumed', seconds: 0.5 })

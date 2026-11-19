@@ -20,10 +20,12 @@ import { describe, expect, test } from 'vitest'
 import { Location } from '@/model/common/location'
 import { Timestamp } from '@/model/property/timestamp'
 import { VideoFrameMarking } from '@/model/property/video_frame_marking'
+import { CapabilityCode } from '@/player/element/define'
 import type { Frame, Packet, PadProperties } from '@/player/element/pad'
 import { locCapabilities } from '@/player/elements/loc/track'
 import { WebCodecs } from '@/player/elements/webcodecs'
 import { collectingSink, testChain, testSource, type CollectingSink, type TestSource } from '@/player/testing/elements'
+import { chainWorker, preferWorker } from './harness/thread'
 
 const WIDTH = 320
 const HEIGHT = 240
@@ -73,7 +75,7 @@ async function decoded(
 ): Promise<Frame[]> {
   let source: TestSource | undefined
   let sink: CollectingSink | undefined
-  const { chain, failures } = testChain()
+  const { chain, failures } = testChain(undefined, undefined, undefined, undefined, await chainWorker())
   const script = (s: TestSource) => {
     source = s
     s.addPad(locCapabilities('out', role))
@@ -83,6 +85,9 @@ async function decoded(
   chain.addTransform(WebCodecs)
   chain.addSink(collectingSink({ packaging: 'raw', setup: (k) => (sink = k) }))
   await chain.init(new AbortController().signal)
+  // In the worker, decoded frames come back to the sink bridged
+  const thread = sink!.pads[0]!.capabilities.some((c) => c.code === CapabilityCode.THREAD && c.value === 'worker')
+  expect(thread).toBe(preferWorker)
   const pad = source!.pads[0]!
   await pad.write({ type: 'properties', properties: { track: 'v1', decoderConfig } })
   for (const packet of packets) await pad.write({ type: 'packet', packet })

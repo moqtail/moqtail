@@ -227,6 +227,7 @@ export class MSESink extends MediaSink<PadState> {
 
   /** Appends the pending init data, then `payload`. False when nothing was appended and playback goes on. */
   protected override async propertiesChanged(
+    _pad: Pad,
     state: PadState,
     changes: Partial<PadProperties>,
     previous: PadProperties,
@@ -537,7 +538,6 @@ export class MSESink extends MediaSink<PadState> {
   #mediaFailed(source: MediaSource, cause: unknown): void {
     if (source !== this.#source || this.fatal || this.context.signal.aborted) return
     if (this.#rebuiltAfterFailure) {
-      // shortcut: a fatal media error event only surfaces on the next receive(), fine while sources keep writing
       this.fail(new PlayerError('MEDIA_FAILURE', 'Playback failed again after a rebuild', { element: 'mse', cause }))
       this.#notify()
       return

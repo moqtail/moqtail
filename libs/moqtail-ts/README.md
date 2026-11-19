@@ -152,6 +152,29 @@ Attached with `player.on()`:
 
 `player.mediaSources` are the sources playing media: `getRenditions()` lists their renditions, `switch(id)` changes one, and `selectRenditions(ids)` sets those ABR may choose from. `player.isAbrAvailable(source)` says whether a source switches automatically, by itself (`ABR`) or through an ABR controller.
 
+### Workers
+
+With `preferWorker` (default `true`), the player starts a worker of its own and runs the heavy part of the elements that allow it there, where the browser has what they need: `webcodecs` decodes in it when the worker has the decoder, and `playout` draws on the canvas from it when every pad it plays comes from the worker, so decoded frames never touch the main thread. The API is the same either way. `preferWorker: false` keeps everything on the main thread. A page whose CSP doesn't allow the worker script plays on the main thread too. With Vite, a `moqtail` that's pre-bundled can lose the worker script's URL: list it in `optimizeDeps.exclude`.
+
+Your own element can run its engine there too. The worker only has code your bundler builds into it, so you write its entry and pass it to the player:
+
+```ts
+// player.worker.ts
+import { serveWorker } from 'moqtail/player/worker'
+import { GrayscaleEngine } from './grayscale'
+
+serveWorker({ grayscale: GrayscaleEngine })
+```
+
+```ts
+new MOQtailPlayer({ worker: () => new Worker(new URL('./player.worker.ts', import.meta.url), { type: 'module' }) })
+  .source(url)
+  .transform(grayscale)
+  .sink(canvas)
+```
+
+The element's `threads: ({ worker }) => (worker?.has('element:grayscale') ? 'both' : 'main')` gives it `context.worker`, whose `create('grayscale', { outputs })` makes the engine there, with its output pads carrying `CapabilityCode.THREAD` `worker`. `link(pad, engine)` sends a worker pad's items to it inside the worker. Without a worker, the element constructs the same engine class itself. An element that knows nothing about workers still works: a worker pad it takes comes to it on the main thread.
+
 ## Element Selection
 
 The player is a chain of elements joined by pads. Each element definition says what it is (`source`, `transform` or `sink`), the pads it creates (`out` capabilities) and the pads it accepts (`in` capabilities). A source definition also has a `probe` that says whether it handles a track.

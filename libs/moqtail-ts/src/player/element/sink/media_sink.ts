@@ -18,7 +18,14 @@ import { SinkElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode } from '@/player/element/define'
 import type { MediaSinkElement } from '@/player/element/interfaces'
-import type { Pad, PadEvent, PadItem, PadProperties, PadSignal } from '@/player/element/pad'
+import {
+  closeFrame,
+  type Pad,
+  type PadEvent,
+  type PadItem,
+  type PadProperties,
+  type PadSignal,
+} from '@/player/element/pad'
 import type { PlayerError } from '@/player/error'
 
 /** What a media sink keeps per sink pad, at the least. */
@@ -29,7 +36,7 @@ export interface SinkPadState {
 
 /**
  * What every media sink shares: one sink pad per role, a state per pad, its properties and
- * the sink-wide `live` flag, `eos`, and a fatal error thrown at the next `receive()`. The
+ * the sink-wide `live` flag, `eos`, and a fatal error after which it drops what it receives. The
  * base registers its pad listeners first, so a subclass's run after them.
  */
 export abstract class MediaSink<S extends SinkPadState> extends SinkElement implements MediaSinkElement {
@@ -89,7 +96,10 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
   }
 
   async receive(pad: Pad, item: PadItem): Promise<void> {
-    if (this.#fatal) throw this.#fatal
+    if (this.#fatal) {
+      closeFrame(item)
+      return
+    }
     const state = this.#states.get(pad)
     if (!state) {
       // The pad went away while this was in flight; only the receiver closes a frame
@@ -100,7 +110,7 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
     const previous = state.properties
     state.properties = { ...previous, ...item.properties }
     if (item.properties.live !== undefined) this.#live = item.properties.live
-    await this.propertiesChanged(state, item.properties, previous)
+    await this.propertiesChanged(pad, state, item.properties, previous)
   }
 
   protected abstract newPadState(): S
@@ -108,6 +118,7 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
 
   /** Called once `changes` are merged into `state.properties`, which were `previous`. */
   protected propertiesChanged(
+    _pad: Pad,
     _state: S,
     _changes: Partial<PadProperties>,
     _previous: PadProperties,
@@ -125,9 +136,11 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
     return [...this.#states.values()].map((s) => s.properties)
   }
 
-  /** Thrown at the next `receive()`, which fails the player. The first error stays. */
+  /** Fails the player, and drops what `receive()` gets from then on. The first error stays. */
   protected fail(error: PlayerError): void {
-    this.#fatal ??= error
+    if (this.#fatal) return
+    this.#fatal = error
+    this.context.fail(error)
   }
 
   #padAdded(pad: Pad): void {

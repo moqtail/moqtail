@@ -177,7 +177,9 @@ export class Pad {
   connect(element: Consumer, onError: ErrorHandler): void {
     const sink = new Pad('sink', element, this.capabilities)
     element.pads.push(sink)
-    this.#connections.set(sink, new Connection(sink, onError))
+    const deliver = (item: PadOutput) =>
+      item.type === 'event' ? sink.deliverEvent(item.event) : element.receive(sink, item)
+    this.#connections.set(sink, new Connection(deliver, (error) => onError(error, sink)))
     this.peers.push(sink)
     sink.peers.push(this)
     element.emit('padadded', sink)
@@ -229,13 +231,13 @@ export function packetOf(track: string, object: MoqtObject, payload: Uint8Array)
   return { track, location: object.location, properties: object.properties ?? [], payload }
 }
 
-function cloned(item: PadOutput): PadOutput {
+export function cloned(item: PadOutput): PadOutput {
   if (item.type !== 'frame') return item
   return { type: 'frame', frame: { ...item.frame, payload: item.frame.payload.clone() } }
 }
 
 /** Drops a frame no consumer will receive, since only its receiver would close it. */
-function closeFrame(item: PadOutput): void {
+export function closeFrame(item: PadOutput): void {
   if (item.type === 'frame') item.frame.payload.close()
 }
 
@@ -245,17 +247,17 @@ function remove<T>(list: T[], item: T): boolean {
   return index !== -1
 }
 
-class Connection {
-  readonly #destination: Pad
-  readonly #onError: ErrorHandler
+export class Connection {
+  readonly #deliver: (item: PadOutput) => void | Promise<void>
+  readonly #onError: (error: unknown) => void
   readonly #queue: PadOutput[] = []
   /** Producers waiting for room, oldest first. */
   readonly #waiting: (() => void)[] = []
   #wake: (() => void) | undefined
   #closed = false
 
-  constructor(destination: Pad, onError: ErrorHandler) {
-    this.#destination = destination
+  constructor(deliver: (item: PadOutput) => void | Promise<void>, onError: (error: unknown) => void) {
+    this.#deliver = deliver
     this.#onError = onError
     void this.#run()
   }
@@ -285,10 +287,9 @@ class Connection {
       if (!item || this.#closed) return
       if (this.#queue.length < CONNECTION_CAPACITY) this.#waiting.shift()?.()
       try {
-        if (item.type === 'event') await this.#destination.deliverEvent(item.event)
-        else await (this.#destination.element as Consumer).receive(this.#destination, item)
+        await this.#deliver(item)
       } catch (error) {
-        this.#onError(error, this.#destination)
+        this.#onError(error)
       }
     }
   }

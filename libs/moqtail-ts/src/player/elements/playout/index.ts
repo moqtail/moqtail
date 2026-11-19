@@ -30,6 +30,10 @@ export const Playout = defineElement({
   name: 'playout',
   capabilities: [rawCapabilities('in', 'video'), rawCapabilities('in', 'audio')],
   provides: [MEDIA_SINK],
+  threads: ({ worker }) =>
+    ['element:playout', 'OffscreenCanvas', 'requestAnimationFrame'].every((name) => worker?.has(name))
+      ? 'both'
+      : 'main',
   init: async (context, options: PlayoutOptions) => {
     // Options come from the app, so a bad canvas is a programming error
     if (typeof HTMLCanvasElement === 'undefined' || !(options.canvas instanceof HTMLCanvasElement))
@@ -39,9 +43,10 @@ export const Playout = defineElement({
         element: 'playout',
       })
     }
-    const canvas = options.canvas.getContext('2d')
-    if (!canvas) throw new TypeError('The playout canvas already has a context other than "2d"')
-    return new PlayoutSink(context, canvas)
+    // With a worker it may transfer, which a context rules out: it's checked once the element decides
+    if (!context.worker && !options.canvas.getContext('2d'))
+      throw new TypeError('The playout canvas already has a context other than "2d"')
+    return new PlayoutSink(context, options.canvas)
   },
 })
 

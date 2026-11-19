@@ -39,6 +39,7 @@ import { TemplateTimeline } from '@/player/elements/mediatimeline/template'
 import { recordClient } from './client'
 import { Records, seconds, type Log, type SwitchRecord } from './records'
 import { sourceOf, type TestSource } from './sources'
+import { playerOptions } from './thread'
 
 export interface OpenOptions {
   switchFrom?: boolean
@@ -104,7 +105,7 @@ export class Session extends Records {
 
   /** Creates the player and starts it. Called by `open`. */
   async begin(options: OpenOptions = {}): Promise<void> {
-    this.player = new MOQtailPlayer(options.player)
+    this.player = new MOQtailPlayer({ ...playerOptions(), ...options.player })
     creating = this
     for (const name of PLAYER_EVENTS) {
       this.player.on(name, (...args: unknown[]) => {

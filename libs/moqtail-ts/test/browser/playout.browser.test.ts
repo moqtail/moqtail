@@ -28,6 +28,7 @@ import type { PlayoutSink } from '@/player/elements/playout/sink'
 import type { MOQtailPlayer } from '@/player/player'
 import { LiveBufferController } from '@/player/plugins/buffer/live'
 import { flush, testChain, testSource, type TestSource } from '@/player/testing/elements'
+import { chainWorker } from './harness/thread'
 
 const FPS = 30
 const SAMPLE_RATE = 48_000
@@ -259,7 +260,8 @@ async function open(
   const { video = true, audio = true, properties = {}, write = (s) => writeFrames(s, [0], [0]), ready = true } = options
   const canvas = document.createElement('canvas')
   document.body.append(canvas)
-  const { chain, failures } = testChain()
+  // Its pads are main-thread pads, so playout stays there either way
+  const { chain, failures } = testChain(undefined, undefined, undefined, undefined, await chainWorker())
   let source: TestSource | undefined
   const script = (s: TestSource) => {
     source = s

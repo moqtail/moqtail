@@ -5,6 +5,7 @@
     "src/model/index.ts",
     "src/player/index.ts",
     "src/player/component/index.ts",
+    "src/player/worker/index.ts",
     "src/util/index.ts"
   ],
   "outputs": [{ "name": "html", "path": "docs" }]

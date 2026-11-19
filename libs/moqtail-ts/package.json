@@ -84,6 +84,16 @@
         "default": "./dist/player/component.cjs"
       }
     },
+    "./player/worker": {
+      "import": {
+        "types": "./dist/player/worker.d.mts",
+        "default": "./dist/player/worker.mjs"
+      },
+      "require": {
+        "types": "./dist/player/worker.d.cts",
+        "default": "./dist/player/worker.cjs"
+      }
+    },
     "./util": {
       "import": {
         "types": "./dist/util.d.mts",
@@ -131,6 +141,7 @@
     }
   },
   "dependencies": {
+    "comlink": "^4.4.2",
     "valibot": "^1.5.0"
   }
 }

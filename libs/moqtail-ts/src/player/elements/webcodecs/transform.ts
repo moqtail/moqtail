@@ -14,17 +14,25 @@
  * limitations under the License.
  */
 
+import type { Remote } from 'comlink'
 import { TransformElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
+import { CapabilityCode } from '@/player/element/define'
 import { convertedCapabilities } from '@/player/element/negotiation'
 import type { Pad, PadItem } from '@/player/element/pad'
+import { roleOf } from '@/player/element/sink/media_sink'
+import { forTransfer } from '@/player/element/worker/transfer'
+import type { PlayerError } from '@/player/error'
 import { Decoding, type Codecs } from './decoding'
 
-/** Decodes the one `loc` pad it takes into a `raw` pad of `VideoFrame`s or `AudioData`. */
+/**
+ * Decodes the one `loc` pad it takes into a `raw` pad of `VideoFrame`s or `AudioData`, in the
+ * worker when it has the decoder for the pad's role.
+ */
 export class WebCodecsTransform extends TransformElement {
   readonly #codecs: Codecs
   #output: Pad | undefined
-  #decoding: Decoding | undefined
+  #decoding: Decoding | Remote<Decoding> | undefined
 
   constructor(context: ElementContext, codecs: Codecs) {
     super(context)
@@ -42,39 +50,42 @@ export class WebCodecsTransform extends TransformElement {
     return !this.pads.some((p) => p.direction === 'sink') && this.matchesCapabilities(pad)
   }
 
-  async receive(_pad: Pad, item: PadItem): Promise<void> {
-    await this.#decoding?.receive(item)
+  async receive(pad: Pad, item: PadItem): Promise<void> {
+    await this.#decoding?.receive(forTransfer(item, pad))
   }
 
   override async destroy(): Promise<void> {
-    this.#decoding?.close()
+    await this.#decoding?.close()
     await super.destroy()
   }
 
   #inputAdded(input: Pad): void {
     // Negotiated, so the definition converts it
-    const output = this.createPad('src', convertedCapabilities(this.definition.capabilities, input.capabilities)!)
-    const decoding = new Decoding(
-      this.#codecs,
-      (item) => output.write(item),
-      (error) => this.context.fail(error),
-    )
+    const capabilities = convertedCapabilities(this.definition.capabilities, input.capabilities)!
+    const worker = this.context.worker
+    const inWorker = worker?.has(roleOf(input) === 'audio' ? 'AudioDecoder' : 'VideoDecoder') ? worker : undefined
+    const thread = inWorker ? [{ direction: 'out' as const, code: CapabilityCode.THREAD, value: 'worker' }] : []
+    const output = this.createPad('src', [...capabilities, ...thread])
+    const report = (error: PlayerError) => this.context.fail(error)
+    const decoding = inWorker
+      ? inWorker.create<Decoding>('webcodecs', { outputs: [output], report })
+      : new Decoding({ outputs: [(item) => output.write(item)], options: undefined, report }, this.#codecs)
+    this.#output = output
+    this.#decoding = decoding
     input.onEvent((event) => {
-      decoding.event(event)
+      void decoding.event(event)
       return true
     })
     // Upstream signals from the output need no listener: unhandled, they reach the input
     input.onSignal((signal) => {
-      decoding.signal(signal)
+      void decoding.signal(signal)
       return false
     })
-    this.#output = output
-    this.#decoding = decoding
   }
 
   /** `failed` carries over, so the chain's `NO_MEDIA_SINK` check still sees a failure. */
   #inputRemoved(failed: boolean): void {
-    this.#decoding?.close()
+    void this.#decoding?.close()
     if (this.#output) this.removePad(this.#output, failed)
   }
 }

@@ -32,6 +32,7 @@ import {
 import { ABR, MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
 import type { Packet, Pad, PadItem, PadOutput, PadSignal } from '@/player/element/pad'
 import { convertedCapabilities } from '@/player/element/negotiation'
+import type { PlayerWorker } from '@/player/element/worker/player_worker'
 import type { PlayerEvents } from '@/player/player'
 import { definePlugin, type AbrController, type BufferController } from '@/player/plugin'
 import { timeRanges } from './media'
@@ -275,6 +276,7 @@ export function testChain(
   client: () => unknown = () => ({}),
   switchSources: ChainHost['switchSources'] = () => [],
   transformDefinitions: ChainHost['transformDefinitions'] = () => [],
+  worker?: PlayerWorker,
 ) {
   const warnings: Error[] = []
   const failures: Error[] = []
@@ -284,6 +286,7 @@ export function testChain(
     definitions,
     switchSources,
     transformDefinitions,
+    worker: () => worker,
     warn: (e) => warnings.push(e),
     fail: (e) => failures.push(e),
   })

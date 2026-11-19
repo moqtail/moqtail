@@ -49,7 +49,15 @@ export interface PadProperties {
   track?: string
   /** Including codec, e.g. `video/mp4; codecs="avc1.64001f"`. */
   mimeType?: string
+  /**
+   * The WebCodecs decoder config of a track without a container, such as LOC (LOC 2.3.2.1, 2.3.3.1).
+   * Its `description` is `initData`.
+   */
+  decoderConfig?: Omit<VideoDecoderConfig, 'description'> | Omit<AudioDecoderConfig, 'description'>
+  /** The track's codec configuration: a CMAF Header, or the LOC VIDEO_CONFIG or AUDIO_CONFIG bytes. */
   initData?: Uint8Array
+  /** Units per second of the track's LOC Timestamps (LOC 2.3.1.2). Absent, they're µs since the Unix epoch. */
+  timescale?: number
   live?: boolean
   /** Seconds, for VOD `MediaSource.duration`. */
   duration?: number

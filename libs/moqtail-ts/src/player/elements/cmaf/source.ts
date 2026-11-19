@@ -20,11 +20,11 @@ import type { MoqtObject } from '@/model/data/object'
 import type { TrackProperty } from '@/model/property/track_property'
 import type { Capabilities } from '@/player/element/define'
 import type { CatalogTrack } from '@/player/element/interfaces'
-import { packetOf, type Packet } from '@/player/element/pad'
+import { packetOf, type Packet, type PadProperties } from '@/player/element/pad'
+import { acceptedInitData, initOnObjects, objectInitData } from '@/player/element/source/init_data'
 import { SwitchingSetSource } from '@/player/element/source/switching_set'
 import { renditionId } from '@/player/util/track'
 import { fragmentTime, mediaTimescale } from './bmff'
-import { acceptedInitData, objectInitData } from './init_data'
 import { cmafCapabilities, mimeTypeOf } from './track'
 
 /** Init data from the catalog or the CMAF config properties (MSF 5.1.7), timing from the `moof`. */
@@ -33,8 +33,8 @@ export class CmafSource extends SwitchingSetSource {
     return cmafCapabilities('out', role)
   }
 
-  mimeType(track: CatalogTrack): string {
-    return mimeTypeOf(track)
+  mediaProperties(track: CatalogTrack): Partial<PadProperties> {
+    return { mimeType: mimeTypeOf(track) }
   }
 
   acceptedInitData(track: CatalogTrack, trackProperties: TrackProperty[]): Uint8Array | undefined {
@@ -46,10 +46,11 @@ export class CmafSource extends SwitchingSetSource {
   }
 
   initOnObjects(track: CatalogTrack): boolean {
-    return track.init?.type === 'object-property'
+    return initOnObjects(track)
   }
 
-  mediaTime(track: CatalogTrack, packet: Packet, initData: Uint8Array | undefined): number | undefined {
+  mediaTime(track: CatalogTrack, packet: Packet, carried: Partial<PadProperties>): number | undefined {
+    const { initData } = carried
     return fragmentTime(packet.payload, track.timescale ?? (initData && mediaTimescale(initData)))
   }
 

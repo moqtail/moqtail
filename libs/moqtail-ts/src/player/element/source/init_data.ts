@@ -15,7 +15,7 @@
  */
 
 /**
- * Where a track's CMAF init data comes from (MSF 5.1.7, 12.2): inline in the catalog, a
+ * Where a track's init data comes from (MSF 5.1.7, 12.2): inline in the catalog, a
  * track property in SUBSCRIBE_OK or FETCH_OK, or an object property on the media objects.
  */
 
@@ -58,4 +58,8 @@ export function acceptedInitData(track: CatalogTrack, trackProperties: TrackProp
 export function objectInitData(track: CatalogTrack, properties: KeyValuePair[] | null): Uint8Array | undefined {
   if (track.init?.type !== 'object-property') return undefined
   return findProperty(properties, readerFor(track.init.property))?.config
+}
+
+export function initOnObjects(track: CatalogTrack): boolean {
+  return track.init?.type === 'object-property'
 }

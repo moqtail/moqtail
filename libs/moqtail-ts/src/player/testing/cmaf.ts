@@ -22,11 +22,12 @@ import { ObjectForwardingPreference, ObjectStatus } from '@/model/data/constant'
 import { FullTrackName } from '@/model/data/full_track_name'
 import { MoqtObject } from '@/model/data/object'
 import { Cmaf } from '@/player/elements/cmaf'
-import type { CmafSource } from '@/player/elements/cmaf/source'
+import type { SwitchingSetSource } from '@/player/element/source/switching_set'
 import type { SubscribeOptions, SubscribeUpdateOptions, SwitchOptions } from '@/client/types'
 import { LocationFilterType } from '@/model/control/constant'
 import { FillParameters } from '@/model/parameter/message/fill_parameters'
 import type { LocationFilter } from '@/model/parameter/message/location_filter'
+import { CapabilityCode, type SourceElementDefinition } from '@/player/element/define'
 import type { CatalogReader, CatalogTrack, MediaSourceOptions, TimelineReader } from '@/player/element/interfaces'
 import { fragment } from './bmff'
 import { FakeClient, testObject } from './client'
@@ -68,7 +69,7 @@ export function endOfTrack(group: number, object = 0): MoqtObject {
 }
 
 /**
- * A `CmafSource` loaded for `tracks` as the catalog would, over a `FakeClient`, with its
+ * A switching set source, `Cmaf` unless `element` says otherwise, loaded for `tracks` as the catalog would, over a `FakeClient`, with its
  * pad connected to a collecting sink.
  */
 export async function cmafChain(
@@ -79,7 +80,7 @@ export async function cmafChain(
     reconnectAttempts?: number
     respond?: FakeClient['respond']
     ordered?: boolean
-    element?: typeof Cmaf
+    element?: SourceElementDefinition<SwitchingSetSource>
   } = {},
 ) {
   const client = () => {
@@ -89,25 +90,27 @@ export async function cmafChain(
     return created
   }
   const clients = [client()]
+  const element = options.element ?? Cmaf
+  const packaging = element.capabilities[0]!.find((c) => c.code === CapabilityCode.PACKAGING)!.value
   const { chain, failures } = testChain(
     () => [],
     () => clients.at(-1),
   )
   if (options.reconnectAttempts)
     Object.assign(chain.host.player.options, { client: { reconnectAttempts: options.reconnectAttempts } })
-  let source!: CmafSource
+  let source!: SwitchingSetSource
   let sink!: CollectingSink
   chain.addSource(
     testSource({
       script: async (parent) => {
         const { catalog, cmaf = {} } = options
-        source = await parent.ctx.load(options.element ?? Cmaf, { tracks, options: cmaf, ...(catalog && { catalog }) })
+        source = await parent.ctx.load(element, { tracks, options: cmaf, ...(catalog && { catalog }) })
         parent.emit('nomorepads')
       },
     }),
     {},
   )
-  chain.addSink(collectingSink({ setup: (k) => (sink = k) }))
+  chain.addSink(collectingSink({ packaging, setup: (k) => (sink = k) }))
   await chain.init(new AbortController().signal)
   const player = chain.host.player
   return {

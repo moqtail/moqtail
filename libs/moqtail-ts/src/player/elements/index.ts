@@ -17,6 +17,7 @@
 import type { SourceElementDefinition } from '@/player/element/define'
 import { CatalogSource } from './catalog'
 import { Cmaf } from './cmaf'
+import { Loc } from './loc'
 import { Locmaf } from './locmaf'
 import { MediaTimeline } from './mediatimeline'
 import { SapTimeline } from './saptimeline'
@@ -29,6 +30,7 @@ export const BUILT_IN_SOURCES: readonly SourceElementDefinition[] = [
   CatalogSource,
   Cmaf,
   Locmaf,
+  Loc,
   MediaTimeline,
   SapTimeline,
 ]

@@ -34,6 +34,7 @@ import type { CatalogTrack, RequestHooks, TimelineReader } from '@/player/elemen
 import type { Packet, Pad, PadProperties } from '@/player/element/pad'
 import { DEFAULT_MEDIA_ORDERING, MEDIA_PRIORITY } from '@/player/constants'
 import { trackIdentifier } from '@/player/msf_url'
+import { deepEqual } from '@/player/util/json'
 import { renditionId, trackKey } from '@/player/util/track'
 import { beyond, reached, type End } from './ranges'
 import { GroupTimes } from './seek'
@@ -197,12 +198,13 @@ export class Delivery {
     }
     if (accepted === undefined) return 'stopped'
     if (accepted instanceof RequestError) return 'rejected'
-    const initData = this.#initDataOf(track, trackPropertiesOf(accepted))
+    const trackProperties = trackPropertiesOf(accepted)
+    const initData = this.#initDataOf(track, trackProperties)
     if (initData === false) {
       void cancel(client, accepted)
       return 'rejected'
     }
-    await this.#announce(track, initData)
+    await this.#announce(track, initData, trackProperties)
     this.#current = { client, accepted }
     this.#closed = false
     const outcome = await this.#read(track, accepted, signal)
@@ -305,14 +307,18 @@ export class Delivery {
     return new Location(last.location.group + 1n, 0n)
   }
 
-  #trackProperties(track: CatalogTrack, initData: Uint8Array | undefined): Partial<PadProperties> {
+  #trackProperties(
+    track: CatalogTrack,
+    initData: Uint8Array | undefined,
+    trackProperties: TrackProperties,
+  ): Partial<PadProperties> {
     const duration =
       this.duration ?? (!track.isLive && track.trackDuration !== undefined ? track.trackDuration / 1000 : undefined)
     const latency = track.targetLatency ?? track.buffers?.target
     const window = track.isLive ? track.accessibleWindowTime : undefined
     return {
       track: renditionId(track, this.#context.catalog),
-      mimeType: this.#packaging.mimeType(track),
+      ...this.#packaging.mediaProperties(track, trackProperties),
       live: track.isLive,
       ...(duration !== undefined && { duration }),
       ...(latency !== undefined && { targetLatency: latency / 1000 }),
@@ -429,17 +435,22 @@ export class Delivery {
     this.#soft = undefined
     const accepted = await soft.accepted
     if (accepted instanceof RequestError) return undefined
-    const initData = this.#initDataOf(soft.track, accepted.subscribeOk.trackProperties)
+    const { trackProperties } = accepted.subscribeOk
+    const initData = this.#initDataOf(soft.track, trackProperties)
     if (initData === false) return undefined
     // Before the write: a switch issued meanwhile must see the new request as the current one
     if (this.#current) this.#current.accepted = accepted
-    await this.#announce(soft.track, initData)
+    await this.#announce(soft.track, initData, trackProperties)
     return soft.track
   }
 
-  /** Writes the properties of `track`, with the init data its request was accepted with. */
-  async #announce(track: CatalogTrack, initData: Uint8Array | undefined): Promise<void> {
-    await this.#setProperties(this.#trackProperties(track, initData))
+  /** Writes the properties of `track`, with the init data and track properties its request was accepted with. */
+  async #announce(
+    track: CatalogTrack,
+    initData: Uint8Array | undefined,
+    trackProperties: TrackProperties,
+  ): Promise<void> {
+    await this.#setProperties(this.#trackProperties(track, initData, trackProperties))
     if (initData) this.#initFor = trackKey(track)
   }
 
@@ -511,7 +522,7 @@ export class Delivery {
 
   /** The media time of a group's first delivered object. */
   #recordTime(track: CatalogTrack, packet: Packet): void {
-    const time = this.#packaging.mediaTime(track, packet, this.#properties?.initData)
+    const time = this.#packaging.mediaTime(track, packet, this.#properties ?? {})
     if (time !== undefined) this.times.record(trackKey(track), packet.location.group, time)
   }
 
@@ -520,7 +531,7 @@ export class Delivery {
     const changed: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(next)) {
       const current = (this.#properties as Record<string, unknown> | undefined)?.[key]
-      if (value !== undefined && !sameValue(current, value)) changed[key] = value
+      if (value !== undefined && !deepEqual(current, value)) changed[key] = value
     }
     if (this.#properties && Object.keys(changed).length === 0) return
     this.#properties = { ...this.#properties, ...changed }
@@ -561,11 +572,6 @@ function trackPropertiesOf(accepted: Accepted): TrackProperties {
 /** The key of the track an object or a request is for. */
 export function trackOf(named: { fullTrackName: FullTrackName }): string {
   return trackIdentifier(named.fullTrackName.namespace, named.fullTrackName.name)
-}
-
-function sameValue(a: unknown, b: unknown): boolean {
-  if (a instanceof Uint8Array && b instanceof Uint8Array) return a.length === b.length && a.every((x, i) => x === b[i])
-  return a === b
 }
 
 /** The request's result, or undefined once `signal` aborts first; a late result goes to `late`. */

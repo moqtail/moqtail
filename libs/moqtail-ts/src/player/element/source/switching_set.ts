@@ -26,7 +26,7 @@ import { SourceElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import type { Capabilities } from '@/player/element/define'
 import type { CatalogTrack, MediaSourceElement, MediaSourceOptions, Rendition } from '@/player/element/interfaces'
-import type { Packet, Pad } from '@/player/element/pad'
+import type { Packet, Pad, PadProperties } from '@/player/element/pad'
 import { PlayerError } from '@/player/error'
 import { bitrateOf, rendition, renditionId, trackKey } from '@/player/util/track'
 import { Delivery } from './delivery'
@@ -38,8 +38,8 @@ import { ladderOf, Switcher } from './switch'
 export interface Packaging {
   /** The source pad's capabilities for a set of `role`. Called from the constructor, so it can't read fields. */
   padCapabilities(role: string): Capabilities
-  /** The pad's `mimeType` for `track`. */
-  mimeType(track: CatalogTrack): string
+  /** What the pad tells the next element about `track`'s media once a request for it is accepted. */
+  mediaProperties(track: CatalogTrack, trackProperties: TrackProperty[]): Partial<PadProperties>
   /**
    * Init data known once a request is accepted, from the catalog or the track properties.
    * @throws when the track's init data is missing or invalid: the request counts as rejected.
@@ -49,8 +49,8 @@ export interface Packaging {
   objectInitData(track: CatalogTrack, object: MoqtObject): Uint8Array | undefined
   /** Whether the track's packets can't be decoded before the first `objectInitData`. */
   initOnObjects(track: CatalogTrack): boolean
-  /** The media time of `packet` in seconds, given the init data the pad carries; undefined if unknown. */
-  mediaTime(track: CatalogTrack, packet: Packet, initData: Uint8Array | undefined): number | undefined
+  /** The media time of `packet` in seconds, given what the pad carries; undefined if unknown. */
+  mediaTime(track: CatalogTrack, packet: Packet, carried: Partial<PadProperties>): number | undefined
   /** The packet the pad carries for `object`, given the init data that applies to it; undefined drops it. */
   packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): Packet | undefined
 }
@@ -122,11 +122,11 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
   }
 
   abstract padCapabilities(role: string): Capabilities
-  abstract mimeType(track: CatalogTrack): string
+  abstract mediaProperties(track: CatalogTrack, trackProperties: TrackProperty[]): Partial<PadProperties>
   abstract acceptedInitData(track: CatalogTrack, trackProperties: TrackProperty[]): Uint8Array | undefined
   abstract objectInitData(track: CatalogTrack, object: MoqtObject): Uint8Array | undefined
   abstract initOnObjects(track: CatalogTrack): boolean
-  abstract mediaTime(track: CatalogTrack, packet: Packet, initData: Uint8Array | undefined): number | undefined
+  abstract mediaTime(track: CatalogTrack, packet: Packet, carried: Partial<PadProperties>): number | undefined
   abstract packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): Packet | undefined
 
   getRenditions(): Rendition[] {

@@ -22,7 +22,13 @@ import { Emitter } from '@/util/emitter'
 import { SinkElement, SourceElement, TransformElement } from '@/player/element/base'
 import { Chain, type ChainHost } from '@/player/element/chain'
 import type { ElementContext } from '@/player/element/context'
-import { CapabilityCode, defineElement, type Capabilities, type Identifiers } from '@/player/element/define'
+import {
+  CapabilityCode,
+  defineElement,
+  type CapabilityBundles,
+  type Capabilities,
+  type Identifiers,
+} from '@/player/element/define'
 import { ABR, MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
 import type { Packet, Pad, PadItem, PadOutput, PadSignal } from '@/player/element/pad'
 import type { PlayerEvents } from '@/player/player'
@@ -33,7 +39,7 @@ export const VIDEO_CMAF: Capabilities = [
   { direction: 'out', code: CapabilityCode.ROLE, value: 'video' },
   { direction: 'out', code: CapabilityCode.PACKAGING, value: 'cmaf' },
 ]
-const ACCEPT_CMAF = [[{ direction: 'in' as const, code: CapabilityCode.PACKAGING, value: 'cmaf' }]]
+const ACCEPT_CMAF = accepting('cmaf')
 
 /** A source driven by the test: it adds pads, writes items, and reports `nomorepads`. */
 export class TestSource extends SourceElement {
@@ -126,11 +132,13 @@ export class CollectingSink extends SinkElement {
 }
 
 /** A sink definition accepting CMAF; `media` makes it a media sink for `NO_MEDIA_SINK` checks. */
-export function collectingSink(options: { media?: boolean; setup?: (sink: CollectingSink) => void } = {}) {
+export function collectingSink(
+  options: { media?: boolean; packaging?: string; setup?: (sink: CollectingSink) => void } = {},
+) {
   return defineElement({
     type: 'sink',
     name: 'collecting-sink',
-    capabilities: ACCEPT_CMAF,
+    capabilities: options.packaging ? accepting(options.packaging) : ACCEPT_CMAF,
     // Pretends to be a media sink: only the runtime's NO_MEDIA_SINK check reads `provides` here
     ...(options.media && { provides: [MEDIA_SINK] as unknown as [] }),
     async init(context) {
@@ -300,4 +308,8 @@ export async function connected(setup?: (sink: CollectingSink) => void) {
   )
   await chain.init(new AbortController().signal)
   return { chain, warnings, failures, source: source!, sink: sink!, pad: source!.pads[0]! }
+}
+
+function accepting(packaging: string): CapabilityBundles {
+  return [[{ direction: 'in', code: CapabilityCode.PACKAGING, value: packaging }]]
 }

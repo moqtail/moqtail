@@ -32,6 +32,7 @@ import type { Track, Status, SourceState, SourceKind, PublishStatus, Features } 
 import { Header } from '@/components/Header';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoPlayer } from '@/components/VideoPlayer';
+import { CanvasPlayer } from '@/components/CanvasPlayer';
 import { LocalPreview } from '@/components/LocalPreview';
 import { Advanced } from '@/components/Advanced';
 import { followData } from '@/lib/data';
@@ -127,11 +128,14 @@ export function App() {
   const [features, setFeatures] = useState<Features>(() => ({
     ssts: false,
     switchFrom: supportsSwitchFrom(relayUrl),
+    canvas: false,
   }));
   /** Bumped by a feature toggle while playing, to reconnect with the new features. */
   const [reload, setReload] = useState(0);
 
   const videoRef = useRef<MOQtailVideoElement | null>(null);
+  /** What `CanvasPlayer` plays, with the canvas feature on. */
+  const [canvasSrc, setCanvasSrc] = useState<string>();
 
   // Tab state
   const [tab, setTab] = useState<Tab>('watch');
@@ -254,6 +258,18 @@ export function App() {
     setSession(n => n + 1);
   }, []);
 
+  /** Shows what `current` plays while `isCurrent()`, since a replaced player still emits during teardown. */
+  const followPlayer = useCallback((current: MOQtailPlayer, isCurrent: () => boolean) => {
+    setPlayer(current);
+    current.on('statechange', state => {
+      if (isCurrent()) setStatus(state);
+    });
+    current.on('catalog', element => {
+      setCatalog(element);
+      setTracks(sortTracks(element.tracks));
+    });
+  }, []);
+
   const handleConnect = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -265,6 +281,11 @@ export function App() {
     resetPlayback('connecting');
     const url = catalogUrl(relayUrl, namespace);
     logger.info('app', `connect: ${url}`);
+    setCanvasSrc(features.canvas ? url : undefined);
+    if (features.canvas) {
+      video.removeAttribute('src');
+      return;
+    }
     // Read when the element loads, so they're set before `src`
     video.config = features.ssts ? { plugins: [ssts(), liveBuffer()] } : undefined;
     video.toggleAttribute('switch-from', features.switchFrom && !features.ssts);
@@ -273,16 +294,8 @@ export function App() {
 
     const current = video.player;
     if (!current) return; // the element reports why with `error`
-    setPlayer(current);
-    // The previous player's teardown still emits; only the element's current one counts
-    current.on('statechange', state => {
-      if (video.player === current) setStatus(state);
-    });
-    current.on('catalog', element => {
-      setCatalog(element);
-      setTracks(sortTracks(element.tracks));
-    });
-  }, [relayUrl, namespace, features, resetPlayback]);
+    followPlayer(current, () => video.player === current);
+  }, [relayUrl, namespace, features, resetPlayback, followPlayer]);
 
   useEffect(() => {
     if (reload > 0) handleConnect();
@@ -293,15 +306,25 @@ export function App() {
     setFeatures(f => ({ ...f, switchFrom: supportsSwitchFrom(url) }));
   }, []);
 
-  const handleFeatureChange = useCallback((feature: keyof Features, on: boolean) => {
-    setFeatures(f => ({ ...f, [feature]: on }));
-    if (videoRef.current?.hasAttribute('src')) setReload(n => n + 1);
-  }, []);
+  const handleFeatureChange = useCallback(
+    (feature: keyof Features, on: boolean) => {
+      setFeatures(f => ({ ...f, [feature]: on }));
+      const playing = videoRef.current?.hasAttribute('src') || canvasSrc !== undefined;
+      if (playing) setReload(n => n + 1);
+    },
+    [canvasSrc],
+  );
 
   const disposePlayer = useCallback(() => {
     videoRef.current?.removeAttribute('src');
+    setCanvasSrc(undefined);
     resetPlayback('idle');
   }, [resetPlayback]);
+
+  const handleCanvasError = useCallback((message: string) => {
+    setError(message);
+    setStatus('error');
+  }, []);
 
   const handleSourceToggle = useCallback(async (kind: SourceKind, enabled: boolean) => {
     if (enabled) {
@@ -448,7 +471,17 @@ export function App() {
         {/* Main area */}
         {tab === 'watch' ? (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <VideoPlayer ref={videoRef} status={status} />
+            <VideoPlayer ref={videoRef} status={status}>
+              {features.canvas && (
+                <CanvasPlayer
+                  src={canvasSrc}
+                  session={session}
+                  features={features}
+                  onPlayer={followPlayer}
+                  onError={handleCanvasError}
+                />
+              )}
+            </VideoPlayer>
             {advanced && (
               <Advanced videoRef={videoRef} player={player} catalog={catalog} session={session} />
             )}

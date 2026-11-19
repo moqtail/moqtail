@@ -15,6 +15,7 @@
  */
 
 import type { MOQtailVideoElement } from 'moqtail/player/component';
+import type { ComponentChildren } from 'preact';
 import { forwardRef } from 'preact/compat';
 import { LuSun, LuPlay, LuCircleDot, LuLoader } from 'react-icons/lu';
 import '@/lib/videojs';
@@ -164,11 +165,14 @@ function ConnectingOverlay() {
   );
 }
 
-/** The watch area: Video.js with `<moqtail-video>` as its media, or the idle cards. */
+/**
+ * The watch area: Video.js with `<moqtail-video>` as its media, or the idle cards. `children`,
+ * such as a `CanvasPlayer`, take the video's place.
+ */
 export const VideoPlayer = forwardRef<
   MOQtailVideoElement,
-  { status: Status; mode?: 'watch' | 'publish' }
->(({ status, mode = 'watch' }, ref) => {
+  { status: Status; mode?: 'watch' | 'publish'; children?: ComponentChildren }
+>(({ status, mode = 'watch', children }, ref) => {
   if (mode === 'publish') {
     return (
       <main className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6">
@@ -190,11 +194,13 @@ export const VideoPlayer = forwardRef<
         // As wide as fits, without growing taller than the area; the skin's corners match ours
         style={{ width: 'min(100cqw, 100cqh * 16 / 9)', '--media-border-radius': '0.75rem' }}
       >
-        <moqtail-player>
+        {/* Kept mounted, so the app can still reach the element while `children` play */}
+        <moqtail-player className={cn(children && 'hidden')}>
           <moqtail-skin className="block h-full w-full">
             <moqtail-video ref={ref} className="block h-full w-full" playsinline autoplay />
           </moqtail-skin>
         </moqtail-player>
+        {children}
         {status === 'connecting' && <ConnectingOverlay />}
       </div>
       {!active && <WatchIdleCard />}

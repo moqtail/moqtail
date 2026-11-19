@@ -206,12 +206,15 @@ function FeatureToggle({
   href,
   on,
   disabled = false,
+  beta = false,
   onChange,
 }: {
   label: string;
-  href: string;
+  /** Its specification, if it has one. */
+  href?: string;
   on: boolean;
   disabled?: boolean;
+  beta?: boolean;
   onChange: (on: boolean) => void;
 }) {
   return (
@@ -230,16 +233,23 @@ function FeatureToggle({
           className="h-3 w-3 cursor-pointer accent-blue-500 disabled:cursor-not-allowed"
         />
         {label}
+        {beta && (
+          <span className="rounded border border-amber-500/30 bg-amber-500/15 px-1 pt-0.5 pb-px font-mono text-[10px] leading-none text-amber-300">
+            beta
+          </span>
+        )}
       </label>
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label={`${label} specification`}
-        className="text-neutral-600 hover:text-neutral-300"
-      >
-        <LuExternalLink className="h-3 w-3" aria-hidden="true" />
-      </a>
+      {href && (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`${label} specification`}
+          className="text-neutral-600 hover:text-neutral-300"
+        >
+          <LuExternalLink className="h-3 w-3" aria-hidden="true" />
+        </a>
+      )}
     </div>
   );
 }
@@ -454,6 +464,12 @@ export function Sidebar({
                   on={features.switchFrom && !features.ssts}
                   disabled={features.ssts}
                   onChange={on => onFeatureChange('switchFrom', on)}
+                />
+                <FeatureToggle
+                  label="Use Canvas"
+                  beta
+                  on={features.canvas}
+                  onChange={on => onFeatureChange('canvas', on)}
                 />
               </div>
             </Field>

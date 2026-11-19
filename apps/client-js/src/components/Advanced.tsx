@@ -438,16 +438,18 @@ function StatusView({ videoRef, player, catalog }: Omit<Props, 'session'>) {
   const video = videoRef.current;
   if (!video || !player)
     return <Empty title="Not connected">Connect to a stream to see its status.</Empty>;
+  // The canvas player's sink, which the video element doesn't follow
+  const media = player.mediaSink ?? video;
   const rows: [string, string][] = [
     ['State', `${player.state} · ${video.streamType}`],
-    ['Playhead', `${seconds(video.currentTime)} / ${seconds(video.duration)}`],
-    ['Rate', rate(video.playbackRate)],
+    ['Playhead', `${seconds(media.currentTime)} / ${seconds(video.duration)}`],
+    ['Rate', rate(media.playbackRate)],
     ['Ready state', `${video.readyState} (${READY_STATES[video.readyState]})`],
     ['Video', video.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : '–'],
-    ['Buffered', ranges(video.buffered)],
-    ['Forward buffer', seconds(forward(video))],
+    ['Buffered', ranges(media.buffered)],
+    ['Forward buffer', seconds(forward(media))],
     ['Seekable', ranges(video.seekable)],
-    ['Live edge start', seconds(video.liveEdgeStart)],
+    ['Live edge start', seconds(media.liveEdgeStart)],
   ];
   const tracks = catalog?.tracks ?? [];
   return (
@@ -620,8 +622,7 @@ function rate(value: number): string {
 }
 
 /** How far the playhead is behind the end of the buffered range it's in; `NaN` outside one. */
-function forward(video: HTMLVideoElement): number {
-  const { buffered, currentTime } = video;
+function forward({ buffered, currentTime }: { buffered: TimeRanges; currentTime: number }): number {
   for (let i = 0; i < buffered.length; i++) {
     if (buffered.start(i) <= currentTime && currentTime <= buffered.end(i))
       return buffered.end(i) - currentTime;

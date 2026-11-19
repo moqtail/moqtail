@@ -124,6 +124,8 @@ await player.play()
 await player.seek(30)
 ```
 
+`.sink(canvas)` plays live streams decoded to raw frames instead: video on the canvas, audio through an AudioWorklet once the page allows audio. Video is synchronised to the audio when the tracks share the epoch clock (LOC Timestamps without a Timescale), and the buffer controller holds its latency as with a video element. It refuses non-live streams and can't seek back.
+
 ### From `source()` To Playing
 
 The builder calls go `registerElement()`, `source()`, `transform()`, `sink()`, all before `init()`; anything else is a `TypeError`. `source()` takes an MSF URL, `moqt://authority/path#msf:<namespace>--<track>`, for a catalog or a single track. It throws `PlayerError` right away for a URL it can't use, such as another origin than an earlier `source()`.

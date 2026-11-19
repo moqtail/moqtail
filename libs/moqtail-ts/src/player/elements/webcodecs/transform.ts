@@ -142,7 +142,17 @@ if (import.meta.vitest) {
       }
 
       emit(...timestamps: number[]) {
-        for (const timestamp of timestamps) this.#init.output({ timestamp, close: () => closed.push(timestamp) })
+        for (const timestamp of timestamps) {
+          const frame = {
+            timestamp,
+            format: 'I420' as string | null,
+            close: () => {
+              frame.format = null
+              closed.push(timestamp)
+            },
+          }
+          this.#init.output(frame)
+        }
       }
 
       fail() {
@@ -375,14 +385,25 @@ if (import.meta.vitest) {
     expect(d.closed).toEqual([1000])
   })
 
-  test('a decoder error fails with MEDIA_FAILURE at once, and later items are dropped', async () => {
+  test('a decoder error fails with MEDIA_FAILURE at once, naming the frames still open', async () => {
     const d = await decoding()
-    await d.write(properties(), packet(1, 0, 0))
+    await d.write(
+      properties(),
+      packet(1, 0, 0),
+      packet(1, 1, 500_000),
+      packet(1, 2, 1_000_000),
+      packet(1, 3, 1_500_000),
+    )
+    const [first] = d.sink.items().flatMap((item) => (item.type === 'frame' ? [item.frame] : []))
+    first!.payload.close()
     d.decoders[0]!.fail()
     expect(d.failures).toMatchObject([{ code: 'MEDIA_FAILURE', element: 'webcodecs' }])
-    await d.write(packet(1, 1, 1000), properties('vp8'))
+    expect(d.failures[0]!.message).toBe(
+      'Decoding failed with 3 decoded frames still open, spanning 1.00 s: playback is too far behind for the frames the decoder can keep alive, lower the target latency',
+    )
+    await d.write(packet(1, 4, 2_000_000), properties('vp8'))
     expect(d.failures).toHaveLength(1)
-    expect(d.trace().slice(1)).toEqual(['1.0 @0'])
+    expect(d.trace().slice(1)).toEqual(['1.0 @0', '1.1 @500000', '1.2 @1000000', '1.3 @1500000'])
   })
 
   test('a config of the other kind closes the decoder it replaces', async () => {

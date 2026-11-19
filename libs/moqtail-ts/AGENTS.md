@@ -38,6 +38,7 @@ Grep before writing one. A helper moves to a shared home only when two modules n
 | `@/player/util/track`         | `trackKey`, `renditionId`, `rendition`, `bitrateOf`                                                                                                                       |
 | `@/player/util/json`          | `canonicalJson`, `deepEqual`, `parseJsonArray`                                                                                                                            |
 | `@/player/element/source`     | switching set base: `SwitchingSetSource`, `Packaging`, `planSource`, `Delivery`, `Recovery`, `Switcher`; init data: `acceptedInitData`, `objectInitData`, `initOnObjects` |
+| `@/player/element/sink`       | media sink base: `MediaSink`, `roleOf`                                                                                                                                    |
 | `@/player/element/define`     | `definitionOf` (unset during `init`), `checkName`, `hasInterface`                                                                                                         |
 | `@/player/elements/loc/track` | `locCapabilities`, `timestampMicros`                                                                                                                                      |
 | `@/player/constants`          | player defaults, subscriber priorities                                                                                                                                    |

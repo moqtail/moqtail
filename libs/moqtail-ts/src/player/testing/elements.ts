@@ -31,6 +31,7 @@ import {
 } from '@/player/element/define'
 import { ABR, MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
 import type { Packet, Pad, PadItem, PadOutput, PadSignal } from '@/player/element/pad'
+import { convertedCapabilities } from '@/player/element/negotiation'
 import type { PlayerEvents } from '@/player/player'
 import { definePlugin, type AbrController, type BufferController } from '@/player/plugin'
 import { timeRanges } from './media'
@@ -72,13 +73,15 @@ export function testSource(
     media?: boolean
     /** Lists `ABR` too, with `media`. */
     abr?: boolean
+    /** Declares `out` bundles making video and audio pads of this packaging. */
+    packaging?: string
     script?: (source: TestSource, options: Record<string, any> | undefined) => void | Promise<void>
   } = {},
 ) {
   return defineElement({
     type: 'source',
     name: options.name ?? 'test-source',
-    capabilities: [],
+    capabilities: options.packaging ? making(options.packaging) : [],
     ...(options.priority !== undefined && { priority: options.priority }),
     ...(options.media && { provides: (options.abr ? [MEDIA_SOURCE, ABR] : [MEDIA_SOURCE]) as unknown as [] }),
     probe: options.probe ?? (() => true),
@@ -200,19 +203,26 @@ export const fakeMediaSink = defineElement({
   init: async (context) => new FakeMediaSink(context),
 })
 
-/** Pass-through: one source pad per sink pad. */
+/** Passes items through, one source pad per sink pad, with the capabilities its definition converts them to. */
 export class TestTransform extends TransformElement {
   readonly #outputs = new Map<Pad, Pad>()
 
   constructor(context: ElementContext) {
     super(context)
     this.on('padadded', (pad) => {
-      if (pad.direction === 'sink') this.#outputs.set(pad, this.createPad('src', pad.capabilities))
+      if (pad.direction !== 'sink') return
+      const capabilities = convertedCapabilities(this.definition.capabilities, pad.capabilities)
+      this.#outputs.set(pad, this.createPad('src', capabilities ?? pad.capabilities))
     })
   }
 
+  /** Signal the element was created with; aborted on destroy. */
+  get signal(): AbortSignal {
+    return this.context.signal
+  }
+
   negotiate(pad: Pad): boolean {
-    return pad.capabilities.some((c) => c.code === CapabilityCode.PACKAGING)
+    return this.matchesCapabilities(pad)
   }
 
   async receive(pad: Pad, item: PadItem): Promise<void> {
@@ -220,9 +230,29 @@ export class TestTransform extends TransformElement {
   }
 }
 
+/** A transform definition taking `takes` pads and making `makes` pads of the same role, like `webcodecs`. */
+export function testTransform(
+  options: { name?: string; takes?: string; makes?: string; setup?: (transform: TestTransform) => void } = {},
+) {
+  const takes = options.takes ?? 'cmaf'
+  return defineElement({
+    type: 'transform',
+    name: options.name ?? 'test-transform',
+    capabilities: [
+      ...accepting(takes),
+      [{ direction: 'out', code: CapabilityCode.PACKAGING, value: options.makes ?? takes }],
+    ],
+    async init(context) {
+      const transform = new TestTransform(context)
+      options.setup?.(transform)
+      return transform
+    },
+  })
+}
+
 const fakePlayer = () => Object.assign(new Emitter<PlayerEvents>(), { options: {}, bufferController: undefined })
 
-/** A context for elements built outside a chain (transforms given to `addTransform`). */
+/** A context for elements built outside a chain. */
 export function detachedContext(): ElementContext {
   return {
     player: fakePlayer(),
@@ -235,6 +265,7 @@ export function detachedContext(): ElementContext {
     release: async () => {},
     probe: () => undefined,
     switchSource: () => undefined,
+    cost: async () => 0,
   }
 }
 
@@ -243,6 +274,7 @@ export function testChain(
   definitions: ChainHost['definitions'] = () => [],
   client: () => unknown = () => ({}),
   switchSources: ChainHost['switchSources'] = () => [],
+  transformDefinitions: ChainHost['transformDefinitions'] = () => [],
 ) {
   const warnings: Error[] = []
   const failures: Error[] = []
@@ -251,6 +283,7 @@ export function testChain(
     client: () => client() as MOQtailClient,
     definitions,
     switchSources,
+    transformDefinitions,
     warn: (e) => warnings.push(e),
     fail: (e) => failures.push(e),
   })
@@ -313,4 +346,11 @@ export async function connected(setup?: (sink: CollectingSink) => void) {
 
 function accepting(packaging: string): CapabilityBundles {
   return [[{ direction: 'in', code: CapabilityCode.PACKAGING, value: packaging }]]
+}
+
+function making(packaging: string): CapabilityBundles {
+  return ['video', 'audio'].map((role) => [
+    { direction: 'out', code: CapabilityCode.PACKAGING, value: packaging },
+    { direction: 'out', code: CapabilityCode.ROLE, value: role },
+  ])
 }

@@ -44,7 +44,14 @@ import { errorMessage } from '@/util/error'
 import { applyDelta } from './delta'
 import { diffTracks, type TrackDiff } from './diff'
 import { parseCatalog, type ParseContext, type ParseResult } from './parse'
-import { selectEventTimelines, selectMedia, withRole, type SelectedSet, type SelectionOptions } from './selection'
+import {
+  isCandidate,
+  selectEventTimelines,
+  selectMedia,
+  withRole,
+  type SelectedSet,
+  type SelectionOptions,
+} from './selection'
 import type { Catalog as CatalogData, CatalogJson } from './types'
 
 export interface CatalogOptions {
@@ -283,19 +290,27 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     this.context.player.emit('warning', warning)
   }
 
-  #selection(): SelectionOptions {
+  /** With the cost of every candidate in `tracks` resolved up front, since selection is synchronous. */
+  async #selection(tracks: readonly CatalogTrack[]): Promise<SelectionOptions> {
     const { preferredLanguage, eventTimelines } = this.context.player.options
     const language = preferredLanguage ?? globalThis.navigator?.language
+    const candidates = tracks.filter(isCandidate)
+    const costs = await Promise.all(candidates.map((track) => this.context.cost(track)))
+    const costOf = new Map(candidates.map((track, i) => [track, costs[i]]))
     return {
       probe: (track) => this.context.probe(track),
+      cost: (track) => costOf.get(track),
       ...(language && { language }),
       ...(eventTimelines && { eventTimelines }),
     }
   }
 
   async #loadDefaults(catalog: CatalogData): Promise<void> {
-    const selection = this.#selection()
+    const selection = await this.#selection(catalog.tracks)
     const media = selectMedia(catalog.tracks, selection)
+    if (media.length === 0 && selectMedia(catalog.tracks, { probe: selection.probe }).length > 0) {
+      throw new PlayerError('NO_MEDIA_SINK', 'No declared sink can play a track of the catalog', { element: 'catalog' })
+    }
     if (media.length === 0) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'No track in the catalog is playable', { element: 'catalog' })
     }
@@ -375,7 +390,9 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     for (const warning of diff.warnings) this.#warn(warning)
     next.tracks = [...diff.tracks.values()]
     const removed = next.isComplete ? new Set<string>() : diff.removed
-    const unplaced = [...diff.added]
+    const { cost } = await this.#selection(diff.added)
+    // An added rendition the chain can't play joins no set, so ABR never switches to it
+    const unplaced = diff.added.filter((t) => !isCandidate(t) || cost?.(t) !== undefined)
     for (const set of this.#sets) {
       const tracks = set.tracks.flatMap((t) => {
         const key = trackKey(t)
@@ -415,7 +432,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   async #loadMissingRoles(catalog: CatalogData): Promise<void> {
     const roleOf = (set: LoadedSet) => set.sample.role
     const playing = new Set(this.#sets.filter((s) => s.media && s.tracks.length > 0).map(roleOf))
-    for (const set of selectMedia(catalog.tracks, this.#selection())) {
+    for (const set of selectMedia(catalog.tracks, await this.#selection(catalog.tracks))) {
       const role = set.tracks[0]!.role
       if (playing.has(role)) continue
       for (const empty of this.#sets.filter((s) => s.media && roleOf(s) === role)) {

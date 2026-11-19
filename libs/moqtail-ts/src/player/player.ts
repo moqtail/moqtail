@@ -22,7 +22,7 @@
 import type { MOQtailClient } from '@/client/client'
 import type { MOQtailClientOptions, ObjectOrdering } from '@/client/types'
 import type { SetupOptions } from '@/model/parameter/setup_option'
-import type { SinkElement, SourceElement, TransformElement } from '@/player/element/base'
+import type { SinkElement, SourceElement } from '@/player/element/base'
 import { Chain } from '@/player/element/chain'
 import {
   hasInterface,
@@ -30,6 +30,7 @@ import {
   type Identifiers,
   type SinkElementDefinition,
   type SourceElementDefinition,
+  type TransformElementDefinition,
 } from '@/player/element/define'
 import type { TimelineEvent } from '@/player/element/event_timeline'
 import {
@@ -41,7 +42,7 @@ import {
   type Rendition,
 } from '@/player/element/interfaces'
 import { selectSource } from '@/player/element/negotiation'
-import { BUILT_IN_SOURCES } from '@/player/elements'
+import { BUILT_IN_SOURCES, BUILT_IN_TRANSFORMS } from '@/player/elements'
 import type { CatalogElement } from '@/player/elements/catalog/element'
 import { MSE, checkOptions } from '@/player/elements/mse'
 import { rangeAt } from '@/player/elements/mse/gaps'
@@ -202,6 +203,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       client: currentClient,
       definitions: () => this.#sourceDefinitions(),
       switchSources: () => this.#features.switchSources,
+      transformDefinitions: () => this.#transformDefinitions(),
       warn: (warning) => {
         if (!this.#abort.signal.aborted && this.#state !== 'error') this.emit('warning', warning)
       },
@@ -261,7 +263,10 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return hasInterface(source, ABR) || (this.#features.abrController !== undefined && this.#abrDrivable())
   }
 
-  /** Registers an element on this player only. Call it before `source()`. */
+  /**
+   * Registers an element on this player only, ahead of the plugins' and built-in ones: a source for
+   * the probe, a transform for the chain to load where a pad needs one. Call it before `source()`.
+   */
   registerElement(definition: ElementDefinition): this {
     this.#order('source', 'registerElement')
     if (this.#origin !== undefined) throw new TypeError('registerElement() must be called before source()')
@@ -290,9 +295,13 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return this
   }
 
-  transform(element: TransformElement): this {
+  /** Adds a transform, created with `options` after the sources, in call order. */
+  transform(definition: TransformElementDefinition, options: Record<string, unknown> = {}): this {
     this.#order('transform', 'transform')
-    this.#chain.addTransform(element)
+    if (!('init' in definition) || definition.type !== 'transform') {
+      throw new TypeError('transform() takes a transform element definition')
+    }
+    this.#chain.addTransform(definition, options)
     this.#stage = 'transform'
     return this
   }
@@ -422,6 +431,13 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     )
   }
 
+  /** Built-in transforms last, so they lose ties when the chain plans the transforms a pad needs. */
+  #transformDefinitions(): TransformElementDefinition[] {
+    return [...this.#definitions, ...this.#features.elements, ...BUILT_IN_TRANSFORMS].filter(
+      (d): d is TransformElementDefinition => d.type === 'transform',
+    )
+  }
+
   /** Builder calls go source → transform → sink, all before `init()`. Mistakes are programming errors. */
   #order(stage: Stage, method: string): void {
     if (this.#abort.signal.aborted) throw this.#abort.signal.reason
@@ -535,8 +551,13 @@ function isPinned(source: MediaSourceElement): boolean {
 
 if (import.meta.vitest) {
   const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
-  const { fakeClients } = await import('@/player/testing/client')
-  const { abrPlugin, bufferPlugin, testSource, fakeMediaSink, flush } = await import('@/player/testing/elements')
+  const { fakeClients, testObject } = await import('@/player/testing/client')
+  const { abrPlugin, bufferPlugin, collectingSink, testSource, testTransform, fakeMediaSink, flush, settle } =
+    await import('@/player/testing/elements')
+  const { definitionOf } = await import('@/player/element/define')
+  const { sourceCapabilities } = await import('@/player/element/negotiation')
+  type BaseElement = import('@/player/element/base').BaseElement
+  type CollectingSink = import('@/player/testing/elements').CollectingSink
   const { definePlugin } = await import('./plugin')
   const { CapabilityCode } = await import('@/player/element/define')
   const { SetupOptions } = await import('@/model/parameter/setup_option')
@@ -575,7 +596,8 @@ if (import.meta.vitest) {
     test('builder calls out of order are TypeErrors', () => {
       const player = make()
       expect(() => player.source(URL)).toThrow(TypeError)
-      expect(() => player.transform({} as TransformElement)).toThrow(TypeError)
+      expect(() => player.transform(testTransform())).toThrow(TypeError)
+      expect(() => new MOQtailPlayer().source(URL).transform(media as never)).toThrow(TypeError)
       expect(() => player.registerElement(media)).toThrow(TypeError)
       expect(() => player.sink({} as HTMLVideoElement)).toThrow(TypeError)
       void player.init()
@@ -829,6 +851,62 @@ if (import.meta.vitest) {
       expect(player.sources.map((s) => s.definition.name).sort()).toEqual(['plugin-top', 'video'])
       expect(() => new MOQtailPlayer().registerElement(top).source(URL)).toThrow(code('UNSUPPORTED_ORIGIN'))
       await player.destroy()
+    })
+
+    describe('with a catalog', () => {
+      /** A source adding one pad of its packaging and its track's role. */
+      const packaged = (packaging: string) =>
+        testSource({
+          name: packaging,
+          packaging,
+          probe: (t) => t.packaging === packaging,
+          script: (s) => {
+            s.addPad(sourceCapabilities(testSource({ packaging }), s.ctx.tracks[0]!.role)!)
+            s.emit('nomorepads')
+          },
+        })
+      const video = { codec: 'avc1.64001f', framerate: 30 }
+      const audio = { codec: 'opus', samplerate: 48_000, channelConfig: '2' }
+      const tracks = ['cmaf', 'loc'].flatMap((packaging) => [
+        { name: `v_${packaging}`, packaging, role: 'video', altGroup: 1, isLive: true, ...video },
+        { name: `a_${packaging}`, packaging, role: 'audio', altGroup: 2, isLive: true, ...audio },
+      ])
+
+      /** Plays a catalog offering every track in CMAF and in LOC into `sink`, with `registered` elements. */
+      async function play(sink: SinkElementDefinition, ...registered: ElementDefinition[]) {
+        const player = new MOQtailPlayer()
+        for (const definition of [packaged('cmaf'), packaged('loc'), ...registered]) player.registerElement(definition)
+        const init = player.source(URL).sink(sink).init()
+        await settle()
+        const json = JSON.stringify({ version: 'draft-01', tracks })
+        fakes.clients[0]!.last.push(testObject('catalog', 0, 0, new TextEncoder().encode(json)))
+        await init
+        return player
+      }
+      const sourcesOf = (player: MOQtailPlayer) => player.sources.map((s) => definitionOf(s)!.name)
+
+      test('the catalog picks the sets the declared sink can play: CMAF for an MSE-like sink, LOC for a raw one', async () => {
+        const mse = await play(collectingSink({ packaging: 'cmaf' }))
+        const canvas = await play(collectingSink({ packaging: 'raw' }), testTransform({ takes: 'loc', makes: 'raw' }))
+        expect([sourcesOf(mse), sourcesOf(canvas)]).toEqual([
+          ['cmaf', 'cmaf', 'catalog'],
+          ['loc', 'loc', 'catalog'],
+        ])
+      })
+
+      test('a catalog no declared sink can play is NO_MEDIA_SINK', async () => {
+        await expect(play(collectingSink({ packaging: 'other' }))).rejects.toMatchObject({ code: 'NO_MEDIA_SINK' })
+      })
+
+      test('a registered transform wins over the built-in one, and loaded ones feed a raw sink from loc sources', async () => {
+        let sink: CollectingSink | undefined
+        const raw = collectingSink({ packaging: 'raw', setup: (k) => (sink = k) })
+        const player = await play(raw, testTransform({ name: 'decoder', takes: 'loc', makes: 'raw' }))
+        const upstream = (element: BaseElement) => element.pads.find((p) => p.direction === 'sink')!.peers[0]!.element
+        expect(sink!.pads.map((p) => definitionOf(p.peers[0]!.element)!.name)).toEqual(['decoder', 'decoder'])
+        expect(sink!.pads.map((p) => definitionOf(upstream(p.peers[0]!.element))!.name)).toEqual(['loc', 'loc'])
+        expect(player.state).toBe('ready')
+      })
     })
   })
 }

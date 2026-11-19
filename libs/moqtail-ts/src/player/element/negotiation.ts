@@ -16,16 +16,25 @@
 
 /** Capability matching, probe selection, and pad routing. Pure functions over elements. */
 
-import type { SinkElement, TransformElement } from './base'
+import type { BaseElement, SinkElement, TransformElement } from './base'
 import {
+  CapabilityCode,
   DEFAULT_PRIORITY,
   type Capabilities,
   type Capability,
   type CapabilityBundles,
+  type ElementDefinition,
   type Identifiers,
   type SourceElementDefinition,
+  type TransformElementDefinition,
 } from './define'
 import type { Pad } from './pad'
+
+/** Where a pad goes, by definitions: the elements it passes through, ending in the sinks, and how many were loaded. */
+export interface Route {
+  path: ElementDefinition[]
+  loaded: number
+}
 
 /**
  * A pad matches an `in` bundle when, for each code the bundle lists, the pad has one of the
@@ -73,18 +82,91 @@ export function selectSource(
 }
 
 /**
- * Where a new source pad connects: the first transform after the pad's element (in chain
- * order) that negotiates it, otherwise every sink that does. Empty means unlinked.
+ * Where a new source pad connects: the first transform after `after` (in chain order) that
+ * negotiates it, otherwise every sink that does. Empty means unlinked.
  */
 export function selectTargets(
   pad: Pad,
   transforms: readonly TransformElement[],
   sinks: readonly SinkElement[],
+  after: BaseElement = pad.element,
 ): (TransformElement | SinkElement)[] {
   // indexOf is -1 for a source, so the walk starts at the first transform
-  const start = transforms.indexOf(pad.element as TransformElement) + 1
+  const start = transforms.indexOf(after as TransformElement) + 1
   const transform = transforms.slice(start).find((t) => t.negotiate(pad))
   return transform ? [transform] : sinks.filter((s) => s.negotiate(pad))
+}
+
+/**
+ * The fewest transform definitions, in order, that take a pad with `capabilities` to one `accepts` takes;
+ * empty when it already does, undefined when none can. Ties go to the earlier definitions.
+ */
+export function planTransforms(
+  capabilities: Capabilities,
+  definitions: readonly TransformElementDefinition[],
+  accepts: (capabilities: Capabilities) => boolean,
+): TransformElementDefinition[] | undefined {
+  const queue = [{ capabilities, plan: [] as TransformElementDefinition[] }]
+  const visited = new Set([capabilitiesKey(capabilities)])
+  for (let i = 0; i < queue.length; i++) {
+    const { capabilities: current, plan } = queue[i]!
+    if (accepts(current)) return plan
+    for (const definition of definitions) {
+      const next = convertedCapabilities(definition.capabilities, current)
+      if (!next || visited.has(capabilitiesKey(next))) continue
+      visited.add(capabilitiesKey(next))
+      queue.push({ capabilities: next, plan: [...plan, definition] })
+    }
+  }
+  return undefined
+}
+
+/**
+ * Where a source pad with `capabilities` goes, routed as the chain routes it but over definitions:
+ * the next declared transform that takes it, else the declared sinks that do, else the fewest of
+ * `loadable` that reach either. Undefined when it reaches no sink.
+ */
+export function routeOf(
+  capabilities: Capabilities,
+  declared: { transforms: readonly ElementDefinition[]; sinks: readonly ElementDefinition[] },
+  loadable: readonly TransformElementDefinition[],
+): Route | undefined {
+  const route: Route = { path: [], loaded: 0 }
+  let current = capabilities
+  let position = -1
+  for (;;) {
+    const next = declared.transforms.findIndex((t, i) => i > position && takes(t, current))
+    if (next !== -1) {
+      const transform = declared.transforms[next]!
+      // Without an out bundle that converts it, the output keeps the input's capabilities
+      current = convertedCapabilities(transform.capabilities, current) ?? current
+      route.path.push(transform)
+      position = next
+      continue
+    }
+    const sinks = declared.sinks.filter((s) => takes(s, current))
+    if (sinks.length > 0) {
+      route.path.push(...sinks)
+      return route
+    }
+    const targets = [...declared.transforms.slice(position + 1), ...declared.sinks]
+    const plan = planTransforms(current, loadable, (c) => targets.some((t) => takes(t, c)))
+    if (!plan) return undefined
+    for (const transform of plan) current = convertedCapabilities(transform.capabilities, current)!
+    route.path.push(...plan)
+    route.loaded += plan.length
+  }
+}
+
+/** The pad `definition` makes for `role`, from its `out` bundles. Undefined when they don't say. */
+export function sourceCapabilities(definition: ElementDefinition, role: string | undefined): Capabilities | undefined {
+  const isRole = (c: Capability) => c.code === CapabilityCode.ROLE && c.value === role
+  const bundle = definition.capabilities.find((b) => b[0]?.direction === 'out' && b.some(isRole))
+  return bundle?.filter((c) => c.code !== CapabilityCode.ROLE || isRole(c))
+}
+
+function takes(definition: ElementDefinition, capabilities: Capabilities): boolean {
+  return definition.capabilities.some((bundle) => accepts(bundle, capabilities))
 }
 
 function accepts(bundle: Capabilities, capabilities: Capabilities): boolean {
@@ -114,11 +196,17 @@ function listed(bundle: Capabilities, capability: Capability): boolean {
   return bundle.some((b) => b.code === capability.code && b.value === capability.value)
 }
 
+/** Sorted, so the order of capabilities doesn't matter. */
+function capabilitiesKey(capabilities: Capabilities): string {
+  return capabilities
+    .map((c) => `${c.code}=${c.value}`)
+    .sort()
+    .join('\n')
+}
+
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { testSource } = await import('@/player/testing/elements')
-  const { CapabilityCode } = await import('./define')
-  type CapabilityCode = import('./define').CapabilityCode
+  const { testSource, testTransform } = await import('@/player/testing/elements')
   const { PACKAGING, ROLE, CODEC } = CapabilityCode
   const of = (direction: 'in' | 'out', code: CapabilityCode, ...values: string[]): Capabilities =>
     values.map((value) => ({ direction, code, value }))
@@ -159,6 +247,44 @@ if (import.meta.vitest) {
       expect(convertedCapabilities(transform, pad('cmaf', 'video'))).toBeUndefined()
       const ambiguous: CapabilityBundles = [of('in', PACKAGING, 'loc'), of('out', PACKAGING, 'raw', 'cmaf')]
       expect(convertedCapabilities(ambiguous, pad('loc', 'video'))).toBeUndefined()
+    })
+  })
+
+  describe('planTransforms', () => {
+    const step = (name: string, takes: string, makes: string) => testTransform({ name, takes, makes })
+    const plan = (definitions: TransformElementDefinition[], from = 'loc', to = 'raw') =>
+      planTransforms(pad(from, 'video'), definitions, (c) =>
+        c.some((v) => v.code === PACKAGING && v.value === to),
+      )?.map((d) => d.name)
+
+    test('the fewest hops, the earlier definition on ties', () => {
+      const long = [step('a', 'loc', 'x'), step('b', 'x', 'y'), step('c', 'y', 'raw')]
+      expect(plan([...long, step('d', 'loc', 'y')])).toEqual(['d', 'c'])
+      expect(plan([step('first', 'loc', 'raw'), step('second', 'loc', 'raw')])).toEqual(['first'])
+    })
+
+    test('a cycle ends, nothing reachable is undefined, and an accepted pad needs nothing', () => {
+      const cycle = [step('a', 'loc', 'x'), step('b', 'x', 'loc')]
+      expect(plan(cycle)).toBeUndefined()
+      expect(plan([])).toBeUndefined()
+      expect(plan(cycle, 'raw')).toEqual([])
+    })
+  })
+
+  describe('routeOf', () => {
+    const sink = (packaging: string) => ({ capabilities: [of('in', PACKAGING, packaging)] }) as ElementDefinition
+    const decoder = testTransform({ name: 'decoder', takes: 'loc', makes: 'raw' })
+
+    test('a declared transform costs nothing, a loaded one counts, and no sink reached is undefined', () => {
+      const raw = sink('raw')
+      const filter = testTransform({ name: 'filter', takes: 'raw' })
+      const route = routeOf(pad('loc', 'video'), { transforms: [filter], sinks: [raw] }, [decoder])
+      expect(route).toEqual({ path: [decoder, filter, raw], loaded: 1 })
+      expect(routeOf(pad('cmaf', 'video'), { transforms: [], sinks: [sink('cmaf')] }, [decoder])).toEqual({
+        path: [sink('cmaf')],
+        loaded: 0,
+      })
+      expect(routeOf(pad('loc', 'video'), { transforms: [], sinks: [sink('cmaf')] }, [decoder])).toBeUndefined()
     })
   })
 

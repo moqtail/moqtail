@@ -58,6 +58,12 @@ export interface ElementContext {
   probe(identifiers: Identifiers): SourceElementDefinition | undefined
   /** The active plugins' switch source that ranks first for `identifiers`, as `probe()` ranks. */
   switchSource(identifiers: Identifiers): SourceElementDefinition | undefined
+  /**
+   * How many transforms the chain would load to take the pad of the source `probe()` picks for `track`
+   * to a declared sink. Undefined when none is reached, or an element on the way doesn't `supports` the
+   * track. 0 without declared sinks, or for a source whose definition doesn't say what pad it makes.
+   */
+  cost(track: Identifiers): Promise<number | undefined>
 }
 
 /** @public */
@@ -130,6 +136,10 @@ export class InstanceContext implements ElementContext {
 
   fail(error: PlayerError): void {
     this.#chain.fail(error)
+  }
+
+  cost(track: Identifiers): Promise<number | undefined> {
+    return this.#chain.cost(track)
   }
 
   async create<E extends BaseElement>(definition: ElementDefinition<E>, options?: Record<string, any>): Promise<E> {

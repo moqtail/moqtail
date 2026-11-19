@@ -30,6 +30,8 @@ export interface SelectedSet {
 
 export interface SelectionOptions {
   probe(track: CatalogTrack): SourceElementDefinition | undefined
+  /** How many transforms the chain would load to play the track, undefined when it can't. Without it, 0. */
+  cost?(track: CatalogTrack): number | undefined
   /** BCP 47 tag, e.g. `opts.preferredLanguage ?? navigator.language`. */
   language?: string
   eventTimelines?: string[] | 'all'
@@ -51,8 +53,9 @@ export function withRole(track: CatalogTrack): CatalogTrack {
 }
 
 /** Selectable media: video or audio, not a catalog reference, independently decodable. */
-const isCandidate = (t: CatalogTrack) =>
-  (t.role === 'video' || t.role === 'audio') && t.packaging !== 'catalog' && !t.depends?.length
+export function isCandidate(t: CatalogTrack): boolean {
+  return (t.role === 'video' || t.role === 'audio') && t.packaging !== 'catalog' && !t.depends?.length
+}
 
 /** Tracks with the same `altGroup` and `lang` switch together; no `altGroup` is a set of its own. */
 const setKey = (t: CatalogTrack, index: number) => (t.altGroup === undefined ? `#${index}` : `${t.altGroup}|${t.lang}`)
@@ -112,19 +115,19 @@ export function startFirst(tracks: CatalogTrack[]): CatalogTrack[] {
 }
 
 /**
- * The default video and audio sets, in that order, with their start tracks first. Of the sets
- * sharing an `altGroup` and `lang`, only those whose definition has the lowest priority are kept.
+ * The default video and audio sets, in that order, with their start tracks first. Tracks that can't
+ * be played leave their set, and an emptied set is dropped. Of the sets sharing an `altGroup` and
+ * `lang`, only those of the lowest cost are kept, then those whose definition has the lowest priority.
  */
 export function selectMedia(tracks: readonly CatalogTrack[], options: SelectionOptions): SelectedSet[] {
-  const all = mediaSets(tracks, options.probe)
-  const key = (s: SelectedSet) => (s.tracks[0]!.altGroup === undefined ? undefined : setKey(s.tracks[0]!, 0))
-  const rank = (s: SelectedSet) => s.definition.priority ?? DEFAULT_PRIORITY
-  const best = new Map<string, number>()
-  for (const s of all) {
-    const k = key(s)
-    if (k !== undefined) best.set(k, Math.min(best.get(k) ?? Infinity, rank(s)))
-  }
-  const sets = all.filter((s) => key(s) === undefined || rank(s) === best.get(key(s)!))
+  const cost = options.cost ?? (() => 0)
+  const playable = mediaSets(tracks, options.probe).flatMap((s) => {
+    const kept = s.tracks.filter((t) => cost(t) !== undefined)
+    return kept.length > 0 ? [{ ...s, tracks: kept }] : []
+  })
+  // A set's tracks share a definition and a packaging, so they cost the same
+  const cheapest = lowest(playable, (s) => cost(s.tracks[0]!)!)
+  const sets = lowest(cheapest, (s) => s.definition.priority ?? DEFAULT_PRIORITY)
   const video = sets.find((s) => s.tracks[0]!.role === 'video')
   const audio = pickAudio(
     sets.filter((s) => s.tracks[0]!.role === 'audio'),
@@ -152,16 +155,30 @@ export function selectEventTimelines(
   return { sets, skipped }
 }
 
+/** The sets of lowest `measure` among those sharing an `altGroup` and `lang`; sets without an `altGroup` all stay. */
+function lowest(sets: SelectedSet[], measure: (set: SelectedSet) => number): SelectedSet[] {
+  const key = (s: SelectedSet) => (s.tracks[0]!.altGroup === undefined ? undefined : setKey(s.tracks[0]!, 0))
+  const best = new Map<string, number>()
+  for (const s of sets) {
+    const k = key(s)
+    if (k !== undefined) best.set(k, Math.min(best.get(k) ?? Infinity, measure(s)))
+  }
+  return sets.filter((s) => key(s) === undefined || measure(s) === best.get(key(s)!))
+}
+
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   const { Tuple } = await import('@/model/common/tuple')
-  const { testSource } = await import('@/player/testing/elements')
+  const { collectingSink, testSource, testTransform } = await import('@/player/testing/elements')
+  const { routeOf, sourceCapabilities } = await import('@/player/element/negotiation')
   const { probeCmaf } = await import('@/player/elements/cmaf')
   const { Locmaf, probeLocmaf } = await import('@/player/elements/locmaf')
+  type ElementDefinition = import('@/player/element/define').ElementDefinition
+  type TransformElementDefinition = import('@/player/element/define').TransformElementDefinition
 
-  const cmaf = testSource({ name: 'cmaf', probe: probeCmaf })
-  const locmaf = testSource({ name: 'locmaf', probe: probeLocmaf, priority: Locmaf.priority! })
-  const loc = testSource({ name: 'loc', probe: (t) => t.packaging === 'loc' })
+  const cmaf = testSource({ name: 'cmaf', packaging: 'cmaf', probe: probeCmaf })
+  const locmaf = testSource({ name: 'locmaf', packaging: 'cmaf', probe: probeLocmaf, priority: Locmaf.priority! })
+  const loc = testSource({ name: 'loc', packaging: 'loc', probe: (t) => t.packaging === 'loc' })
   const timeline = testSource({ name: 'sap', probe: (t) => t.eventType === 'org.ietf.moq.cmsf.sap' })
   const probe = (track: CatalogTrack) => [cmaf, locmaf, loc, timeline].find((d) => d.probe(track))
   const names = (sets: SelectedSet[]) => sets.map((s) => `${s.definition.name}: ${s.tracks.map((t) => t.name)}`)
@@ -174,6 +191,12 @@ if (import.meta.vitest) {
       isLive: true,
       ...extra,
     } as CatalogTrack)
+
+  /** Costs as the chain works them out for declared `sinks`, loading from `loadable`. */
+  const costFor =
+    (sinks: ElementDefinition[], loadable: TransformElementDefinition[] = []) =>
+    (track: CatalogTrack) =>
+      routeOf(sourceCapabilities(probe(track)!, track.role)!, { transforms: [], sinks }, loadable)?.loaded
 
   describe('selection', () => {
     test('withRole infers from the MIME type, then video and audio fields', () => {
@@ -222,6 +245,38 @@ if (import.meta.vitest) {
         track('alt_cam', { packaging: 'locmaf', locmafVersion: '0.3', altGroup: 2, ...video }),
       ]
       expect(names(selectMedia(cameras, { probe }))).toEqual(['cmaf: main_cam'])
+    })
+
+    test('only sets a declared sink can reach, the fewest transforms first, then the lowest priority', () => {
+      const video = { codec: 'avc1.64001f', height: 720, altGroup: 1 }
+      const tracks = [
+        track('v_loc', video),
+        track('v_cmaf', { ...video, packaging: 'cmaf' }),
+        track('v_locmaf', { ...video, packaging: 'locmaf', locmafVersion: '0.3' }),
+      ]
+      const mse = costFor([collectingSink({ packaging: 'cmaf' })])
+      const canvas = costFor([collectingSink({ packaging: 'raw' })], [testTransform({ takes: 'loc', makes: 'raw' })])
+      const pick = (sets: CatalogTrack[], cost?: SelectionOptions['cost']) =>
+        names(selectMedia(sets, { probe, ...(cost && { cost }) }))
+      expect([pick(tracks, mse), pick(tracks, canvas), pick(tracks)]).toEqual([
+        ['locmaf: v_locmaf'],
+        ['loc: v_loc'],
+        ['locmaf: v_locmaf'],
+      ])
+      // In sets of their own, the first one in catalog order is dropped when no sink reaches it
+      const apart = tracks.map((t, i) => ({ ...t, altGroup: i + 1 }))
+      expect([pick(apart, mse), pick(apart)]).toEqual([['cmaf: v_cmaf'], ['loc: v_loc']])
+    })
+
+    test('a rendition that can’t be played leaves its set, and an emptied set gives way to the next of its role', () => {
+      const video = { packaging: 'cmaf', height: 720 }
+      const tracks = [
+        track('hevc', { ...video, codec: 'hvc1.1.6.L93.B0', altGroup: 1 }),
+        track('v1', { ...video, codec: 'avc1.64001f', altGroup: 2 }),
+        track('v2', { ...video, codec: 'hvc1.1.6.L93.B0', altGroup: 2 }),
+      ]
+      const cost = (t: CatalogTrack) => (t.codec?.startsWith('hvc1') ? undefined : 0)
+      expect(names(selectMedia(tracks, { probe, cost }))).toEqual(['cmaf: v1'])
     })
 
     test('audio: exact tag, then primary subtag, then the first set', () => {

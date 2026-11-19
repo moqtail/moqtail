@@ -15,7 +15,7 @@ npm install moqtail
 | `moqtail/player`           | `MOQtailPlayer`, elements, plugins                |
 | `moqtail/player/component` | The `<moqtail-video>` web component               |
 
-It runs in Chrome and Safari 26.4+ (WebTransport). It follows MOQT draft-22 and the MSF and CMSF editor's drafts. The player plays CMAF and LOCMAF; LOC, captions and language switching aren't played yet. [DeepWiki](https://deepwiki.com/moqtail/moqtail) has the full list and the details this page leaves out.
+It runs in Chrome and Safari 26.4+ (WebTransport). It follows MOQT draft-22 and the MSF and CMSF editor's drafts. The player plays CMAF and LOCMAF on a `<video>`, and LOC on a `<canvas>`; captions and language switching aren't played yet. [DeepWiki](https://deepwiki.com/moqtail/moqtail) has the full list and the details this page leaves out.
 
 ## How It Fits Together
 
@@ -128,7 +128,7 @@ await player.seek(30)
 
 ### From `source()` To Playing
 
-The builder calls go `registerElement()`, `source()`, `transform()`, `sink()`, all before `init()`; anything else is a `TypeError`. `source()` takes an MSF URL, `moqt://authority/path#msf:<namespace>--<track>`, for a catalog or a single track. It throws `PlayerError` right away for a URL it can't use, such as another origin than an earlier `source()`.
+The builder calls go `registerElement()`, `source()`, `transform()`, `sink()`, all before `init()`; anything else is a `TypeError`. `transform()` and `sink()` take an element definition and its options; `sink()` also takes a `<video>` or a `<canvas>`. `source()` takes an MSF URL, `moqt://authority/path#msf:<namespace>--<track>`, for a catalog or a single track. It throws `PlayerError` right away for a URL it can't use, such as another origin than an earlier `source()`.
 
 The constructor already ran each plugin's `init` and `setup`, so their SETUP parameters are known. `init()` then:
 
@@ -136,7 +136,7 @@ The constructor already ran each plugin's `init` and `setup`, so their SETUP par
 2. Keeps the plugins the relay's SERVER_SETUP accepts. The others contribute nothing.
 3. Picks an element for each `source()` (see [Element selection](#element-selection)). A track no element accepts rejects `init()` with `UNSUPPORTED_SOURCE`.
 4. Starts the sources. The catalog element reads the catalog, picks an element for every switching set and timeline the same way, and loads it. A switching set goes through a plugin's switch source when one accepts it, such as SSTS.
-5. Routes each new source pad by capability: to the first transform that accepts it, otherwise to every sink that does.
+5. Routes each new source pad by capability: to the first transform after it that accepts it, otherwise to every sink that does. A pad none of them takes gets the fewest transforms that make it acceptable, loaded for that pad alone and placed where it was, so a transform you declared still sees their output. That's how `.sink(canvas)` gets the `webcodecs` decoder in front of it.
 6. Once every top-level source says it has all its pads (`nomorepads`), tells the sinks, and resolves when they're ready. The state is then `ready`, or `ended` when there's nothing to play.
 
 After that, `play()`, `pause()`, `seek()` and `setPlaybackRate()` go to the media sink, and the state follows its `<video>`: `idle`, `connecting`, `ready`, then `playing`, `paused`, `stalled` or `ended`. A lost session moves to `reconnecting` and back to where it was. `error` and `destroyed` are final. `player.destroy()` tears the chain down in any state.
@@ -157,6 +157,10 @@ Attached with `player.on()`:
 The player is a chain of elements joined by pads. Each element definition says what it is (`source`, `transform` or `sink`), the pads it creates (`out` capabilities) and the pads it accepts (`in` capabilities). A source definition also has a `probe` that says whether it handles a track.
 
 For every track, the top-level one from the URL and every one the catalog lists, the candidates are, in order: the definitions passed to `registerElement()`, then the active plugins' elements (by plugin `priority`, then list order), then the built-in ones (catalog, CMAF, LOCMAF, LOC, media timeline, SAP timeline). Among the candidates whose probe accepts the track, the lowest `priority` wins (default 100), then the earlier one. So yours wins a tie with a plugin's, and both win a tie with a built-in one.
+
+Transforms the chain loads for a pad come from the same three places in the same order: `registerElement()`, the active plugins, then the built-in `webcodecs` (`loc` to `raw`). Of the shortest ways to a sink, the one using the earlier definitions wins.
+
+The catalog keeps only the switching sets a declared sink can reach, the fewest loaded transforms first, then the lowest `priority`. So `.sink(video)` plays CMAF or LOCMAF and `.sink(canvas)` plays LOC when a catalog offers both. A definition's optional `supports(track)` says whether it can handle a track's media, asked before any element exists: `mse` asks `MediaSource.isTypeSupported`, `webcodecs` asks `isConfigSupported`. A rendition an element on its way can't handle leaves its set, so ABR never switches to it, and a set left empty gives way to the next one of its role. Without any sink declared, every set counts.
 
 Each capability bundle has one direction. Inside a bundle, capabilities with the same code are alternatives and different codes must all hold. A transform's output pad starts from its input pad's capabilities: for each code its `out` bundle lists, the input's value stays when listed, else it's replaced by the bundle's one value. So the built-in `webcodecs` transform, taking `loc` with `video` or `audio` and making `raw` with `video` or `audio`, turns a `loc`/`video` pad into a `raw`/`video` one.
 

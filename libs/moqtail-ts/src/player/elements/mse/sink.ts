@@ -218,17 +218,16 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     const state = this.#pads.get(pad)
     if (!state) return
     if (item.type === 'properties') return this.#applyProperties(state, item.properties)
-    const payload = item.object.payload
-    if (state.seeks > 0 || !payload) return
+    if (state.seeks > 0) return
     const epoch = state.epoch
     await this.#buffers.promise
     if (!(await this.#makeRoom(pad, state, epoch)) || state.epoch !== epoch || !state.queue) return
 
     const queue = state.queue
     const previousEnd = state.group === undefined ? undefined : bufferedEnd(queue.buffer)
-    if (!(await this.#append(state, queue, payload))) return
+    if (!(await this.#append(state, queue, item.packet.payload))) return
     // CMSF groups start at keyframes. An object that added no frames leaves nothing to record.
-    const group = item.object.groupId
+    const group = item.packet.location.group
     if (group !== state.group && queue.buffer.buffered.length > 0) this.#recordGroup(state, queue, group, previousEnd)
     this.#updateSeekable()
     this.#maybeStart()

@@ -16,11 +16,12 @@
 
 /** `LocmafSource`: a switching set source for LOCMAF tracks, whose pad carries the CMAF they rebuild to. */
 
-import { MoqtObject } from '@/model/data/object'
+import type { MoqtObject } from '@/model/data/object'
 import type { CatalogTrack } from '@/player/element/interfaces'
+import { packetOf, type Packet } from '@/player/element/pad'
 import { CmafSource } from '@/player/elements/cmaf/source'
 import { PlayerError } from '@/player/error'
-import { trackKey } from '@/player/util/track'
+import { renditionId, trackKey } from '@/player/util/track'
 import { Reference } from './chunk'
 import { trackDefaults, type TrackDefaults } from './init'
 import { canonicalChunk } from './moof'
@@ -33,7 +34,7 @@ export class LocmafSource extends CmafSource {
   /** The group a rejected object was last reported for. */
   #reported: string | undefined
 
-  override packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): MoqtObject | undefined {
+  override packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): Packet | undefined {
     const key = trackKey(track)
     const reference = this.#references.get(key) ?? new Reference()
     this.#references.set(key, reference)
@@ -42,15 +43,7 @@ export class LocmafSource extends CmafSource {
       const defaults = this.#defaultsOf(initData)
       const decoded = reference.decode(object.location, object.payload!, defaults)
       const payload = decoded instanceof Uint8Array ? decoded : canonicalChunk(decoded, defaults)
-      return MoqtObject.newWithPayload(
-        object.fullTrackName,
-        object.location,
-        object.publisherPriority,
-        object.objectForwardingPreference,
-        object.subgroupId,
-        object.properties,
-        payload,
-      )
+      return packetOf(renditionId(track, this.context.catalog), object, payload)
     } catch (error) {
       if (!(error instanceof LocmafError)) throw error
       this.#report(key, object, error)
@@ -103,7 +96,7 @@ if (import.meta.vitest) {
     // The group duration comes from the rebuilt chunks' tfdt
     expect(c.trace()).toEqual(['props initData,live,mimeType,track', '1.0', 'gap', '2.0', 'props groupDuration'])
     const packets = c.sink.items().filter((item) => item.type === 'packet')
-    expect(packets.map((p) => p.object.payload)).toEqual([first!.canonical, first!.canonical])
+    expect(packets.map((p) => p.packet.payload)).toEqual([first!.canonical, first!.canonical])
     expect(warnings).toMatchObject([{ code: 'MEDIA_FAILURE', element: 'locmaf' }])
   })
 }

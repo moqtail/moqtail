@@ -21,12 +21,11 @@
 
 import type { SubscribeResult } from '@/client/types'
 import { Location } from '@/model/common/location'
-import type { MoqtObject } from '@/model/data/object'
 import type { BaseElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import type { SourceElementDefinition } from '@/player/element/define'
 import type { CatalogTrack, MediaSourceElement } from '@/player/element/interfaces'
-import type { Pad, PadEvent, PadItem, PadProperties } from '@/player/element/pad'
+import type { Packet, Pad, PadEvent, PadItem, PadProperties } from '@/player/element/pad'
 
 /** One track of the set, played by its own child source. */
 export interface Child {
@@ -98,7 +97,7 @@ export class Forwarder {
     // The first arrival too: until then no rendition is active
     const changed = this.#emitted !== child.track
     this.#emitted = child.track
-    await this.#writePacket(item.object)
+    await this.#writePacket(item.packet)
     if (changed) this.#host.renditionChanged(child.track)
   }
 
@@ -195,13 +194,13 @@ export class Forwarder {
     return this.#host.pad.write({ type: 'event', event })
   }
 
-  async #writePacket(object: MoqtObject): Promise<void> {
+  async #writePacket(packet: Packet): Promise<void> {
     if (this.#gap) {
       this.#gap = false
       await this.#writeEvent({ type: 'discontinuity', reason: 'gap' })
     }
-    await this.#host.pad.write({ type: 'packet', object })
-    this.#last = object.location
+    await this.#host.pad.write({ type: 'packet', packet })
+    this.#last = packet.location
   }
 
   async #forwardSeekChild(seekChild: SeekChild, item: PadItem): Promise<void> {
@@ -216,7 +215,7 @@ export class Forwarder {
       await pad.write({ type: 'properties', properties: seekChild.properties })
       await this.#answer('ok')
     }
-    await this.#writePacket(item.object)
+    await this.#writePacket(item.packet)
   }
 
   /** Releases the seek child. Once it ended, the set resumes after a gap, its properties written again. */

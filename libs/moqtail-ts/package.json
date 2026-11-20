@@ -30,79 +30,36 @@
   "files": [
     "dist"
   ],
-  "main": "dist/index.cjs",
-  "module": "dist/index.mjs",
+  "main": "dist/index.mjs",
   "types": "dist/index.d.mts",
   "exports": {
     ".": {
-      "import": {
-        "types": "./dist/index.d.mts",
-        "default": "./dist/index.mjs"
-      },
-      "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
-      }
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
     },
     "./client": {
-      "import": {
-        "types": "./dist/client.d.mts",
-        "default": "./dist/client.mjs"
-      },
-      "require": {
-        "types": "./dist/client.d.cts",
-        "default": "./dist/client.cjs"
-      }
+      "types": "./dist/client.d.mts",
+      "default": "./dist/client.mjs"
     },
     "./model": {
-      "import": {
-        "types": "./dist/model.d.mts",
-        "default": "./dist/model.mjs"
-      },
-      "require": {
-        "types": "./dist/model.d.cts",
-        "default": "./dist/model.cjs"
-      }
+      "types": "./dist/model.d.mts",
+      "default": "./dist/model.mjs"
     },
     "./player": {
-      "import": {
-        "types": "./dist/player.d.mts",
-        "default": "./dist/player.mjs"
-      },
-      "require": {
-        "types": "./dist/player.d.cts",
-        "default": "./dist/player.cjs"
-      }
+      "types": "./dist/player.d.mts",
+      "default": "./dist/player.mjs"
     },
     "./player/component": {
-      "import": {
-        "types": "./dist/player/component.d.mts",
-        "default": "./dist/player/component.mjs"
-      },
-      "require": {
-        "types": "./dist/player/component.d.cts",
-        "default": "./dist/player/component.cjs"
-      }
+      "types": "./dist/player/component.d.mts",
+      "default": "./dist/player/component.mjs"
     },
     "./player/worker": {
-      "import": {
-        "types": "./dist/player/worker.d.mts",
-        "default": "./dist/player/worker.mjs"
-      },
-      "require": {
-        "types": "./dist/player/worker.d.cts",
-        "default": "./dist/player/worker.cjs"
-      }
+      "types": "./dist/player/worker.d.mts",
+      "default": "./dist/player/worker.mjs"
     },
     "./util": {
-      "import": {
-        "types": "./dist/util.d.mts",
-        "default": "./dist/util.mjs"
-      },
-      "require": {
-        "types": "./dist/util.d.cts",
-        "default": "./dist/util.cjs"
-      }
+      "types": "./dist/util.d.mts",
+      "default": "./dist/util.mjs"
     }
   },
   "scripts": {

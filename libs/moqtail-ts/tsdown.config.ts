@@ -28,7 +28,7 @@ export default defineConfig({
     'player/worker-default': 'src/player/worker/default.ts',
     util: 'src/util/index.ts',
   },
-  format: ['cjs', 'esm'],
+  format: 'esm',
   dts: true,
   outDir: 'dist',
   sourcemap: false,
@@ -39,8 +39,7 @@ export default defineConfig({
   },
   target: false,
   hooks: {
-    'build:done': async ({ options }) => {
-      if (options.format !== 'es') return
+    'build:done': async () => {
       const { output } = await Rolldown.build({
         input: 'dist/player.mjs',
         write: false,

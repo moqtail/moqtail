@@ -19,10 +19,10 @@ import { TransformElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode } from '@/player/element/define'
 import { convertedCapabilities } from '@/player/element/negotiation'
-import type { Pad, PadItem } from '@/player/element/pad'
+import type { Pad, PadItem, PadSignal } from '@/player/element/pad'
 import { roleOf } from '@/player/element/sink/media_sink'
 import { forTransfer } from '@/player/element/worker/transfer'
-import type { PlayerError } from '@/player/error'
+import { PlayerError } from '@/player/error'
 import { Decoding, type Codecs } from './decoding'
 
 /**
@@ -66,7 +66,10 @@ export class WebCodecsTransform extends TransformElement {
     const inWorker = worker?.has(roleOf(input) === 'audio' ? 'AudioDecoder' : 'VideoDecoder') ? worker : undefined
     const thread = inWorker ? [{ direction: 'out' as const, code: CapabilityCode.THREAD, value: 'worker' }] : []
     const output = this.createPad('src', [...capabilities, ...thread])
-    const report = (error: PlayerError) => this.context.fail(error)
+    const report = (report: PlayerError | PadSignal) => {
+      if (report instanceof PlayerError) this.context.fail(report)
+      else output.signal(report)
+    }
     const decoding = inWorker
       ? inWorker.create<Decoding>('webcodecs', { outputs: [output], report })
       : new Decoding({ outputs: [(item) => output.write(item)], options: undefined, report }, this.#codecs)
@@ -325,6 +328,43 @@ if (import.meta.vitest) {
     expect(d.sink.signals).toEqual([{ type: 'flush' }])
   })
 
+  test('receive() waits once 10 s are held, until a frame is taken', async () => {
+    const { codecs } = fakeCodecs()
+    const blocked = Promise.withResolvers<void>()
+    const output = async (item: PadOutput) => {
+      if (item.type === 'frame') await blocked.promise
+    }
+    const engine = new Decoding({ outputs: [output], options: undefined, report: () => {} }, codecs)
+    await engine.receive(properties())
+    await settle()
+    for (let s = 0; s < 10; s++) await engine.receive(packet(1, s, s * 1_000_000))
+    let returned = false
+    const last = engine.receive(packet(1, 10, 10_000_000)).then(() => (returned = true))
+    await settle()
+    // The first frame isn't taken, so 0 s to 10 s are held
+    expect(returned).toBe(false)
+    blocked.resolve()
+    await last
+    engine.close()
+  })
+
+  test('packets wait encoded while the consumer holds a frame, signalled downstream as held, until a flush drops them', async () => {
+    const d = await decoding()
+    await d.write(properties())
+    const blocked = Promise.withResolvers<void>()
+    d.sink.slow = () => blocked.promise
+    await d.write(...[0, 1, 2, 3, 4].map((n) => packet(1, n, n * 100_000)))
+    // The first frame is inside receive(), the second waits to be taken
+    expect(d.chunks).toHaveLength(2)
+    expect(d.sink.signals.at(-1)).toEqual({ type: 'held', seconds: 0.3 })
+    d.pad.signal({ type: 'flush' })
+    expect(d.sink.signals.slice(-2)).toEqual([{ type: 'held', seconds: 0 }, { type: 'flush' }])
+    blocked.resolve()
+    await settle()
+    expect(d.chunks).toHaveLength(2)
+    expect(d.trace().slice(1)).toEqual(['1.0 @0', '1.1 @100000'])
+  })
+
   test('an AAC track without AUDIO_CONFIG gets the built AudioSpecificConfig, and length-prefixed avc3 is decoded as Annex B', async () => {
     const audio = await decoding({ role: 'audio' })
     await audio.write({
@@ -426,9 +466,7 @@ if (import.meta.vitest) {
     first!.payload.close()
     d.decoders[0]!.fail()
     expect(d.failures).toMatchObject([{ code: 'MEDIA_FAILURE', element: 'webcodecs' }])
-    expect(d.failures[0]!.message).toBe(
-      'Decoding failed with 3 decoded frames still open, spanning 1.00 s: playback is too far behind for the frames the decoder can keep alive, lower the target latency',
-    )
+    expect(d.failures[0]!.message).toBe('Decoding failed with 3 decoded frames still open, spanning 1.00 s')
     await d.write(packet(1, 4, 2_000_000), properties('vp8'))
     expect(d.failures).toHaveLength(1)
     expect(d.trace().slice(1)).toEqual(['1.0 @0', '1.1 @500000', '1.2 @1000000', '1.3 @1500000'])

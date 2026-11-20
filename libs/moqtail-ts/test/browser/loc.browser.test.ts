@@ -27,6 +27,8 @@ import { roleOf } from '@/player/element/sink/media_sink'
 import type { PlayerError } from '@/player/error'
 import { MediaSink } from '@/player/element/sink/media_sink'
 import { MOQtailPlayer } from '@/player/player'
+import { RENDER_QUEUE_LIMIT } from '@/player/elements/playout/engine'
+import { liveBuffer } from '@/player/plugins/buffer'
 import { frameFilter, type Draw, type FrameFilter } from './harness/engines'
 import { testsrc } from './harness/sources'
 import { playerOptions, preferWorker } from './harness/thread'
@@ -109,6 +111,22 @@ test('LOC plays on a canvas, in sync, through the webcodecs transforms the chain
     expect(Math.abs(timestamp - currentTime)).toBeLessThan(1 / framerate + 1 / 60 + 0.01)
   }
 
+  expect(errors).toEqual([])
+})
+
+test('liveBuffer settles at rate 1 with the forward buffer webcodecs holds encoded, past what the render queue holds', async () => {
+  const canvas = document.createElement('canvas')
+  document.body.append(canvas)
+  const player = new MOQtailPlayer({ ...playerOptions(), plugins: [liveBuffer()] }).source(testsrc.uri()).sink(canvas)
+  const { errors, catalog } = watch(player, canvas)
+  await player.start()
+  await until(() => player.state === 'playing', 'playing')
+  const sink = player.mediaSink!
+  const forward = () => (sink.buffered.length ? sink.buffered.end(0) - sink.currentTime : 0)
+  // At rate 1 the forward buffer is within liveBuffer's tolerance of a goal no lower than 0.5 s
+  await until(() => sink.playbackRate === 1 && forward() > 0.4, 'rate 1 at the goal', 15_000)
+  const framerate = catalog()!.tracks.find((t) => t.role === 'video')!.framerate!
+  expect(RENDER_QUEUE_LIMIT / framerate).toBeLessThan(0.4)
   expect(errors).toEqual([])
 })
 

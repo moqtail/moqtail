@@ -85,6 +85,7 @@ const RELAYED_EVENTS = ['playing', 'pause', 'stalled', 'waiting', 'timeupdate', 
  * one queue per buffer, retention, seeking, gap jumping, and end of stream.
  */
 export class MSESink extends MediaSink<PadState> {
+  readonly preciseRate: boolean
   readonly #video: HTMLVideoElement
   readonly #Backend: typeof MediaSource
   readonly #seekTracker: SeekTracker
@@ -114,6 +115,7 @@ export class MSESink extends MediaSink<PadState> {
     this.#options = { backBuffer, forwardCap, liveEdgeDelay }
     this.#video = video
     this.#Backend = Backend
+    this.preciseRate = !managed
     this.#seekTracker = new SeekTracker(video)
     this.#remotePlayback = video.disableRemotePlayback
     // WebKit won't open a ManagedMediaSource on an element that could use AirPlay without an alternative source

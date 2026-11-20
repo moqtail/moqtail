@@ -67,21 +67,19 @@ export function aacDescription(codec: string, sampleRate: number, numberOfChanne
   return Uint8Array.from(bits.match(/.{8}/g)!, (byte) => parseInt(byte, 2))
 }
 
-/** The type and µs timestamp of the chunk of an object of a track with `timescale`. */
-export function chunkInit(
-  packet: PacketBase,
-  kind: 'video' | 'audio',
-  timescale: number | undefined,
-): { type: EncodedVideoChunkType; timestamp: number } {
+export function chunkType(packet: PacketBase, kind: 'video' | 'audio'): EncodedVideoChunkType {
   const marking = findProperty(packet.properties, VideoFrameMarking)
   // LOC 4.2: a group starts with a key frame
   const key = kind === 'audio' || (marking ? marking.independent : packet.location.object === 0n)
-  return {
-    type: key ? 'key' : 'delta',
-    // LOC 2.3.1.1: arrival time in µs since the epoch is the default clock, and WebCodecs needs a timestamp
-    timestamp:
-      timestampMicros(packet.properties, timescale) ?? Math.round((performance.timeOrigin + performance.now()) * 1000),
-  }
+  return key ? 'key' : 'delta'
+}
+
+/** The µs timestamp of an object of a track with `timescale`. Call it on arrival: an object without one gets the time of the call. */
+export function chunkTimestamp(packet: PacketBase, timescale: number | undefined): number {
+  // LOC 2.3.1.1: arrival time in µs since the epoch is the default clock, and WebCodecs needs a timestamp
+  return (
+    timestampMicros(packet.properties, timescale) ?? Math.round((performance.timeOrigin + performance.now()) * 1000)
+  )
 }
 
 function startsWith(payload: Uint8Array, prefix: number[]): boolean {
@@ -137,7 +135,7 @@ if (import.meta.vitest) {
     })
   })
 
-  describe('chunkInit', () => {
+  describe('chunkType and chunkTimestamp', () => {
     const base = (object: number, properties: import('@/model/common/pair').KeyValuePair[] = []) => ({
       track: 'v1',
       location: new Location(1n, BigInt(object)),
@@ -146,21 +144,19 @@ if (import.meta.vitest) {
 
     test('key frames come from frame marking, else object 0, and every audio frame is one', () => {
       const marked = (value: number) => [new VideoFrameMarking(new Uint8Array([value])).toKeyValuePair()]
-      expect(chunkInit(base(3, marked(0x20)), 'video', undefined).type).toBe('key')
-      expect(chunkInit(base(0, marked(0)), 'video', undefined).type).toBe('delta')
-      expect(chunkInit(base(0), 'video', undefined).type).toBe('key')
-      expect(chunkInit(base(1), 'video', undefined).type).toBe('delta')
-      expect(chunkInit(base(1), 'audio', undefined).type).toBe('key')
+      expect(chunkType(base(3, marked(0x20)), 'video')).toBe('key')
+      expect(chunkType(base(0, marked(0)), 'video')).toBe('delta')
+      expect(chunkType(base(0), 'video')).toBe('key')
+      expect(chunkType(base(1), 'video')).toBe('delta')
+      expect(chunkType(base(1), 'audio')).toBe('key')
     })
 
     test('the timestamp in µs, from the object’s TIMESCALE, else the track’s, else the arrival time', () => {
       const stamped = [new Timestamp(90_000n).toKeyValuePair()]
-      expect(chunkInit(base(0, stamped), 'video', 90_000).timestamp).toBe(1_000_000)
-      expect(chunkInit(base(0, [...stamped, new Timescale(1000n).toKeyValuePair()]), 'video', 90_000).timestamp).toBe(
-        90_000_000,
-      )
+      expect(chunkTimestamp(base(0, stamped), 90_000)).toBe(1_000_000)
+      expect(chunkTimestamp(base(0, [...stamped, new Timescale(1000n).toKeyValuePair()]), 90_000)).toBe(90_000_000)
       const now = (performance.timeOrigin + performance.now()) * 1000
-      expect(Math.abs(chunkInit(base(0), 'video', undefined).timestamp - now)).toBeLessThan(1_000_000)
+      expect(Math.abs(chunkTimestamp(base(0), undefined) - now)).toBeLessThan(1_000_000)
     })
   })
 }

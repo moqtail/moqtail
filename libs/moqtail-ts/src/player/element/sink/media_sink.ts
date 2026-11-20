@@ -65,6 +65,7 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
   abstract get seeking(): boolean
   abstract get ended(): boolean
   abstract get playbackRate(): number
+  abstract get preciseRate(): boolean
   abstract get liveEdgeStart(): number
   abstract get dvrRange(): { start: number; end: number } | undefined
 
@@ -179,6 +180,7 @@ if (import.meta.vitest) {
     readonly seeking = false
     readonly ended = false
     readonly playbackRate = 1
+    readonly preciseRate = true
     readonly liveEdgeStart = NaN
     readonly dvrRange = undefined
     readonly received: PadItem[] = []

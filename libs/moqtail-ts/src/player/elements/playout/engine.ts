@@ -57,11 +57,11 @@ interface Anchor {
 }
 
 /**
- * Frames the render queue holds before `receive()` waits. Each one pins a decoder buffer: Chromium's
- * software decoder kept 200 open 720p frames alive, and 60 is liveBuffer's default 1 s at 60 fps.
- * shortcut: unmeasured on hardware decoders, lower it if one stalls or fails below it
+ * Frames the render queue holds before `receive()` waits: enough to draw on time while the decoder
+ * makes the next. Each one pins a decoder buffer, of which a phone's hardware decoder has few, so the
+ * buffer liveBuffer keeps waits upstream encoded and arrives here as `held` signals.
  */
-export const RENDER_QUEUE_LIMIT = 60
+export const RENDER_QUEUE_LIMIT = 3
 /** Seconds of audio posted and not yet consumed before `receive()` waits: a context the page won't start consumes none. */
 const AUDIO_QUEUE_LIMIT = 2
 
@@ -88,6 +88,8 @@ export class PlayoutEngine implements Engine {
   /** The processor's `drift` reports not heard yet, oldest first. */
   readonly #skews: { contextTime: number; skew: number }[] = []
   readonly #starving = new Set<Role>()
+  /** Seconds each role's upstream holds past what it wrote, from its `held` signals. */
+  readonly #held: Record<Role, number> = { video: 0, audio: 0 }
   #port: MessagePort | undefined
   #tracks: PlayoutTracks = { video: false, audio: false, clock: 'wall' }
   #state: 'idle' | 'playing' | 'paused' = 'idle'
@@ -158,6 +160,7 @@ export class PlayoutEngine implements Engine {
 
   async signal(role: string, signal: PadSignal): Promise<void> {
     if (signal.type === 'flush') this.#flush(role as Role)
+    else if (signal.type === 'held') this.#held[role as Role] = signal.seconds
   }
 
   async outputTimestamp(timestamp: OutputTimestamp): Promise<void> {
@@ -186,7 +189,10 @@ export class PlayoutEngine implements Engine {
     this.#flush('video')
   }
 
-  /** Forward only: drops what's before `time`, and the clock starts again at the first media from there. */
+  /**
+   * Forward only: drops what's before `time`, and the clock starts again at the first media from there.
+   * shortcut: a jump decodes the held packets before its target only to drop them, skip them upstream if jumps take long
+   */
   async seek(time: number): Promise<void> {
     this.#seekTarget = time
     let dropped = 0
@@ -406,7 +412,10 @@ export class PlayoutEngine implements Engine {
   #presentation(): void {
     const heard = this.#heard()
     const audioTime = heard === undefined ? undefined : this.#audioTime(heard)
-    const ends = [this.#latest === undefined ? undefined : this.#latest + (this.#interval ?? 0), this.#audioEnd]
+    const ends = [
+      this.#latest === undefined ? undefined : this.#latest + (this.#interval ?? 0) + this.#held.video,
+      this.#audioEnd === undefined ? undefined : this.#audioEnd + this.#held.audio,
+    ]
     const known = ends.filter((end) => end !== undefined)
     this.#report({
       type: 'presentation',
@@ -625,6 +634,14 @@ if (import.meta.vitest) {
     const fifth = engine.receive(audio(2), 'audio')
     await engine.pause()
     await fifth
+  })
+
+  test("a held signal extends its role's buffered end by what's held upstream", async () => {
+    const { engine } = await playing(['audio'])
+    await engine.receive(audio(0), 'audio')
+    await engine.signal('audio', { type: 'held', seconds: 1.5 })
+    frame!()
+    expect(reports.filter((report) => report.type === 'presentation').at(-1)).toMatchObject({ bufferedEnd: 2 })
   })
 
   test('ended waits for the audio queued on a running context, but not on one that never ran', async () => {

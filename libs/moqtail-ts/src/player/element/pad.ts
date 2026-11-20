@@ -91,6 +91,8 @@ export type PadEvent =
 export type PadSignal =
   | { type: 'seek'; mediaTime: number } // upstream
   | { type: 'flush' } // downstream
+  /** Downstream: the seconds of media written to the element upstream and not passed on yet, sent when they change. */
+  | { type: 'held'; seconds: number }
 
 /** @public Items a connection holds before `write()` waits. */
 export const CONNECTION_CAPACITY = 32
@@ -117,7 +119,7 @@ export class Pad {
   ) {}
 
   /**
-   * Source pads only. Resolves once every connection has room, await it to apply backpressure.
+   * Source pads only. Resolves once every connection has room, for a frame once each took it: await it to apply backpressure.
    * A frame goes to the first connection and a clone to each other one, and is closed without any.
    */
   async write(item: PadOutput): Promise<void> {
@@ -253,6 +255,8 @@ export class Connection {
   readonly #queue: PadOutput[] = []
   /** Producers waiting for room, oldest first. */
   readonly #waiting: (() => void)[] = []
+  /** Resolves the write of each queued frame once it's taken. */
+  readonly #taken = new Map<PadOutput, () => void>()
   #wake: (() => void) | undefined
   #closed = false
 
@@ -267,8 +271,11 @@ export class Connection {
       closeFrame(item)
       return Promise.resolve()
     }
+    // A queued frame pins a decoder buffer, so its producer decodes no further until the consumer takes it
+    const taken = item.type === 'frame' ? new Promise<void>((resolve) => this.#taken.set(item, resolve)) : undefined
     this.#queue.push(item)
     this.#wake?.()
+    if (taken) return taken
     if (this.#queue.length < CONNECTION_CAPACITY) return Promise.resolve()
     return new Promise((resolve) => this.#waiting.push(resolve))
   }
@@ -278,6 +285,8 @@ export class Connection {
     this.#closed = true
     for (const item of this.#queue.splice(0)) closeFrame(item)
     for (const resolve of this.#waiting.splice(0)) resolve()
+    for (const resolve of this.#taken.values()) resolve()
+    this.#taken.clear()
     this.#wake?.()
   }
 
@@ -285,6 +294,8 @@ export class Connection {
     for (;;) {
       const item = this.#queue.shift() ?? (await this.#next())
       if (!item || this.#closed) return
+      this.#taken.get(item)?.()
+      this.#taken.delete(item)
       if (this.#queue.length < CONNECTION_CAPACITY) this.#waiting.shift()?.()
       try {
         await this.#deliver(item)
@@ -358,6 +369,24 @@ if (import.meta.vitest) {
       blocked.resolve()
       await flush()
       expect(sink.items()).toEqual([])
+    })
+
+    test("a frame's write waits until the consumer takes it, and teardown releases it", async () => {
+      const { Location } = await import('@/model/common/location')
+      const blocked = gate()
+      const { chain, pad } = await connected((s) => (s.slow = () => blocked.promise))
+      const frame = (): PadOutput => ({
+        type: 'frame',
+        frame: { track: 'v1', location: new Location(0n, 0n), properties: [], payload: { close() {} } as VideoFrame },
+      })
+      const written: number[] = []
+      for (const n of [1, 2]) void pad.write(frame()).then(() => written.push(n))
+      await flush()
+      // The first is inside receive(), the second waits to be taken
+      expect(written).toEqual([1])
+      await chain.destroy()
+      await flush()
+      expect(written).toEqual([1, 2])
     })
 
     test('events cross a transform downstream and signals both ways when nobody handles them', async () => {

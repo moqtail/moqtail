@@ -55,12 +55,6 @@ const MIN_RATE = 0.6
 const JUMP_FACTOR = 4
 /** With jumps only: how far the forward buffer may stray from its goal before one. A jump is a visible skip. */
 const JUMP_TOLERANCE = 0.5
-/**
- * WebKit's clock stalls for ~0.3 s on every playbackRate change (https://bugs.webkit.org/show_bug.cgi?id=163433),
- * which undoes a catch-up and starts the next one: there latency is held with jumps only.
- * shortcut: detects WebKit by ManagedMediaSource, revisit if another engine ships it.
- */
-const CORRECTION: 'rate' | 'jump' = 'ManagedMediaSource' in globalThis ? 'jump' : 'rate'
 
 /**
  * The forward buffer that gives the target latency is the goal, never below the stall
@@ -88,7 +82,7 @@ interface Attached {
 
 /**
  * Catches up at `catchupRate` when behind the target latency, slows to `2 - catchupRate`
- * when ahead; on WebKit it jumps instead. Without catalog targets the target latency is `targetLatency`.
+ * when ahead; on a sink without a precise rate it jumps instead. Without catalog targets the target latency is `targetLatency`.
  */
 export class LiveBufferController implements BufferController {
   readonly #catchupRate: number
@@ -171,7 +165,8 @@ export class LiveBufferController implements BufferController {
     const forward = buffered.end(range) - currentTime
     const targets = this.#targets ?? { target: this.#targetLatency, min: undefined, max: undefined }
     const state = { forward, latency: this.#latency(currentTime, forward), ...targets }
-    const decision = decide(state, this.#catchupRate, CORRECTION)
+    // A sink whose clock stalls on each rate change would undo a catch-up and start the next one
+    const decision = decide(state, this.#catchupRate, sink.preciseRate ? 'rate' : 'jump')
     if ('jumpTo' in decision) {
       // A failed jump leaves playback where it was
       sink.seek(liveEdge(buffered, decision.jumpTo)).catch(() => {})

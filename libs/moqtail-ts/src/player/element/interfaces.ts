@@ -58,6 +58,11 @@ export interface MediaSinkElement extends EventTarget {
   readonly seeking: boolean
   readonly ended: boolean
   readonly playbackRate: number
+  /**
+   * Whether `setPlaybackRate()` keeps the clock running. WebKit's media element stalls it for ~0.3 s
+   * on every change (https://bugs.webkit.org/show_bug.cgi?id=163433).
+   */
+  readonly preciseRate: boolean
   /** Where the live edge starts (media-ui-extensions proposal 0007); `NaN` on demand. */
   readonly liveEdgeStart: number
   /** Live with an accessible window (MSF 5.2.46): the seconds it covers. Undefined without DVR. */

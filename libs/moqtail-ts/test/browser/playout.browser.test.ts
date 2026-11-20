@@ -220,9 +220,12 @@ describe('playout', () => {
   })
 
   test('eos on every pad ends it', async () => {
-    const s = await open({ write: (s) => writeFrames(s, range(0, 0.5, 1 / FPS), range(0, 0.5, CHUNK)) })
+    const s = await open()
     const ended = count(s.sink, 'ended')
-    for (const pad of [s.video!, s.audio!]) await pad.write({ type: 'event', event: { type: 'eos' } })
+    const eos = { type: 'event' as const, event: { type: 'eos' as const } }
+    // Each pad on its own, as a source writes them: frames past the render queue wait for the clock
+    void writeFrames(s, range(1 / FPS, 0.5, 1 / FPS), []).then(() => s.video!.write(eos))
+    void writeFrames(s, [], range(CHUNK, 0.5, CHUNK)).then(() => s.audio!.write(eos))
     await s.sink.play()
     await until(() => ended() === 1, 'ended')
     expect([s.sink.ended, s.sink.paused]).toEqual([true, true])
@@ -304,19 +307,26 @@ function live(s: Session, options: { lead?: number; video?: boolean; chunk?: num
   feed.stop = () => {
     feed.stopped = true
   }
-  const run = async () => {
+  const edge = () => (performance.now() - start) / 1000 + feed.lead
+  // A loop per role, as a source delivers each track: a frame waiting to be taken holds no audio back
+  const runVideo = async () => {
     while (!feed.stopped) {
-      const until = (performance.now() - start) / 1000 + feed.lead
-      for (; video && s.video && nextVideo <= until; nextVideo += 1 / FPS)
+      for (; nextVideo <= edge(); nextVideo += 1 / FPS)
         if (feed.skip.video > 0) feed.skip.video--
         else await writeFrames(s, [nextVideo], [])
-      for (; s.audio && nextAudio <= until + audioOffset; nextAudio += chunk)
+      await flush()
+    }
+  }
+  const runAudio = async () => {
+    while (!feed.stopped) {
+      for (; nextAudio <= edge() + audioOffset; nextAudio += chunk)
         if (feed.skip.audio > 0) feed.skip.audio--
         else await writeFrames(s, [], [nextAudio], undefined, chunk)
       await flush()
     }
   }
-  void run()
+  if (video && s.video) void runVideo()
+  if (s.audio) void runAudio()
   onTestFinished(feed.stop)
   return feed
 }

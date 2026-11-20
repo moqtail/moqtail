@@ -41,6 +41,7 @@ const TIME_UPDATE_INTERVAL_MS = 250
  * `MediaSinkElement` API and the `AudioContext`.
  */
 export class PlayoutSink extends MediaSink<PlayoutPadState> {
+  readonly preciseRate = true
   readonly #canvas: HTMLCanvasElement
   /** Resolved once the element knows where the engine runs. */
   readonly #engine = Promise.withResolvers<PlayoutEngine | Comlink.Remote<PlayoutEngine>>()

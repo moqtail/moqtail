@@ -20,7 +20,7 @@ import type { PacketBase, Packet, PadEvent, PadItem, PadOutput, PadProperties, P
 import type { Engine, EngineInit } from '@/player/element/worker/host'
 import { PlayerError } from '@/player/error'
 import { deepEqual } from '@/player/util/json'
-import { aacDescription, annexB, chunkInit } from './chunk'
+import { aacDescription, annexB, chunkTimestamp, chunkType } from './chunk'
 
 /** The WebCodecs classes the engine decodes with, from `globalThis` or a test. */
 export interface Codecs {
@@ -42,22 +42,39 @@ interface DecoderInit {
   error: (error: DOMException) => void
 }
 
-/** Chunks waiting in the decoder before a packet holds its connection back. */
+/** A packet with what's read from it on arrival. */
+interface Arrival {
+  packet: Packet
+  timestamp: number
+  timescale: number | undefined
+  /** The flushes before it arrived: a later one drops it. */
+  epoch: number
+}
+
+/** Chunks waiting in the decoder before the next one waits too. */
 const DECODE_QUEUE_LIMIT = 4
-/** Frames open past this when the decoder fails hint it ran out of buffers. */
-const OPEN_FRAMES_EXPECTED = 2
+/**
+ * Seconds held before `receive()` waits and holds the source back: packets would pile up for a
+ * consumer that stopped taking frames, as playout in a hidden page does.
+ * shortcut: a target latency past it pins liveBuffer slow again, raise it or let the source report what it holds if one does
+ */
+const HELD_LIMIT = 10
+/** How far the held seconds move before they're signalled again: half of liveBuffer's tolerance. */
+const HELD_REPORT_STEP = 0.05
 /** Codecs whose WebCodecs registrations read Annex B without a description. */
 const ANNEX_B_CODECS = /^(avc[13]|hev1|hvc1)\./
 
 /**
- * Decodes the items of one `loc` pad and writes them, decoded, to its one output, whose promise
- * is the consumer's backpressure, and reports its first failure outside `receive()`, a
- * `PlayerError`, through `report`. It only uses what a dedicated worker has, so it runs in one too.
+ * Decodes the items of one `loc` pad and writes them, decoded, to its one output. A frame's write
+ * resolves once the consumer takes it, and the next chunk waits for that: packets wait here encoded,
+ * not as frames that pin decoder buffers. The seconds they span go downstream as a `held` signal,
+ * and its first failure outside `receive()`, a `PlayerError`, through `report`. It only uses what a
+ * dedicated worker has, so it runs in one too.
  */
 export class Decoding implements Engine {
   readonly #codecs: Codecs
   readonly #output: (item: PadOutput) => Promise<void>
-  readonly #fail: (error: PlayerError) => void
+  readonly #report: (report: PlayerError | PadSignal) => void
   #pending: PendingObject[] = []
   /** Frames written that the consumer hasn't closed yet: each holds a decoder buffer. */
   #open: VideoFrame[] = []
@@ -66,25 +83,39 @@ export class Decoding implements Engine {
   #kind: 'video' | 'audio' = 'video'
   #lengthPrefixed = false
   #awaitingKey = true
-  /** Orders packets behind the flushes and events before them. */
+  /** Orders each item behind the items, flushes and events before it. */
   #tail = Promise.resolve()
   #lastWrite = Promise.resolve()
   /** The `timescale` property the output carries. */
   #outputTimescale: number | undefined
+  /** The latest `timescale` property received, which the packets after it take. */
+  #arrivalTimescale: number | undefined
+  #epoch = 0
+  /** µs since the latest flush: from the newest timestamp passed on, else the first received, to the newest received. */
+  #held: { from: number; to: number } | undefined
+  /** Seconds last signalled as `held`. */
+  #heldSent = 0
+  /** Resolved and replaced whenever the held seconds may shrink. */
+  #room = Promise.withResolvers<void>()
   #failed = false
+  #closed = false
 
   /** `codecs` default to the thread's own. */
   constructor(init: EngineInit, codecs: Codecs = globalThis) {
     this.#codecs = codecs
     this.#output = init.outputs[0]!
-    this.#fail = init.report
+    this.#report = init.report
   }
 
   async receive(item: PadItem): Promise<void> {
-    await this.#tail
     if (this.#failed) return
-    if (item.type === 'properties') return this.#applyProperties(item.properties)
-    if (item.type === 'packet') await this.#decode(item.packet)
+    if (item.type === 'properties') {
+      if ('timescale' in item.properties) this.#arrivalTimescale = item.properties.timescale
+      this.#enqueue(() => this.#applyProperties(item.properties))
+    } else if (item.type === 'packet') {
+      this.#arrived(item.packet)
+    }
+    while (this.#heldSeconds() >= HELD_LIMIT && !this.#closed) await this.#room.promise
   }
 
   /** Flushes the decoder and then writes `event`, so it stays behind the frames decoded before it. */
@@ -96,16 +127,34 @@ export class Decoding implements Engine {
     })
   }
 
-  /** A downstream `flush` drops what the decoder holds and starts over at the next key frame. */
+  /** A downstream `flush` drops the packets held and what the decoder holds, and starts over at the next key frame. */
   signal(signal: PadSignal): void {
-    if (signal.type !== 'flush' || this.#decoder?.state !== 'configured') return
+    if (signal.type !== 'flush') return
+    this.#epoch++
+    this.#held = undefined
+    this.#roomMade()
+    this.#sendHeld()
+    if (this.#decoder?.state !== 'configured') return
     this.#decoder.reset()
     this.#pending.length = 0
     this.#enqueue(() => this.#configure())
   }
 
   close(): void {
+    this.#closed = true
+    this.#roomMade()
     if (this.#decoder && this.#decoder.state !== 'closed') this.#decoder.close()
+  }
+
+  #arrived(packet: Packet): void {
+    const timestamp = chunkTimestamp(packet, this.#arrivalTimescale)
+    const own = findProperty(packet.properties, Timescale)?.timescale
+    const timescale = own === undefined ? this.#arrivalTimescale : Number(own)
+    const arrival = { packet, timestamp, timescale, epoch: this.#epoch }
+    this.#enqueue(() => this.#decode(arrival))
+    if (this.#held) this.#held.to = Math.max(this.#held.to, timestamp)
+    else this.#held = { from: timestamp, to: timestamp }
+    this.#sendHeld()
   }
 
   async #applyProperties(properties: Partial<PadProperties>): Promise<void> {
@@ -142,25 +191,24 @@ export class Decoding implements Engine {
     this.#awaitingKey = true
   }
 
-  async #decode(packet: Packet): Promise<void> {
+  async #decode({ packet, timestamp, timescale, epoch }: Arrival): Promise<void> {
     await this.#lastWrite
+    if (epoch !== this.#epoch) return
     const decoder = this.#decoder
-    if (decoder?.state !== 'configured') return
-    const { type, timestamp } = chunkInit(packet, this.#kind, this.#properties.timescale)
-    if (this.#awaitingKey && type !== 'key') return
+    const type = chunkType(packet, this.#kind)
+    if (decoder?.state !== 'configured' || (this.#awaitingKey && type !== 'key')) {
+      this.#passed(timestamp)
+      return
+    }
     const data = this.#lengthPrefixed ? annexB(packet.payload) : packet.payload
     if (!data) {
       this.#awaitingKey = true
+      this.#passed(timestamp)
       return
     }
     this.#awaitingKey = false
     const base = { track: packet.track, location: packet.location, properties: packet.properties }
-    const timescale = findProperty(packet.properties, Timescale)?.timescale
-    this.#pending.push({
-      base,
-      timestamp,
-      timescale: timescale === undefined ? this.#properties.timescale : Number(timescale),
-    })
+    this.#pending.push({ base, timestamp, timescale })
     if (decoder instanceof this.#codecs.AudioDecoder) {
       decoder.decode(new this.#codecs.EncodedAudioChunk({ type, timestamp, data }))
     } else {
@@ -204,6 +252,30 @@ export class Decoding implements Engine {
       this.#open.push(payload as VideoFrame)
     }
     this.#lastWrite = this.#output({ type: 'frame', frame: { ...base, payload } })
+    this.#passed(pending.timestamp)
+  }
+
+  /** Media up to `timestamp` was written or dropped. */
+  #passed(timestamp: number): void {
+    if (this.#held) this.#held.from = Math.max(this.#held.from, timestamp)
+    this.#roomMade()
+    this.#sendHeld()
+  }
+
+  #heldSeconds(): number {
+    return this.#held ? (this.#held.to - this.#held.from) / 1_000_000 : 0
+  }
+
+  #sendHeld(): void {
+    const seconds = this.#heldSeconds()
+    if (Math.abs(seconds - this.#heldSent) < HELD_REPORT_STEP) return
+    this.#heldSent = seconds
+    this.#report({ type: 'held', seconds })
+  }
+
+  #roomMade(): void {
+    this.#room.resolve()
+    this.#room = Promise.withResolvers()
   }
 
   /** Running out of decoder memory shows up here, not in the consumer holding the frames. */
@@ -212,9 +284,7 @@ export class Decoding implements Engine {
     if (open.length === 0) return 'Decoding failed'
     const timestamps = open.map((frame) => frame.timestamp)
     const span = (Math.max(...timestamps) - Math.min(...timestamps)) / 1_000_000
-    const message = `Decoding failed with ${open.length} decoded frames still open, spanning ${span.toFixed(2)} s`
-    if (open.length <= OPEN_FRAMES_EXPECTED) return message
-    return `${message}: playback is too far behind for the frames the decoder can keep alive, lower the target latency`
+    return `Decoding failed with ${open.length} decoded frames still open, spanning ${span.toFixed(2)} s`
   }
 
   async #flush(): Promise<void> {
@@ -228,13 +298,16 @@ export class Decoding implements Engine {
   }
 
   #enqueue(step: () => Promise<void>): void {
-    this.#tail = this.#tail.then(step).catch((error: unknown) => this.#reportFailure(error))
+    this.#tail = this.#tail
+      // Steps queued before close() would configure the closed decoder and fail
+      .then(() => (this.#closed ? undefined : step()))
+      .catch((error: unknown) => this.#reportFailure(error))
   }
 
   #reportFailure(error: unknown): void {
     if (this.#failed) return
     this.#failed = true
-    this.#fail(
+    this.#report(
       error instanceof PlayerError
         ? error
         : new PlayerError('MEDIA_FAILURE', this.#failure(), { element: 'webcodecs', cause: error }),

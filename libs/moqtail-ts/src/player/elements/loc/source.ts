@@ -40,7 +40,8 @@ export class LocSource extends SwitchingSetSource {
     // LOC 2.3.1.3: CODEC_STRING is the WebCodecs codec string
     // shortcut: an object-scope CODEC_STRING is ignored, read it in `packet` once a publisher changes codec mid-track
     const codec = findProperty(trackProperties, CodecString)?.codec ?? track.codec!
-    const timescale = findProperty(trackProperties, Timescale)?.timescale ?? track.timescale
+    // LOC 2.3.1.2: only TIMESCALE sets it; without it Timestamps are epoch µs, whatever the catalog says
+    const timescale = findProperty(trackProperties, Timescale)?.timescale
     return {
       decoderConfig: decoderConfigOf(track, codec),
       // Always present, so a switch to a track without one clears the previous track's
@@ -75,7 +76,7 @@ export class LocSource extends SwitchingSetSource {
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { cmafChain, cmafTrack } = await import('@/player/testing/cmaf')
+  const { cmafChain, cmafTrack, requested } = await import('@/player/testing/cmaf')
   const { mediaObject } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
   const { UnknownTrackProperty } = await import('@/model/property/track_property')
@@ -111,9 +112,9 @@ if (import.meta.vitest) {
   })
 
   test('packets keep the payload and properties, and group times come from the LOC Timestamp', async () => {
-    const c = await cmafChain([locTrack()], { element: Loc })
+    const c = await cmafChain([locTrack({ timescale: 90_000 })], { element: Loc })
     await flush()
-    // Wall-clock µs, as without a TIMESCALE
+    // Wall-clock µs, as without a TIMESCALE track property: the catalog's timescale isn't LOC's
     const at = (ms: number) => [new Timestamp(BigInt(1_700_000_000_000 + ms) * 1000n).toKeyValuePair()]
     const first = mediaObject(1, 0, at(0))
     c.client.last.push(first, mediaObject(1, 1, at(500)), mediaObject(2, 0, at(2000)))
@@ -128,15 +129,6 @@ if (import.meta.vitest) {
     ...(timescale === undefined ? [] : [new Timescale(timescale).toKeyValuePair()]),
   ]
 
-  test('without a TIMESCALE track property, the catalog’s timescale is the track’s', async () => {
-    const c = await cmafChain([locTrack({ timescale: 90_000 })], { element: Loc })
-    await flush()
-    c.client.last.push(mediaObject(1, 0, ticks(90_000n)), mediaObject(2, 0, ticks(180_000n)))
-    await flush()
-    expect(c.sink.items()[0]).toMatchObject({ properties: { timescale: 90_000 } })
-    expect(c.sink.items().at(-1)).toMatchObject({ properties: { groupDuration: 1 } })
-  })
-
   test('an object’s TIMESCALE wins over the track’s', async () => {
     const c = await cmafChain([locTrack()], { element: Loc })
     const time = (properties: ReturnType<typeof ticks>, timescale?: number) =>
@@ -147,8 +139,10 @@ if (import.meta.vitest) {
   })
 
   test('a switch to a track without a timescale clears the previous track’s', async () => {
-    const c = await cmafChain([locTrack({ timescale: 90_000 }), locTrack({}, 'v2')], {
+    const trackProperties = [new UnknownTrackProperty(new Timescale(90_000n).toKeyValuePair())]
+    const c = await cmafChain([locTrack(), locTrack({}, 'v2')], {
       element: Loc,
+      respond: (_, options) => (requested(options) === 'v1' ? { trackProperties } : {}),
     })
     await flush()
     c.client.last.push(mediaObject(1, 0, ticks(90_000n)))

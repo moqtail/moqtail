@@ -438,8 +438,10 @@ function StatusView({ videoRef, player, catalog }: Omit<Props, 'session'>) {
   const video = videoRef.current;
   if (!video || !player)
     return <Empty title="Not connected">Connect to a stream to see its status.</Empty>;
-  // The canvas player's sink, which the video element doesn't follow
-  const media = player.mediaSink ?? video;
+  // The canvas player's sink, which the element doesn't play; the element's times count from the DVR start
+  const sink = video.player === player ? undefined : player.mediaSink;
+  const media = sink ?? video;
+  const dvr = sink?.dvrRange;
   const rows: [string, string][] = [
     ['State', `${player.state} · ${video.streamType}`],
     ['Playhead', `${seconds(media.currentTime)} / ${seconds(video.duration)}`],
@@ -448,7 +450,10 @@ function StatusView({ videoRef, player, catalog }: Omit<Props, 'session'>) {
     ['Video', video.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : '–'],
     ['Buffered', ranges(media.buffered)],
     ['Forward buffer', seconds(forward(media))],
-    ['Seekable', ranges(video.seekable)],
+    [
+      'Seekable',
+      sink ? (dvr ? `${dvr.start.toFixed(2)}–${dvr.end.toFixed(2)}` : '–') : ranges(video.seekable),
+    ],
     ['Live edge start', seconds(media.liveEdgeStart)],
   ];
   const tracks = catalog?.tracks ?? [];

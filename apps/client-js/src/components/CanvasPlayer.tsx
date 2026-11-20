@@ -72,5 +72,13 @@ export function CanvasPlayer({
 
   // After a blocked autoplay, the click is the user activation the audio needs
   const play = () => playerRef.current?.play().catch(() => {});
-  return <canvas ref={canvasRef} onClick={play} className="block h-full w-full object-contain" />;
+  return (
+    // A fresh canvas per player, since a worker player keeps the last one's control
+    <canvas
+      key={`${session}:${src}`}
+      ref={canvasRef}
+      onClick={play}
+      className="block h-full w-full object-contain"
+    />
+  );
 }

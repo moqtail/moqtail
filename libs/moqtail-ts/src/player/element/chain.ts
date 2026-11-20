@@ -21,6 +21,7 @@
  */
 
 import type { MOQtailClient } from '@/client/client'
+import type { PlayerWorker } from '@/player/element/worker/player_worker'
 import { PlayerError } from '@/player/error'
 import { canonicalJson } from '@/player/util/json'
 import { BaseElement, SinkElement, SourceElement, TransformElement } from './base'
@@ -50,6 +51,7 @@ export interface ChainHost {
   switchSources(): readonly SourceElementDefinition[]
   /** Player-registered transform definitions, then the active plugins', then built-in ones, each in order. */
   transformDefinitions(): readonly TransformElementDefinition[]
+  worker?(): PlayerWorker | undefined
   warn(error: PlayerError): void
   fail(error: PlayerError): void
 }
@@ -345,6 +347,7 @@ export class Chain {
 
   #connect(pad: Pad, target: Consumer): void {
     pad.connect(target, (error, destination) => this.#receiveFailed(error, destination))
+    this.host.worker?.()?.connected(pad)
   }
 
   #unlinked(pad: Pad, cause?: unknown): void {

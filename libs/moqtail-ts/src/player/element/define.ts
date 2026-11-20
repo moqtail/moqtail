@@ -19,6 +19,7 @@
  * instance exists, and `defineElement`, which checks and returns one.
  */
 
+import type { ThreadEnvironment } from '@/player/element/worker/player_worker'
 import type { MsfSource } from '@/player/msf_url'
 import type { BaseElement, SinkElement, SourceElement, TransformElement } from './base'
 import type { ElementContext } from './context'
@@ -31,6 +32,8 @@ export enum CapabilityCode {
   CODEC,
   MIME_TYPE,
   EVENT_TYPE,
+  /** `worker` on a worker pad: its items live in the player's worker. */
+  THREAD,
 }
 
 /** @public `in` describes a sink pad, `out` a source pad. */
@@ -91,6 +94,11 @@ export interface ElementDefinition<
    * It isn't part of `negotiate`, which is synchronous, since decoders answer asynchronously and per rendition.
    */
   supports?(track: Identifiers): boolean | Promise<boolean>
+  /**
+   * Where the element's engines may run, asked before each instance's `init`. `both` or `worker` give
+   * it `context.worker` while the player has one, and `worker` without one rejects. Default `main`.
+   */
+  threads?(environment: ThreadEnvironment): 'main' | 'worker' | 'both'
   /** Rejection might mean a browser API or a peer dependency is missing. */
   init(context: ElementContext, options?: Record<string, any>): Promise<E>
 }
@@ -168,8 +176,10 @@ function validate(definition: ElementDefinition & { probe?: unknown }): void {
     }
   }
   if (typeof definition.init !== 'function') throw new TypeError(`${label}: init must be a function`)
-  if (definition.supports !== undefined && typeof definition.supports !== 'function') {
-    throw new TypeError(`${label}: supports must be a function`)
+  for (const key of ['supports', 'threads'] as const) {
+    if (definition[key] !== undefined && typeof definition[key] !== 'function') {
+      throw new TypeError(`${label}: ${key} must be a function`)
+    }
   }
 }
 
@@ -212,6 +222,7 @@ if (import.meta.vitest) {
       ['capabilities not bundles', { ...source, capabilities: [{ direction: 'in', code: 0, value: 'x' }] }],
       ['an empty bundle', { ...source, capabilities: [[]] }],
       ['supports not a function', { ...source, supports: true }],
+      ['threads not a function', { ...source, threads: 'worker' }],
       [
         'a bundle mixing directions',
         {

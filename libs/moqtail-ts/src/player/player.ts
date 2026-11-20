@@ -44,6 +44,7 @@ import {
 import { selectSource } from '@/player/element/negotiation'
 import { BUILT_IN_SOURCES, BUILT_IN_TRANSFORMS } from '@/player/elements'
 import type { CatalogElement } from '@/player/elements/catalog/element'
+import { spawnWorker, type PlayerWorker } from '@/player/element/worker/player_worker'
 import { MSE, checkOptions } from '@/player/elements/mse'
 import { rangeAt } from '@/player/elements/mse/gaps'
 import type { MSEOptions } from '@/player/elements/mse/sink'
@@ -85,6 +86,16 @@ export interface MOQtailPlayerOptions {
   maxCatalogBytes?: number
   /** How media sources order each request's objects. Default: a 150 ms window. */
   objectOrdering?: ObjectOrdering
+  /**
+   * Runs the engines of elements that allow it, such as decoding and canvas rendering, in a worker
+   * the player starts, where the browser has what they need. Default true.
+   */
+  preferWorker?: boolean
+  /**
+   * Starts the worker from your own script, which calls `serveWorker` from `moqtail/player/worker`
+   * with your elements' engines. Used with `preferWorker` only.
+   */
+  worker?: () => Worker
 }
 
 /** @public The media-ui-extensions stream type (proposal 0010). */
@@ -170,6 +181,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   /** The active plugins' features, from the first SERVER_SETUP. Kept across reconnects. */
   #features: Features = resolveFeatures([])
   #client: MOQtailClient | undefined
+  #worker: PlayerWorker | undefined
   /** Where `reconnecting` returns to; the media sink updates it meanwhile. */
   #resume: PlayerState = 'idle'
   #stage: Stage = 'source'
@@ -204,6 +216,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       definitions: () => this.#sourceDefinitions(),
       switchSources: () => this.#features.switchSources,
       transformDefinitions: () => this.#transformDefinitions(),
+      worker: () => this.#worker,
       warn: (warning) => {
         if (!this.#abort.signal.aborted && this.#state !== 'error') this.emit('warning', warning)
       },
@@ -385,7 +398,13 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   async #init(origin: string): Promise<void> {
     this.#setState('connecting')
     try {
-      const client = await acquire(this.#member, origin, this.#clientOptions)
+      const worker = this.options.preferWorker === false ? undefined : spawnWorker(this.options.worker)
+      this.#worker = worker
+      const [client, started] = await Promise.all([
+        acquire(this.#member, origin, this.#clientOptions),
+        worker?.start(this.#abort.signal),
+      ])
+      if (!started) this.#worker = undefined
       this.#abort.signal.throwIfAborted()
       this.#useClient(client)
       this.#features = resolveFeatures(activePlugins(this.#plugins, client.serverSetup))
@@ -395,6 +414,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
         this.#chain.addSource(definition, identifiers, options)
       }
       const outcome = await this.#chain.init(this.#abort.signal)
+      if (this.#worker && !this.#worker.used) this.#terminateWorker()
       if (this.#error) throw this.#error // failed while negotiating, e.g. the session couldn't be recovered
       this.#watchSink()
       this.#setState(outcome)
@@ -419,9 +439,15 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     try {
       await teardown
     } finally {
+      this.#terminateWorker()
       await released
       this.#setState('destroyed')
     }
+  }
+
+  #terminateWorker(): void {
+    this.#worker?.terminate()
+    this.#worker = undefined
   }
 
   /** Built-in sources last, so they lose probe ties. */
@@ -550,8 +576,9 @@ function isPinned(source: MediaSourceElement): boolean {
 }
 
 if (import.meta.vitest) {
-  const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
+  const { describe, test, expect, beforeEach, afterEach, vi } = import.meta.vitest
   const { fakeClients, testObject } = await import('@/player/testing/client')
+  const { inProcessWorker } = await import('@/player/testing/worker')
   const { abrPlugin, bufferPlugin, collectingSink, testSource, testTransform, fakeMediaSink, flush, settle } =
     await import('@/player/testing/elements')
   const { definitionOf } = await import('@/player/element/define')
@@ -632,6 +659,37 @@ if (import.meta.vitest) {
         ...['ended', 'playing', 'destroyed'],
       ])
       expect(fakes.clients[1]!.disconnected).toBe(true)
+    })
+
+    test('the worker option replaces the default spawn, preferWorker: false spawns none, and a worker no engine used is terminated', async () => {
+      const spawned: string[] = []
+      vi.stubGlobal(
+        'Worker',
+        class {
+          constructor() {
+            spawned.push('default')
+            throw new DOMException('no script', 'SecurityError')
+          }
+        },
+      )
+      try {
+        await make({ preferWorker: false }).init()
+        expect(spawned).toEqual([])
+        const terminated: string[] = []
+        const worker = () => {
+          spawned.push('option')
+          const served = inProcessWorker()
+          return Object.assign(served, { terminate: () => terminated.push('option') })
+        }
+        const player = make({ worker })
+        await player.init()
+        expect([spawned, terminated]).toEqual([['option'], ['option']])
+        // A default spawn that fails leaves the player on the main thread
+        await make().init()
+        expect(spawned).toEqual(['option', 'default'])
+      } finally {
+        vi.unstubAllGlobals()
+      }
     })
 
     test('fatal errors reject init or move to error and pause; a lost session while ended waits for a seek', async () => {

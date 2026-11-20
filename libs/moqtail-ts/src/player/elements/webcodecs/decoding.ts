@@ -17,6 +17,7 @@
 import { findProperty } from '@/model/property/find'
 import { Timescale } from '@/model/property/timescale'
 import type { PacketBase, Packet, PadEvent, PadItem, PadOutput, PadProperties, PadSignal } from '@/player/element/pad'
+import type { Engine, EngineInit } from '@/player/element/worker/host'
 import { PlayerError } from '@/player/error'
 import { deepEqual } from '@/player/util/json'
 import { aacDescription, annexB, chunkInit } from './chunk'
@@ -49,11 +50,11 @@ const OPEN_FRAMES_EXPECTED = 2
 const ANNEX_B_CODECS = /^(avc[13]|hev1|hvc1)\./
 
 /**
- * Decodes the items of one `loc` pad and writes them, decoded, through `output`, whose promise
- * is the consumer's backpressure, and reports its first failure outside `receive()` to `fail`.
- * It only uses what a dedicated worker has, so it runs in one too.
+ * Decodes the items of one `loc` pad and writes them, decoded, to its one output, whose promise
+ * is the consumer's backpressure, and reports its first failure outside `receive()`, a
+ * `PlayerError`, through `report`. It only uses what a dedicated worker has, so it runs in one too.
  */
-export class Decoding {
+export class Decoding implements Engine {
   readonly #codecs: Codecs
   readonly #output: (item: PadOutput) => Promise<void>
   readonly #fail: (error: PlayerError) => void
@@ -72,10 +73,11 @@ export class Decoding {
   #outputTimescale: number | undefined
   #failed = false
 
-  constructor(codecs: Codecs, output: (item: PadOutput) => Promise<void>, fail: (error: PlayerError) => void) {
+  /** `codecs` default to the thread's own. */
+  constructor(init: EngineInit, codecs: Codecs = globalThis) {
     this.#codecs = codecs
-    this.#output = output
-    this.#fail = fail
+    this.#output = init.outputs[0]!
+    this.#fail = init.report
   }
 
   async receive(item: PadItem): Promise<void> {

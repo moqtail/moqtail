@@ -21,6 +21,7 @@
  */
 
 import type { MOQtailClient } from '@/client/client'
+import type { ElementWorker, WorkerContext } from '@/player/element/worker/player_worker'
 import { PlayerError } from '@/player/error'
 import type { MOQtailPlayer, PlayerEvents } from '@/player/player'
 import { deepEqual } from '@/player/util/json'
@@ -46,7 +47,9 @@ export interface ElementContext {
   readonly tracks: readonly CatalogTrack[]
   /** Set for elements the catalog loads, and inherited by what they load. */
   readonly catalog?: CatalogReader
-  /** Reports a fatal error from outside `receive()`, such as a decoder's. */
+  /** Set while the player has a worker and the definition's `threads` allows it. */
+  readonly worker?: WorkerContext | undefined
+  /** Reports a fatal error from outside `receive()`, such as a decoder's or an engine's. */
   fail(error: PlayerError): void
   /** Called by the `BaseElement` constructor, so the player hears what the instance emits. */
   attach(element: BaseElement): void
@@ -100,6 +103,7 @@ export class InstanceContext implements ElementContext {
   readonly #holding = new Set<Loaded>()
   #element: BaseElement | undefined
   #destroying: Promise<void> | undefined
+  #worker: ElementWorker | undefined
 
   constructor(chain: Chain, tracks: readonly CatalogTrack[] = [], catalog?: CatalogReader) {
     this.#chain = chain
@@ -117,6 +121,10 @@ export class InstanceContext implements ElementContext {
 
   get signal(): AbortSignal {
     return this.#abort.signal
+  }
+
+  get worker(): WorkerContext | undefined {
+    return this.#worker
   }
 
   /** The instance, once its constructor ran. */
@@ -146,6 +154,14 @@ export class InstanceContext implements ElementContext {
   }
 
   async create<E extends BaseElement>(definition: ElementDefinition<E>, options?: Record<string, any>): Promise<E> {
+    const worker = this.#chain.host.worker?.()
+    const threads = definition.threads?.(worker?.environment() ?? {}) ?? 'main'
+    if (threads !== 'main') this.#worker = worker?.context(this)
+    if (threads === 'worker' && !this.#worker) {
+      throw new PlayerError('UNSUPPORTED_SOURCE', `Element "${definition.name}" needs a worker`, {
+        element: definition.name,
+      })
+    }
     const element = await definition.init(this, options)
     this.#chain.register(element)
     // Destroyed while init was running: nothing will release it later
@@ -204,6 +220,7 @@ export class InstanceContext implements ElementContext {
     try {
       await element?.destroy()
     } finally {
+      this.#worker?.release()
       if (element) this.#chain.unregister(element)
       for (const loaded of [...this.#holding]) await this.#drop(loaded)
     }

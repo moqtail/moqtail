@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
+import * as Comlink from 'comlink'
 import type { ElementContext } from '@/player/element/context'
 import type { Pad, PadEvent, PadItem, PadProperties, PadSignal } from '@/player/element/pad'
 import { MediaSink, roleOf, type SinkPadState } from '@/player/element/sink/media_sink'
 import { PlayerError } from '@/player/error'
 import { createAudioOutput, type AudioOutput } from './audio'
-import { PlayoutEngine, type EngineReport, type Role } from './engine'
+import { PlayoutEngine, type EngineReport } from './engine'
 
 /** @public Options of the `Playout` sink, given through `player.sink(canvas)`. */
 export interface PlayoutOptions {
@@ -27,7 +28,6 @@ export interface PlayoutOptions {
 }
 
 interface PlayoutPadState extends SinkPadState {
-  /** Set once the pad's first frame went to the engine. */
   received: boolean
 }
 
@@ -36,11 +36,15 @@ const TIME_UPDATE_INTERVAL_MS = 250
 
 /**
  * Plays live `raw` pads: video on a canvas, audio through an AudioWorklet, video in sync with
- * the audio when the tracks share the epoch clock. The engine renders; this side holds the
- * chain, the `MediaSinkElement` API and the `AudioContext`.
+ * the audio when the tracks share the epoch clock. The engine takes the pads' items and renders,
+ * in the worker when every pad is a worker pad; this side holds the chain, the
+ * `MediaSinkElement` API and the `AudioContext`.
  */
 export class PlayoutSink extends MediaSink<PlayoutPadState> {
-  readonly #engine: PlayoutEngine
+  readonly #canvas: HTMLCanvasElement
+  /** Resolved once the element knows where the engine runs. */
+  readonly #engine = Promise.withResolvers<PlayoutEngine | Comlink.Remote<PlayoutEngine>>()
+  #placed: { engine: PlayoutEngine } | { engine: Comlink.Remote<PlayoutEngine>; worker: true } | undefined
   #audio: Promise<AudioOutput> | undefined
   #output: AudioOutput | undefined
   #state: 'idle' | 'playing' | 'paused' = 'idle'
@@ -54,12 +58,20 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   #ready = false
   #timeUpdate = -Infinity
 
-  constructor(context: ElementContext, canvas: CanvasRenderingContext2D) {
+  constructor(context: ElementContext, canvas: HTMLCanvasElement) {
     super(context)
-    this.#engine = new PlayoutEngine(canvas, (report) => this.#onReport(report))
-    this.on('padadded', () => this.#setTracks())
+    this.#canvas = canvas
+    this.on('padadded', (pad) => {
+      this.#place(pad)
+      this.#setTracks()
+    })
     this.on('padremoved', () => this.#setTracks())
-    this.on('nomorepads', () => this.#maybeReady())
+    this.on('nomorepads', () => {
+      this.#start()
+      this.#maybeReady()
+    })
+    // Without a worker there's nothing to wait for
+    if (!context.worker) this.#start()
   }
 
   get currentTime(): number {
@@ -99,13 +111,13 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   setPlaybackRate(rate: number): void {
     if (!(rate > 0 && Number.isFinite(rate))) throw new TypeError(`"playout" playback rate must be > 0, got ${rate}`)
     this.#playbackRate = rate
-    void this.#engine.setPlaybackRate(rate)
+    void this.#engine.promise.then((engine) => engine.setPlaybackRate(rate))
   }
 
   async play(): Promise<void> {
     if (this.#state === 'playing' || this.#ended) return
     this.#state = 'playing'
-    await this.#engine.play()
+    await (await this.#engine.promise).play()
     // shortcut: a context the page doesn't allow to start keeps resume() pending until a user gesture, with no autoplayblocked for audio yet
     void this.#output?.context.resume()
   }
@@ -113,7 +125,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   async pause(): Promise<void> {
     if (this.#state === 'paused') return
     this.#state = 'paused'
-    await this.#engine.pause()
+    await (await this.#engine.promise).pause()
     void this.#output?.context.suspend()
     this.dispatchEvent(new Event('pause'))
   }
@@ -126,12 +138,12 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
     this.#seek = seek
     this.#currentTime = mediaTime
     this.dispatchEvent(new Event('seeking'))
-    await this.#engine.seek(mediaTime)
+    await (await this.#engine.promise).seek(mediaTime)
     return seek.promise
   }
 
   override async destroy(): Promise<void> {
-    await this.#engine.close()
+    await this.#placed?.engine.close()
     this.#seek?.reject(new PlayerError('ABORTED', 'The sink was destroyed', { element: 'playout' }))
     this.#seek = undefined
     this.#closeAudio()
@@ -143,65 +155,94 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   }
 
   protected async receiveMedia(
-    _pad: Pad,
-    state: PlayoutPadState,
+    pad: Pad,
+    _state: PlayoutPadState,
     item: Exclude<PadItem, { type: 'properties' }>,
   ): Promise<void> {
-    if (item.type !== 'frame') return
-    const payload = item.frame.payload
-    if (payload instanceof AudioData) {
-      try {
-        await this.#audioOutput(payload)
-      } catch (cause) {
-        payload.close()
-        throw new PlayerError('MEDIA_FAILURE', 'Could not start the audio output', { element: 'playout', cause })
-      }
-    }
-    await this.#engine.receive(payload)
-    if (state.received) return
-    state.received = true
-    this.#maybeReady()
+    await (await this.#engine.promise).receive(item, roleOf(pad)!)
   }
 
-  /** Liveness can't be checked in `negotiate`: pads are routed before their properties arrive. */
-  protected override propertiesChanged(_state: PlayoutPadState, changes: Partial<PadProperties>): void {
-    if (changes.live === false)
-      throw new PlayerError('UNSUPPORTED_SOURCE', 'The playout sink plays live streams only', { element: 'playout' })
-    if ('timescale' in changes) this.#setTracks()
+  protected override async propertiesChanged(
+    pad: Pad,
+    _state: PlayoutPadState,
+    changes: Partial<PadProperties>,
+  ): Promise<void> {
+    await (await this.#engine.promise).receive({ type: 'properties', properties: changes }, roleOf(pad)!)
   }
 
   protected padEvent(pad: Pad, _state: PlayoutPadState, event: PadEvent): void {
-    if (event.type === 'eos') void this.#engine.end(roleOf(pad) as Role)
+    void this.#engine.promise.then((engine) => engine.event(event, roleOf(pad)!))
   }
 
   protected padSignal(pad: Pad, _state: PlayoutPadState, signal: PadSignal): void {
-    if (signal.type === 'flush') void this.#engine.flush(roleOf(pad) as Role)
+    void this.#engine.promise.then((engine) => engine.signal(roleOf(pad)!, signal))
   }
 
-  /** Created on the first `AudioData`, at its sample rate. */
-  #audioOutput(data: AudioData): Promise<AudioOutput> {
-    this.#audio ??= createAudioOutput(data.sampleRate, data.numberOfChannels).then(async (output) => {
-      this.#output = output
-      if (this.context.signal.aborted) {
-        this.#closeAudio()
-        return output
+  /**
+   * In the worker when every pad is a worker pad and the canvas can still transfer, so frames never
+   * come back to the main thread only to cross again.
+   */
+  #start(): void {
+    if (this.#placed) return
+    const worker = this.context.worker
+    const pads = this.pads.filter((pad) => pad.direction === 'sink')
+    const report = (report: EngineReport) => this.#onReport(report)
+    const offscreen =
+      worker && pads.length > 0 && pads.every((pad) => worker.inWorker(pad)) && offscreenOf(this.#canvas)
+    if (worker && offscreen) {
+      const options = { canvas: offscreen }
+      this.#placed = {
+        engine: worker.create<PlayoutEngine>('playout', { options, transfer: [offscreen], report }),
+        worker: true,
       }
-      output.node.onprocessorerror = (error) =>
-        this.fail(new PlayerError('MEDIA_FAILURE', 'The audio processor failed', { element: 'playout', cause: error }))
-      await this.#engine.attachAudio(output.node.port)
-      if (this.#state === 'playing') void output.context.resume()
-      return output
-    })
-    return this.#audio
+    } else {
+      const failure = contextFailure(this.#canvas)
+      if (failure) {
+        this.fail(new PlayerError('UNSUPPORTED_SOURCE', failure, { element: 'playout' }))
+        return
+      }
+      this.#placed = { engine: new PlayoutEngine({ outputs: [], options: { canvas: this.#canvas }, report }) }
+    }
+    this.#engine.resolve(this.#placed.engine)
+    for (const pad of pads) this.#place(pad)
   }
 
-  /** Video follows the audio clock when both are on the epoch clock. */
+  /** A worker pad links to an engine in the worker, else comes to `receive()`, which forwards it. */
+  #place(pad: Pad): void {
+    const worker = this.context.worker
+    if (pad.direction !== 'sink' || !this.#placed || !worker?.inWorker(pad)) return
+    if ('worker' in this.#placed) worker.link(pad, this.#placed.engine)
+    else worker.bridge(pad)
+  }
+
+  /** Created on the first `AudioData`'s format, which the engine reports. */
+  #audioOutput(sampleRate: number, numberOfChannels: number): void {
+    this.#audio ??= createAudioOutput(sampleRate, numberOfChannels).then(
+      async (output) => {
+        this.#output = output
+        if (this.context.signal.aborted) {
+          this.#closeAudio()
+          return output
+        }
+        output.node.onprocessorerror = (error) =>
+          this.fail(
+            new PlayerError('MEDIA_FAILURE', 'The audio processor failed', { element: 'playout', cause: error }),
+          )
+        const engine = await this.#engine.promise
+        await engine.attachAudio(Comlink.transfer(output.node.port, [output.node.port]))
+        if (this.#state === 'playing') void output.context.resume()
+        return output
+      },
+      (cause: unknown) => {
+        throw new PlayerError('MEDIA_FAILURE', 'Could not start the audio output', { element: 'playout', cause })
+      },
+    )
+    this.#audio.catch((error: PlayerError) => this.fail(error))
+  }
+
   #setTracks(): void {
-    // shortcut: a Timescale's epoch is the application's (LOC 2.3.1.2), so such tracks play unsynced on the wall clock
-    const roles = this.pads.map(roleOf)
-    const audio = roles.includes('audio')
-    const shared = this.padProperties().every((p) => p.timescale === undefined)
-    void this.#engine.setTracks({ video: roles.includes('video'), audio, clock: audio && shared ? 'audio' : 'wall' })
+    const roles = this.pads.map((pad) => roleOf(pad)!)
+    void this.#engine.promise.then((engine) => engine.setTracks(roles))
   }
 
   #maybeReady(): void {
@@ -213,6 +254,13 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
 
   #onReport(report: EngineReport): void {
     switch (report.type) {
+      case 'first':
+        for (const [pad, state] of this.states) if (roleOf(pad) === report.role) state.received = true
+        this.#maybeReady()
+        break
+      case 'audio':
+        this.#audioOutput(report.sampleRate, report.numberOfChannels)
+        break
       case 'presentation':
         this.#presentation(report.currentTime, report.bufferedEnd)
         break
@@ -243,7 +291,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
     if (context?.state === 'running') {
       const { contextTime = 0, performanceTime = 0 } = context.getOutputTimestamp()
       if (performanceTime > 0)
-        void this.#engine.outputTimestamp({ contextTime, time: performance.timeOrigin + performanceTime })
+        void this.#placed?.engine.outputTimestamp({ contextTime, time: performance.timeOrigin + performanceTime })
     }
     if (this.#state !== 'playing') return
     this.#played = true
@@ -258,6 +306,25 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
     if (!output) return
     output.node.disconnect()
     void output.context.close()
+  }
+}
+
+/** Why the canvas can't take a 2D context on this thread, if it can't. */
+function contextFailure(canvas: HTMLCanvasElement): string | undefined {
+  try {
+    return canvas.getContext('2d') ? undefined : 'The playout canvas already has a context other than "2d"'
+  } catch {
+    // Its control went to the worker, which can't be undone
+    return "The playout canvas was handed to an earlier player's worker: give each player its own canvas"
+  }
+}
+
+/** The canvas's control, or undefined once it has a context or was transferred. */
+function offscreenOf(canvas: HTMLCanvasElement): OffscreenCanvas | undefined {
+  try {
+    return canvas.transferControlToOffscreen()
+  } catch {
+    return undefined
   }
 }
 

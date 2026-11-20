@@ -24,6 +24,8 @@ export default defineConfig({
     model: 'src/model/index.ts',
     player: 'src/player/index.ts',
     'player/component': 'src/player/component/index.ts',
+    'player/worker': 'src/player/worker/index.ts',
+    'player/worker-default': 'src/player/worker/default.ts',
     util: 'src/util/index.ts',
   },
   format: ['cjs', 'esm'],

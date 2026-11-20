@@ -40,6 +40,7 @@ export const WebCodecs = defineElement({
     ],
   ],
   supports: decodable,
+  threads: (environment) => (environment.worker?.has('element:webcodecs') ? 'both' : 'main'),
   init: async (context) => {
     const { VideoDecoder, AudioDecoder, EncodedVideoChunk, EncodedAudioChunk } = globalThis as Partial<Codecs>
     if (!VideoDecoder || !AudioDecoder || !EncodedVideoChunk || !EncodedAudioChunk) {

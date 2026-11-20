@@ -3,7 +3,7 @@ import { playwright } from '@vitest/browser-playwright'
 import path from 'path'
 
 // Real-browser tests in headless Chrome against the test sources on relay.moqtail.dev (test/browser/harness).
-// `npm run test:browser`, about 47 s.
+// `npm run test:browser`, about 47 s. `PREFER_WORKER=false` runs them with every engine on the main thread.
 
 export default defineConfig({
   resolve: {
@@ -12,6 +12,7 @@ export default defineConfig({
     },
   },
   test: {
+    provide: { preferWorker: process.env['PREFER_WORKER'] !== 'false' },
     testTimeout: 60_000,
     // Files run side by side, each in its own iframe; its sessions start one at a time.
     fileParallelism: true,

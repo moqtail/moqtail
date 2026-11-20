@@ -74,14 +74,13 @@ if (import.meta.vitest) {
   const { flush } = await import('@/player/testing/elements')
   const { locmafVectors } = await import('../../../../test/locmaf')
   const { Locmaf } = await import('./index')
-  type Cmaf = typeof import('@/player/elements/cmaf').Cmaf
 
   test('the pad carries CMAF chunks; an object that can’t be decoded skips its group with one warning', async () => {
     const uniform = locmafVectors().find((v) => v.name === 'uniform')!
     const [first, , third] = uniform.objects
     const init = { type: 'inline' as const, data: uniform.init }
     const track = cmafTrack('v1', { packaging: 'locmaf', locmafVersion: '0.3', init })
-    const c = await cmafChain([track], { element: Locmaf as unknown as Cmaf })
+    const c = await cmafChain([track], { element: Locmaf })
     const warnings: unknown[] = []
     c.chain.host.player.on('warning', (warning) => warnings.push(warning))
     await flush()

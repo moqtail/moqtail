@@ -154,26 +154,26 @@ Attached with `player.on()`:
 
 The player is a chain of elements joined by pads. Each element definition says what it is (`source`, `transform` or `sink`), the pads it creates (`out` capabilities) and the pads it accepts (`in` capabilities). A source definition also has a `probe` that says whether it handles a track.
 
-For every track, the top-level one from the URL and every one the catalog lists, the candidates are, in order: the definitions passed to `registerElement()`, then the active plugins' elements (by plugin `priority`, then list order), then the built-in ones (catalog, CMAF, LOCMAF, media timeline, SAP timeline). Among the candidates whose probe accepts the track, the lowest `priority` wins (default 100), then the earlier one. So yours wins a tie with a plugin's, and both win a tie with a built-in one.
+For every track, the top-level one from the URL and every one the catalog lists, the candidates are, in order: the definitions passed to `registerElement()`, then the active plugins' elements (by plugin `priority`, then list order), then the built-in ones (catalog, CMAF, LOCMAF, LOC, media timeline, SAP timeline). Among the candidates whose probe accepts the track, the lowest `priority` wins (default 100), then the earlier one. So yours wins a tie with a plugin's, and both win a tie with a built-in one.
 
 A source the probe picks can be your own:
 
 ```ts
 import { CapabilityCode, MOQtailPlayer, SourceElement, defineElement } from 'moqtail/player'
 
-class LocSource extends SourceElement {
+class CustomSource extends SourceElement {
   // createPad('src', capabilities), write packets to it, then emit 'nomorepads'
 }
 
-const locSource = defineElement({
+const customSource = defineElement({
   type: 'source',
-  name: 'loc-source',
-  capabilities: [[{ direction: 'out', code: CapabilityCode.PACKAGING, value: 'loc' }]],
-  probe: (track) => track.packaging === 'loc',
-  init: async (context) => new LocSource(context),
+  name: 'custom-source',
+  capabilities: [[{ direction: 'out', code: CapabilityCode.PACKAGING, value: 'custom' }]],
+  probe: (track) => track.packaging === 'custom',
+  init: async (context) => new CustomSource(context),
 })
 
-new MOQtailPlayer().registerElement(locSource)
+new MOQtailPlayer().registerElement(customSource)
 ```
 
 Its pads still need a transform or sink whose `in` capabilities match them, or the player warns `PAD_UNLINKED`.
@@ -196,12 +196,12 @@ A plugin bundles features with the SETUP parameters they need, so a protocol ext
 ```ts
 import { MOQtailPlayer, definePlugin, liveBuffer, ssts } from 'moqtail/player'
 
-const loc = definePlugin({
-  name: 'loc',
-  features: () => [{ type: 'element', item: locSource }],
+const custom = definePlugin({
+  name: 'custom',
+  features: () => [{ type: 'element', item: customSource }],
 })
 
-new MOQtailPlayer({ plugins: [ssts({ algorithms: [0xff01n, 0n] }), loc(), liveBuffer()] })
+new MOQtailPlayer({ plugins: [ssts({ algorithms: [0xff01n, 0n] }), custom(), liveBuffer()] })
 ```
 
 Plugin code reaches the player through what it's handed. An element's `context.player` has the player's events and options, and `context.client` is the current client; it changes after a reconnect, so listen again on the player's `client` event. A buffer controller gets the player and the media sink in `attach()`:

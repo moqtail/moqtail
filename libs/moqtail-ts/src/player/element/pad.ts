@@ -56,8 +56,8 @@ export interface PadProperties {
   decoderConfig?: Omit<VideoDecoderConfig, 'description'> | Omit<AudioDecoderConfig, 'description'>
   /** The track's codec configuration: a CMAF Header, or the LOC VIDEO_CONFIG or AUDIO_CONFIG bytes. */
   initData?: Uint8Array
-  /** Units per second of the track's LOC Timestamps (LOC 2.3.1.2). Absent, they're µs since the Unix epoch. */
-  timescale?: number
+  /** Units per second of the track's LOC Timestamps (LOC 2.3.1.2). Absent or `undefined`, they're µs since the Unix epoch. */
+  timescale?: number | undefined
   live?: boolean
   /** Seconds, for VOD `MediaSource.duration`. */
   duration?: number

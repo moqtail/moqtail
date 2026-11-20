@@ -96,7 +96,7 @@ const TrackFields = v.looseObject({
   codec: v.optional(v.string()),
   mimeType: v.optional(v.string()),
   framerate: v.optional(v.number()),
-  timescale: v.optional(v.number()),
+  timescale: v.optional(v.pipe(int, v.minValue(1))),
   bitrate: v.optional(v.number()),
   avgBitrate: v.optional(v.number()),
   maxGopDuration: v.optional(v.number()),

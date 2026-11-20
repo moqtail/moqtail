@@ -526,12 +526,12 @@ export class Delivery {
     if (time !== undefined) this.times.record(trackKey(track), packet.location.group, time)
   }
 
-  /** Writes what changed; the first item carries everything. */
+  /** Writes what changed, an `undefined` value clearing its key; the first item carries everything. */
   async #setProperties(next: Partial<PadProperties>): Promise<void> {
     const changed: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(next)) {
       const current = (this.#properties as Record<string, unknown> | undefined)?.[key]
-      if (value !== undefined && !deepEqual(current, value)) changed[key] = value
+      if (!deepEqual(current, value)) changed[key] = value
     }
     if (this.#properties && Object.keys(changed).length === 0) return
     this.#properties = { ...this.#properties, ...changed }

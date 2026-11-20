@@ -195,15 +195,13 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
         engine: worker.create<PlayoutEngine>('playout', { options, transfer: [offscreen], report }),
         worker: true,
       }
-    } else if (this.#canvas.getContext('2d')) {
-      this.#placed = { engine: new PlayoutEngine({ outputs: [], options: { canvas: this.#canvas }, report }) }
     } else {
-      this.fail(
-        new PlayerError('UNSUPPORTED_SOURCE', 'The playout canvas already has a context other than "2d"', {
-          element: 'playout',
-        }),
-      )
-      return
+      const failure = contextFailure(this.#canvas)
+      if (failure) {
+        this.fail(new PlayerError('UNSUPPORTED_SOURCE', failure, { element: 'playout' }))
+        return
+      }
+      this.#placed = { engine: new PlayoutEngine({ outputs: [], options: { canvas: this.#canvas }, report }) }
     }
     this.#engine.resolve(this.#placed.engine)
     for (const pad of pads) this.#place(pad)
@@ -308,6 +306,16 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
     if (!output) return
     output.node.disconnect()
     void output.context.close()
+  }
+}
+
+/** Why the canvas can't take a 2D context on this thread, if it can't. */
+function contextFailure(canvas: HTMLCanvasElement): string | undefined {
+  try {
+    return canvas.getContext('2d') ? undefined : 'The playout canvas already has a context other than "2d"'
+  } catch {
+    // Its control went to the worker, which can't be undone
+    return "The playout canvas was handed to an earlier player's worker: give each player its own canvas"
   }
 }
 

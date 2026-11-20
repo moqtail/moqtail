@@ -197,6 +197,26 @@ test('a rendition VideoDecoder cannot decode, such as HEVC in headless Chromium,
   expect(errors).toEqual([])
 })
 
+test('a second player on one canvas plays on it, or fails at once if the first drew from the worker', async () => {
+  const canvas = document.createElement('canvas')
+  document.body.append(canvas)
+  const first = new MOQtailPlayer(playerOptions()).source(testsrc.uri()).sink(canvas)
+  await first.start()
+  await until(() => first.state === 'playing', 'the first playing')
+  await first.destroy()
+
+  const second = new MOQtailPlayer(playerOptions()).source(testsrc.uri()).sink(canvas)
+  const { errors } = watch(second, canvas)
+  void second.start().catch(() => {})
+  if (preferWorker) {
+    await until(() => errors.length > 0, 'an error')
+    expect(errors).toMatchObject([{ code: 'UNSUPPORTED_SOURCE', element: 'playout' }])
+  } else {
+    await until(() => second.state === 'playing', 'the second playing')
+    expect(errors).toEqual([])
+  }
+})
+
 function watch(player: MOQtailPlayer, canvas: HTMLCanvasElement) {
   const errors: PlayerError[] = []
   player.on('error', (error) => errors.push(error))

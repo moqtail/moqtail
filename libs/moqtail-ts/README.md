@@ -154,7 +154,7 @@ Attached with `player.on()`:
 
 ### Workers
 
-With `preferWorker` (default `true`), the player starts a worker of its own and runs the heavy part of the elements that allow it there, where the browser has what they need: `webcodecs` decodes in it when the worker has the decoder, and `playout` draws on the canvas from it when every pad it plays comes from the worker, so decoded frames never touch the main thread. The API is the same either way. `preferWorker: false` keeps everything on the main thread. A page whose CSP doesn't allow the worker script plays on the main thread too. With Vite, a `moqtail` that's pre-bundled can lose the worker script's URL: list it in `optimizeDeps.exclude`.
+With `preferWorker` (default `true`), the player starts a worker of its own and runs the heavy part of the elements that allow it there, where the browser has what they need: `webcodecs` decodes in it when the worker has the decoder, and `playout` draws on the canvas from it when every pad it plays comes from the worker, so decoded frames never touch the main thread. The API is the same either way. A canvas the worker drew on stays with it, so give each player a new `<canvas>`: a later player on it fails with `UNSUPPORTED_SOURCE`. `preferWorker: false` keeps everything on the main thread. A page whose CSP doesn't allow the worker script plays on the main thread too. With Vite, a `moqtail` that's pre-bundled can lose the worker script's URL: list it in `optimizeDeps.exclude`.
 
 Your own element can run its engine there too. The worker only has code your bundler builds into it, so you write its entry and pass it to the player:
 

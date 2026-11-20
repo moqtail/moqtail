@@ -14,8 +14,12 @@
  * limitations under the License.
  */
 
-/** What a catalog track means to the LOC source: decoder config and pad capabilities. */
+/** What a catalog track and its objects mean to LOC elements: decoder config, pad capabilities, timestamps. */
 
+import type { KeyValuePair } from '@/model/common/pair'
+import { findProperty } from '@/model/property/find'
+import { Timescale } from '@/model/property/timescale'
+import { Timestamp } from '@/model/property/timestamp'
 import { CapabilityCode, type Capabilities } from '@/player/element/define'
 import type { CatalogTrack } from '@/player/element/interfaces'
 import type { PadProperties } from '@/player/element/pad'
@@ -41,6 +45,17 @@ export function decoderConfigOf(track: CatalogTrack, codec: string): NonNullable
     ...(track.width !== undefined && { codedWidth: track.width }),
     ...(track.height !== undefined && { codedHeight: track.height }),
   }
+}
+
+/** An object's LOC Timestamp in µs, read with its own TIMESCALE, else the track's `timescale` (LOC Table 1). */
+export function timestampMicros(
+  properties: readonly KeyValuePair[],
+  timescale: number | undefined,
+): number | undefined {
+  const timestamp = findProperty(properties, Timestamp)
+  if (!timestamp) return undefined
+  const own = findProperty(properties, Timescale)?.timescale
+  return timestamp.toMicros(own ?? (timescale === undefined ? undefined : BigInt(timescale)))
 }
 
 if (import.meta.vitest) {

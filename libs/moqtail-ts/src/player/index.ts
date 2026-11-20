@@ -64,6 +64,8 @@ export {
   Pad,
   CONNECTION_CAPACITY,
   type Packet,
+  type PacketBase,
+  type Frame,
   type PadItem,
   type PadOutput,
   type PadProperties,

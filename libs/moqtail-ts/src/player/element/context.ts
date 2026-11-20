@@ -46,6 +46,8 @@ export interface ElementContext {
   readonly tracks: readonly CatalogTrack[]
   /** Set for elements the catalog loads, and inherited by what they load. */
   readonly catalog?: CatalogReader
+  /** Reports a fatal error from outside `receive()`, such as a decoder's. */
+  fail(error: PlayerError): void
   /** Called by the `BaseElement` constructor, so the player hears what the instance emits. */
   attach(element: BaseElement): void
   /** Returns the existing instance when the same definition and tracks are already loaded. */
@@ -124,6 +126,10 @@ export class InstanceContext implements ElementContext {
 
   switchSource(identifiers: Identifiers): SourceElementDefinition | undefined {
     return selectSource(this.#chain.host.switchSources(), identifiers)
+  }
+
+  fail(error: PlayerError): void {
+    this.#chain.fail(error)
   }
 
   async create<E extends BaseElement>(definition: ElementDefinition<E>, options?: Record<string, any>): Promise<E> {

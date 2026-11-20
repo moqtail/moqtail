@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-import type { SourceElementDefinition } from '@/player/element/define'
+import type { SourceElementDefinition, TransformElementDefinition } from '@/player/element/define'
 import { CatalogSource } from './catalog'
 import { Cmaf } from './cmaf'
 import { Loc } from './loc'
 import { Locmaf } from './locmaf'
 import { MediaTimeline } from './mediatimeline'
 import { SapTimeline } from './saptimeline'
+import { WebCodecs } from './webcodecs'
 
 /**
  * The source elements every player registers after its own and its extensions'. They're
@@ -34,3 +35,10 @@ export const BUILT_IN_SOURCES: readonly SourceElementDefinition[] = [
   MediaTimeline,
   SapTimeline,
 ]
+
+/**
+ * The transforms the runtime may load to connect a pad no declared element takes, tried after
+ * the player's own and its extensions'. Like the sources, they're reached through the runtime
+ * only, so they aren't exported from `moqtail/player`.
+ */
+export const BUILT_IN_TRANSFORMS: readonly TransformElementDefinition[] = [WebCodecs]

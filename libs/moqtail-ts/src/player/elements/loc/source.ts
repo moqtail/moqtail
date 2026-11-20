@@ -20,7 +20,6 @@ import type { MoqtObject } from '@/model/data/object'
 import { CodecString } from '@/model/property/codec_string'
 import { findProperty } from '@/model/property/find'
 import { Timescale } from '@/model/property/timescale'
-import { Timestamp } from '@/model/property/timestamp'
 import type { TrackProperty } from '@/model/property/track_property'
 import type { Capabilities } from '@/player/element/define'
 import type { CatalogTrack } from '@/player/element/interfaces'
@@ -28,7 +27,7 @@ import { packetOf, type Packet, type PadProperties } from '@/player/element/pad'
 import { acceptedInitData, initOnObjects, objectInitData } from '@/player/element/source/init_data'
 import { SwitchingSetSource } from '@/player/element/source/switching_set'
 import { renditionId } from '@/player/util/track'
-import { decoderConfigOf, locCapabilities } from './track'
+import { decoderConfigOf, locCapabilities, timestampMicros } from './track'
 
 /** Init data from the catalog or the config properties (MSF 12.2), timing from the LOC Timestamp. */
 export class LocSource extends SwitchingSetSource {
@@ -62,11 +61,8 @@ export class LocSource extends SwitchingSetSource {
   }
 
   mediaTime(_track: CatalogTrack, packet: Packet, carried: Partial<PadProperties>): number | undefined {
-    const timestamp = findProperty(packet.properties, Timestamp)
-    if (!timestamp) return undefined
-    // The object's own TIMESCALE wins over the track's (LOC Table 1)
-    const timescale = findProperty(packet.properties, Timescale)?.timescale ?? carried.timescale
-    return timestamp.toMicros(timescale === undefined ? undefined : BigInt(timescale)) / 1e6
+    const micros = timestampMicros(packet.properties, carried.timescale)
+    return micros === undefined ? undefined : micros / 1e6
   }
 
   packet(track: CatalogTrack, object: MoqtObject, _initData: Uint8Array | undefined): Packet | undefined {
@@ -80,6 +76,7 @@ if (import.meta.vitest) {
   const { mediaObject } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
   const { UnknownTrackProperty } = await import('@/model/property/track_property')
+  const { Timestamp } = await import('@/model/property/timestamp')
   const { VideoConfig } = await import('@/model/property/video_config')
   const { Loc } = await import('./index')
   const locTrack = (extra: Partial<CatalogTrack> = {}, name = 'v1') =>

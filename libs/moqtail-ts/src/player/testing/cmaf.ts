@@ -130,12 +130,13 @@ export async function cmafChain(
       clients.push(client())
       player.emit('reconnected')
     },
-    /** What the sink received, in short: `props <keys>`, `<group>.<object>`, `gap`, `eos`. */
+    /** What the sink received, in short: `props <keys>`, `<group>.<object>`, `frame`, `gap`, `eos`. */
     trace(): string[] {
       // The first pad's log, kept after the pad is removed
       return (sink.log.values().next().value ?? []).map((item) => {
         if (item.type === 'packet') return `${item.packet.location.group}.${item.packet.location.object}`
         if (item.type === 'properties') return `props ${Object.keys(item.properties).sort().join(',')}`
+        if (item.type === 'frame') return 'frame'
         if (item.event.type !== 'discontinuity') return item.event.type
         return item.event.failed ? `${item.event.reason} failed` : item.event.reason
       })

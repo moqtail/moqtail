@@ -156,6 +156,8 @@ The player is a chain of elements joined by pads. Each element definition says w
 
 For every track, the top-level one from the URL and every one the catalog lists, the candidates are, in order: the definitions passed to `registerElement()`, then the active plugins' elements (by plugin `priority`, then list order), then the built-in ones (catalog, CMAF, LOCMAF, LOC, media timeline, SAP timeline). Among the candidates whose probe accepts the track, the lowest `priority` wins (default 100), then the earlier one. So yours wins a tie with a plugin's, and both win a tie with a built-in one.
 
+Each capability bundle has one direction. Inside a bundle, capabilities with the same code are alternatives and different codes must all hold. A transform's output pad starts from its input pad's capabilities: for each code its `out` bundle lists, the input's value stays when listed, else it's replaced by the bundle's one value. So the built-in `webcodecs` transform, taking `loc` with `video` or `audio` and making `raw` with `video` or `audio`, turns a `loc`/`video` pad into a `raw`/`video` one.
+
 A source the probe picks can be your own:
 
 ```ts

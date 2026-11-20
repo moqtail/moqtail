@@ -229,6 +229,7 @@ export function detachedContext(): ElementContext {
     client: {} as MOQtailClient,
     signal: new AbortController().signal,
     tracks: [],
+    fail() {},
     attach() {},
     load: () => Promise.reject(new Error('detached')),
     release: async () => {},

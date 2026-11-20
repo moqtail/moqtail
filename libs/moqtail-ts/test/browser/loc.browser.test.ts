@@ -14,19 +14,20 @@
  * limitations under the License.
  */
 
-/** moqlivemock's LOC catalog played with `player.sink(canvas)`, the decoders loaded by the chain. */
+/** LOC tracks played with `player.sink(canvas)`, the decoders loaded by the chain. */
 
 import { beforeAll, expect, onTestFinished, test, vi } from 'vitest'
 import { userEvent } from 'vitest/browser'
 import { TransformElement, type BaseElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode, defineElement, definitionOf } from '@/player/element/define'
-import type { CatalogReader, CatalogTrack } from '@/player/element/interfaces'
+import type { CatalogReader } from '@/player/element/interfaces'
 import type { Pad, PadItem } from '@/player/element/pad'
 import { roleOf } from '@/player/element/sink/media_sink'
 import type { PlayerError } from '@/player/error'
 import { MOQtailPlayer } from '@/player/player'
-import { mlm } from './harness/sources'
+import { testsrc } from './harness/sources'
+import { warmUp } from './harness/warm'
 
 /** Passes `raw` pads on, counting the frames of each role. */
 class Tap extends TransformElement {
@@ -49,6 +50,8 @@ class Tap extends TransformElement {
     await this.#outputs.get(pad)?.write(item)
   }
 }
+
+warmUp(testsrc)
 
 beforeAll(async () => {
   // The page's user activation lets the AudioContext run
@@ -73,7 +76,7 @@ test('LOC plays on a canvas, in sync, through the webcodecs transforms the chain
   })
   const canvas = document.createElement('canvas')
   document.body.append(canvas)
-  const player = new MOQtailPlayer().source(mlm.uri()).transform(tapDefinition).sink(canvas)
+  const player = new MOQtailPlayer().source(testsrc.uri()).transform(tapDefinition).sink(canvas)
   const errors: PlayerError[] = []
   player.on('error', (error) => errors.push(error))
   let catalog: CatalogReader | undefined
@@ -102,27 +105,41 @@ test('LOC plays on a canvas, in sync, through the webcodecs transforms the chain
   expect(decoders.map((d) => definitionOf(d)!.name)).toEqual(['webcodecs', 'webcodecs'])
   expect(decoders.flatMap(upstream).map((s) => definitionOf(s)!.name)).toEqual(['loc', 'loc'])
 
-  // moqlivemock stamps both tracks in epoch µs without a Timescale: the shared clock case
+  // Both tracks are stamped in epoch µs without a Timescale: the shared clock case
   expect(drawn.length).toBeGreaterThan(0)
   const framerate = tracks[0]!.framerate!
   for (const { timestamp, currentTime } of drawn) {
     expect(Math.abs(timestamp - currentTime)).toBeLessThan(1 / framerate + 1 / 60 + 0.01)
   }
 
-  // The renditions VideoDecoder can't decode, such as HEVC in headless Chromium, leave the set
-  const decodable = await decodableOf(tracks)
-  const renditions = player.mediaSources.flatMap((s) => s.getRenditions()).filter((r) => r.width !== undefined)
-  expect(renditions.map((r) => r.id)).toEqual(decodable.map((t) => t.name))
-  expect(renditions.find((r) => r.active)?.codec).toBe(decodable[0]!.codec)
-  expect(decodable.length).toBeLessThan(tracks.length)
   expect(errors).toEqual([])
 })
 
-/** The tracks `VideoDecoder` decodes, in catalog order. */
-async function decodableOf(tracks: CatalogTrack[]): Promise<CatalogTrack[]> {
-  const support = await Promise.all(tracks.map((t) => VideoDecoder.isConfigSupported({ codec: t.codec! })))
-  return tracks.filter((_, i) => support[i]!.supported)
-}
+test('a rendition VideoDecoder cannot decode, such as HEVC in headless Chromium, leaves the set', async () => {
+  // testsrc's renditions all decode, so its LOC video is made one that doesn't
+  const isConfigSupported = VideoDecoder.isConfigSupported.bind(VideoDecoder)
+  const spy = vi
+    .spyOn(VideoDecoder, 'isConfigSupported')
+    .mockImplementation(async (config) =>
+      config.codec.startsWith('avc3') ? { supported: false, config } : isConfigSupported(config),
+    )
+  onTestFinished(() => spy.mockRestore())
+  const canvas = document.createElement('canvas')
+  document.body.append(canvas)
+  const player = new MOQtailPlayer().source(testsrc.uri()).sink(canvas)
+  const errors: PlayerError[] = []
+  player.on('error', (error) => errors.push(error))
+  onTestFinished(async () => {
+    await player.destroy()
+    canvas.remove()
+  })
+
+  await player.start()
+  await until(() => player.state === 'playing', 'playing')
+  const renditions = player.mediaSources.flatMap((s) => s.getRenditions())
+  expect(renditions.map((r) => r.id)).toEqual(['audio-loc'])
+  expect(errors).toEqual([])
+})
 
 /** Each frame drawn: its media time, and the clock then, both in seconds. */
 function spyDraws(clock: () => number): { timestamp: number; currentTime: number }[] {

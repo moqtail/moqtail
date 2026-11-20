@@ -388,6 +388,20 @@ if (import.meta.vitest) {
     expect(d.closed).toEqual([1000])
   })
 
+  test('audio pairs by timestamp when the decoder keeps them, so a skipped chunk shifts nothing', async () => {
+    const d = await decoding({ role: 'audio', manual: true })
+    const decoderConfig = { codec: 'opus', sampleRate: 48_000, numberOfChannels: 2 }
+    await d.write(
+      { type: 'properties', properties: { track: 'a1', live: true, decoderConfig } },
+      packet(1, 0, 0),
+      packet(1, 1, 20_000),
+      packet(1, 2, 40_000),
+    )
+    d.decoders[0]!.emit(0, 40_000)
+    await settle()
+    expect(d.trace().slice(1)).toEqual(['1.0 @0', '1.2 @40000'])
+  })
+
   test('a decoder error fails with MEDIA_FAILURE at once, naming the frames still open', async () => {
     const d = await decoding()
     await d.write(

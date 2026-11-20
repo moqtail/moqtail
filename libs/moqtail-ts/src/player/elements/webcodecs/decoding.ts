@@ -174,11 +174,13 @@ export class Decoding {
    * its chunk's timestamp, but B-frames come out in presentation order, and a decoder may skip a
    * corrupt chunk, so pairing in input order would drift. Outputs come in presentation order, so
    * the objects decoded and stamped before a frame will never be output and are dropped with it.
-   * Audio pairs in input order instead, and takes its object's timestamp (see `restamped`).
+   * Audio from a decoder that restamps it (see `restamped`) pairs in input order, and takes its
+   * object's timestamp.
    */
   #decoded(output: VideoFrame | AudioData): void {
     const audio = this.#kind === 'audio'
-    const index = audio ? 0 : this.#pending.findIndex((p) => p.timestamp === output.timestamp)
+    const exact = this.#pending.findIndex((p) => p.timestamp === output.timestamp)
+    const index = audio && exact === -1 ? 0 : exact
     const pending = this.#pending[index]
     if (!pending) {
       output.close()
@@ -187,7 +189,7 @@ export class Decoding {
     const { base, timescale } = pending
     // Objects decoded after it stay, so one stray timestamp can't drop the frames behind it
     this.#pending = audio
-      ? this.#pending.slice(1)
+      ? this.#pending.slice(index + 1)
       : this.#pending.filter((p, i) => i > index || p.timestamp > output.timestamp)
     const payload = audio ? restamped(output as AudioData, pending.timestamp) : output
     // Frames carry no clock of their own (LOC 2.3.1.1, 2.3.1.2)

@@ -23,14 +23,7 @@ import { VideoFrameMarking } from '@/model/property/video_frame_marking'
 import type { Frame, Packet, PadProperties } from '@/player/element/pad'
 import { locCapabilities } from '@/player/elements/loc/track'
 import { WebCodecs } from '@/player/elements/webcodecs'
-import {
-  collectingSink,
-  detachedContext,
-  testChain,
-  testSource,
-  type CollectingSink,
-  type TestSource,
-} from '@/player/testing/elements'
+import { collectingSink, testChain, testSource, type CollectingSink, type TestSource } from '@/player/testing/elements'
 
 const WIDTH = 320
 const HEIGHT = 240
@@ -82,7 +75,7 @@ async function decoded(
     s.emit('nomorepads')
   }
   chain.addSource(testSource({ script }), {})
-  chain.addTransform(await WebCodecs.init({ ...detachedContext(), fail: (error) => chain.fail(error) }))
+  chain.addTransform(WebCodecs)
   chain.addSink(collectingSink({ packaging: 'raw', setup: (k) => (sink = k) }))
   await chain.init(new AbortController().signal)
   const pad = source!.pads[0]!

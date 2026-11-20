@@ -16,9 +16,12 @@
 
 import { defineElement } from '@/player/element/define'
 import { MEDIA_SINK } from '@/player/element/interfaces'
-import { cmafCapabilities } from '@/player/elements/cmaf/track'
+import { cmafCapabilities, mimeTypeOf } from '@/player/elements/cmaf/track'
 import { PlayerError } from '@/player/error'
 import { MSESink, type MSEOptions } from './sink'
+
+/** Where the browser has them. */
+type MediaSources = { ManagedMediaSource?: typeof globalThis.MediaSource; MediaSource?: typeof globalThis.MediaSource }
 
 /**
  * @public
@@ -30,12 +33,13 @@ export const MSE = defineElement({
   name: 'mse',
   capabilities: [cmafCapabilities('in', 'video'), cmafCapabilities('in', 'audio')],
   provides: [MEDIA_SINK],
+  supports: (track) => {
+    const { ManagedMediaSource, MediaSource } = globalThis as MediaSources
+    return (ManagedMediaSource ?? MediaSource)?.isTypeSupported(mimeTypeOf(track)) ?? false
+  },
   init: async (context, options: MSEOptions) => {
     checkOptions(options)
-    const { ManagedMediaSource, MediaSource } = globalThis as {
-      ManagedMediaSource?: typeof globalThis.MediaSource
-      MediaSource?: typeof globalThis.MediaSource
-    }
+    const { ManagedMediaSource, MediaSource } = globalThis as MediaSources
     const Backend = ManagedMediaSource ?? MediaSource
     if (!Backend) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'Neither ManagedMediaSource nor MediaSource is available', {

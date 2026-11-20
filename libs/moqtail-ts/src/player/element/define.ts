@@ -83,6 +83,14 @@ export interface ElementDefinition<
   readonly priority?: number
   /** The optional interfaces this element implements. */
   readonly provides?: P
+  /**
+   * Whether this element can handle `track`'s media, asked during selection before any instance exists.
+   * Leaving it out means yes. Called with the track as the pad it would take carries it, so behind a decoder
+   * its packaging is `raw`. Yes answers are kept per role, packaging, codec, MIME type, size, sample rate and
+   * channels for the chain's life.
+   * It isn't part of `negotiate`, which is synchronous, since decoders answer asynchronously and per rendition.
+   */
+  supports?(track: Identifiers): boolean | Promise<boolean>
   /** Rejection might mean a browser API or a peer dependency is missing. */
   init(context: ElementContext, options?: Record<string, any>): Promise<E>
 }
@@ -160,6 +168,9 @@ function validate(definition: ElementDefinition & { probe?: unknown }): void {
     }
   }
   if (typeof definition.init !== 'function') throw new TypeError(`${label}: init must be a function`)
+  if (definition.supports !== undefined && typeof definition.supports !== 'function') {
+    throw new TypeError(`${label}: supports must be a function`)
+  }
 }
 
 /** Throws a `TypeError` for a name that is empty or has whitespace. */
@@ -200,6 +211,7 @@ if (import.meta.vitest) {
       ['sink with probe', { ...source, type: 'sink' }],
       ['capabilities not bundles', { ...source, capabilities: [{ direction: 'in', code: 0, value: 'x' }] }],
       ['an empty bundle', { ...source, capabilities: [[]] }],
+      ['supports not a function', { ...source, supports: true }],
       [
         'a bundle mixing directions',
         {

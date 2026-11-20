@@ -36,7 +36,10 @@ export function locCapabilities(direction: 'in' | 'out', role: string): Capabili
  * The WebCodecs config for `track`, decoding `codec`. A video track's `width` and `height` are
  * its maximum encoded size (MSF 5.2.27-28), which WebCodecs takes as a hint.
  */
-export function decoderConfigOf(track: CatalogTrack, codec: string): NonNullable<PadProperties['decoderConfig']> {
+export function decoderConfigOf(
+  track: Partial<CatalogTrack>,
+  codec: string,
+): NonNullable<PadProperties['decoderConfig']> {
   if (track.role === 'audio') {
     return { codec, sampleRate: track.samplerate!, numberOfChannels: Number(track.channelConfig) }
   }

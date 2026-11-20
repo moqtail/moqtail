@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { CapabilityCode, defineElement } from '@/player/element/define'
+import { CapabilityCode, defineElement, type Identifiers } from '@/player/element/define'
+import { decoderConfigOf } from '@/player/elements/loc/track'
 import { PlayerError } from '@/player/error'
 import type { Codecs } from './decoding'
 import { WebCodecsTransform } from './transform'
@@ -38,6 +39,7 @@ export const WebCodecs = defineElement({
       ...ROLES.map((value) => ({ direction: 'out' as const, code: CapabilityCode.ROLE, value })),
     ],
   ],
+  supports: decodable,
   init: async (context) => {
     const { VideoDecoder, AudioDecoder, EncodedVideoChunk, EncodedAudioChunk } = globalThis as Partial<Codecs>
     if (!VideoDecoder || !AudioDecoder || !EncodedVideoChunk || !EncodedAudioChunk) {
@@ -47,8 +49,21 @@ export const WebCodecs = defineElement({
   },
 })
 
+/** Whether the browser decodes `track` with the config the LOC source would write for it. */
+async function decodable(track: Identifiers): Promise<boolean> {
+  const { VideoDecoder, AudioDecoder } = globalThis as Partial<Codecs>
+  if (!track.codec) return false
+  const config = decoderConfigOf(track, track.codec)
+  // A config WebCodecs finds invalid, such as audio without a sample rate, rejects with a TypeError
+  const support =
+    'sampleRate' in config
+      ? AudioDecoder?.isConfigSupported(config).catch(() => undefined)
+      : VideoDecoder?.isConfigSupported(config).catch(() => undefined)
+  return (await support)?.supported === true
+}
+
 if (import.meta.vitest) {
-  const { test, expect } = import.meta.vitest
+  const { test, expect, vi } = import.meta.vitest
   const { convertedCapabilities } = await import('@/player/element/negotiation')
   const { locCapabilities } = await import('@/player/elements/loc/track')
 
@@ -60,6 +75,28 @@ if (import.meta.vitest) {
       ])
     }
     expect(convertedCapabilities(WebCodecs.capabilities, locCapabilities('out', 'subtitle'))).toBeUndefined()
+  })
+
+  test('supports asks the decoder for the config the LOC source would write', async () => {
+    const asked: unknown[] = []
+    const isConfigSupported = async (config: { codec: string }) => {
+      asked.push(config)
+      return { supported: config.codec !== 'hvc1.1.6.L93.B0' }
+    }
+    vi.stubGlobal('VideoDecoder', { isConfigSupported })
+    vi.stubGlobal('AudioDecoder', { isConfigSupported: () => Promise.reject(new TypeError('invalid')) })
+    try {
+      const video = { packaging: 'loc', role: 'video', width: 1280, height: 720 }
+      const answers = await Promise.all([
+        WebCodecs.supports!({ ...video, codec: 'avc3.64001f' }),
+        WebCodecs.supports!({ ...video, codec: 'hvc1.1.6.L93.B0' }),
+        WebCodecs.supports!({ packaging: 'loc', role: 'audio', codec: 'opus', samplerate: 48_000, channelConfig: '2' }),
+      ])
+      expect(answers).toEqual([true, false, false])
+      expect(asked[0]).toEqual({ codec: 'avc3.64001f', codedWidth: 1280, codedHeight: 720 })
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   test('init fails with UNSUPPORTED_SOURCE without WebCodecs', async () => {

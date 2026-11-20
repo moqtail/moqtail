@@ -87,7 +87,7 @@ if (import.meta.vitest) {
   const { VideoFrameMarking } = await import('@/model/property/video_frame_marking')
   const { defineElement } = await import('@/player/element/define')
   const { locCapabilities } = await import('@/player/elements/loc/track')
-  const { collectingSink, detachedContext, settle, testChain, testSource } = await import('@/player/testing/elements')
+  const { collectingSink, settle, testChain, testSource } = await import('@/player/testing/elements')
   const { WebCodecs } = await import('./index')
   type Packet = import('@/player/element/pad').Packet
   type PadItem = import('@/player/element/pad').PadItem
@@ -187,12 +187,15 @@ if (import.meta.vitest) {
       s.emit('nomorepads')
     }
     chain.addSource(testSource({ script }), {})
+    let transform: WebCodecsTransform | undefined
     const definition = defineElement({
       ...WebCodecs,
-      init: async (context) => new WebCodecsTransform(context, fakes.codecs),
+      init: async (context) => {
+        transform = new WebCodecsTransform(context, fakes.codecs)
+        return transform
+      },
     })
-    const transform = await definition.init({ ...detachedContext(), fail: (error) => chain.fail(error) })
-    chain.addTransform(transform)
+    chain.addTransform(definition)
     chain.addSink(collectingSink({ packaging: 'raw', setup: (k) => (sink = k) }))
     await chain.init(new AbortController().signal)
     const pad = source!.pads[0]!
@@ -200,7 +203,7 @@ if (import.meta.vitest) {
       ...fakes,
       failures,
       warnings,
-      transform,
+      transform: transform!,
       source: source!,
       sink: sink!,
       pad,

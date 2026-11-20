@@ -306,7 +306,7 @@ class Connection {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { connected, flush, packet, testChain, testSource, collectingSink, TestTransform, detachedContext } =
+  const { connected, flush, packet, testChain, testSource, collectingSink, testTransform } =
     await import('@/player/testing/elements')
   const properties: PadItem = { type: 'properties', properties: { track: 'v1' } }
   const eos: PadOutput = { type: 'event', event: { type: 'eos' } }
@@ -361,11 +361,11 @@ if (import.meta.vitest) {
 
     test('events cross a transform downstream and signals both ways when nobody handles them', async () => {
       const { chain } = testChain()
-      const transform = new TestTransform(detachedContext())
+      let transform: import('@/player/testing/elements').TestTransform | undefined
       let source: import('@/player/testing/elements').TestSource | undefined
       let sink: import('@/player/testing/elements').CollectingSink | undefined
       chain.addSource(testSource({ script: (s) => ((source = s), s.addPad(), s.emit('nomorepads')) }), {})
-      chain.addTransform(transform)
+      chain.addTransform(testTransform({ setup: (t) => (transform = t) }))
       chain.addSink(collectingSink({ setup: (k) => (sink = k) }))
       await chain.init(new AbortController().signal)
 

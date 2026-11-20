@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-/** The test content on relay.moqtail.dev. Adding a source is one line at the bottom. */
+/** The test content, on relay.moqtail.dev unless a source names another relay. Adding a source is one line at the bottom. */
 
 import { Tuple } from '@/model/common/tuple'
 import { formatMsfUrl } from '@/player/msf_url'
@@ -32,9 +32,10 @@ export interface TestSource {
 
 const registry = new Map<string, TestSource>()
 
-function source(namespace: string, options: { live: boolean; gop?: number }): TestSource {
-  const catalog = formatMsfUrl(RELAY, Tuple.fromUtf8Path(namespace), 'catalog')
-  const entry = { namespace, ...options, uri: (...params: string[]) => [catalog, ...params].join('&') }
+function source(namespace: string, options: { live: boolean; gop?: number; relay?: string }): TestSource {
+  const { relay = RELAY, ...rest } = options
+  const catalog = formatMsfUrl(relay, Tuple.fromUtf8Path(namespace), 'catalog')
+  const entry = { namespace, ...rest, uri: (...params: string[]) => [catalog, ...params].join('&') }
   registry.set(namespace, entry)
   return entry
 }
@@ -48,3 +49,5 @@ export const ch07 = source('moqtail/ch07', { live: true, gop: 2 })
 export const ch07_all = source('moqtail/ch07_all', { live: true })
 /** `ch07` as VOD. */
 export const ch07_vod = source('moqtail/ch07_vod', { live: false, gop: 2 })
+/** moqlivemock's LOC and CMAF test content, stamped in epoch µs. */
+export const mlm = source('mlm/msf/clear', { live: true, relay: 'moqt://moqlivemock.demo.osaas.io/moq' })

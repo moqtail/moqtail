@@ -229,6 +229,22 @@ mod tests {
   }
 
   #[test]
+  fn test_try_from_key_value_pair() {
+    let value = Bytes::from_static(b"opus");
+    let pair =
+      KeyValuePair::try_new_bytes(LOCPropertyId::CodecString as u64, value.clone()).unwrap();
+    assert_eq!(
+      LOCProperty::try_from(pair).unwrap(),
+      LOCProperty::CodecString { value }
+    );
+    let mismatched = KeyValuePair::VarInt {
+      type_value: LOCPropertyId::CodecString as u64,
+      value: 1,
+    };
+    assert!(LOCProperty::try_from(mismatched).is_err());
+  }
+
+  #[test]
   fn test_frame_marking_wire_and_independent_bit() {
     let key = LOCProperty::VideoFrameMarking {
       value: Bytes::from_static(&[0xE0]),

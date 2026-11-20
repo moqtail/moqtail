@@ -21,7 +21,7 @@ import { ProtocolViolationError } from '../error/error'
 import { GroupOrder } from '../control/constant'
 import { TrackPropertyType } from './constant'
 
-/** A timeout of 0 means no timeout is set (§8), on this side as on the parameter side. */
+/** @public A timeout of 0 means no timeout is set (§8), on this side as on the parameter side. */
 export class ObjectDeliveryTimeoutProperty {
   static readonly TYPE = TrackPropertyType.ObjectDeliveryTimeout
 
@@ -38,6 +38,7 @@ export class ObjectDeliveryTimeoutProperty {
   }
 }
 
+/** @public */
 export class SubgroupDeliveryTimeoutProperty {
   static readonly TYPE = TrackPropertyType.SubgroupDeliveryTimeout
 
@@ -54,6 +55,7 @@ export class SubgroupDeliveryTimeoutProperty {
   }
 }
 
+/** @public */
 export class MaxCacheDurationProperty {
   static readonly TYPE = TrackPropertyType.MaxCacheDuration
 
@@ -69,6 +71,7 @@ export class MaxCacheDurationProperty {
   }
 }
 
+/** @public */
 export class ImmutablePropertiesTrackProperty {
   static readonly TYPE = TrackPropertyType.ImmutableProperties
 
@@ -96,6 +99,7 @@ export class ImmutablePropertiesTrackProperty {
   }
 }
 
+/** @public */
 export class DefaultPublisherPriorityProperty {
   static readonly TYPE = TrackPropertyType.DefaultPublisherPriority
 
@@ -118,6 +122,7 @@ export class DefaultPublisherPriorityProperty {
   }
 }
 
+/** @public */
 export class DefaultPublisherGroupOrderProperty {
   static readonly TYPE = TrackPropertyType.DefaultPublisherGroupOrder
 
@@ -140,6 +145,7 @@ export class DefaultPublisherGroupOrderProperty {
   }
 }
 
+/** @public */
 export class DynamicGroupsProperty {
   static readonly TYPE = TrackPropertyType.DynamicGroups
 
@@ -161,6 +167,7 @@ export class DynamicGroupsProperty {
   }
 }
 
+/** @public */
 export class UnknownTrackProperty {
   constructor(public readonly kvp: KeyValuePair) {}
 
@@ -169,6 +176,7 @@ export class UnknownTrackProperty {
   }
 }
 
+/** @public */
 export type TrackProperty =
   | ObjectDeliveryTimeoutProperty
   | SubgroupDeliveryTimeoutProperty
@@ -179,6 +187,7 @@ export type TrackProperty =
   | DynamicGroupsProperty
   | UnknownTrackProperty
 
+/** @public */
 export namespace TrackProperty {
   export function fromKeyValuePair(pair: KeyValuePair): TrackProperty {
     return (

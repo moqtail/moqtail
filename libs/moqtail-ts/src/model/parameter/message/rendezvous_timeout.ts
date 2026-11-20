@@ -19,6 +19,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Duration in milliseconds a relay SHOULD wait for a publisher of a track that has none
  * before answering the SUBSCRIBE. SUBSCRIBE only (§10.2.6).
  */

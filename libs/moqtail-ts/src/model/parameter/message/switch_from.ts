@@ -22,6 +22,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Identifies the subscription being replaced by a switch request.
  * The value is two varints followed by a flags byte: bit 7 (MSB) is Publish Done;
  * bits 0 through 6 are reserved and must be zero.

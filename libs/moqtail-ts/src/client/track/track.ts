@@ -19,6 +19,7 @@ import { TrackSource } from './content_source'
 import { TrackProperty } from '../../model/property/track_property'
 
 /**
+ * @public
  * Describes a media/data track known to the client (either published locally or subscribed to).
  *
  *

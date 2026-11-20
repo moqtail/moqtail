@@ -27,6 +27,7 @@ import { AuthorizationToken } from '../parameter/common/authorization_token'
 import { Forward } from '../parameter/message/forward'
 
 /**
+ * @public
  * SUBSCRIBE_TRACKS (0x51) asks for a PUBLISH for every track under a matching
  * namespace prefix, present and future (§10.19).
  *

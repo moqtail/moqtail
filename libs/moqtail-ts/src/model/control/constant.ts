@@ -232,7 +232,6 @@ export namespace GroupOrder {
 }
 
 /**
- * @public
  * Status codes for track status responses.
  */
 export enum TrackStatusCode {
@@ -333,7 +332,7 @@ export namespace PublishDoneStatusCode {
  * @public
  * Unified error codes for REQUEST_ERROR control messages.
  *
- * A separate registry from {@link (StreamResetCode:enum)}, which disagrees with it on
+ * A separate registry from `StreamResetCode`, which disagrees with it on
  * the same names: `GOING_AWAY` is `0x6` here but `0x4` as a stream reset code.
  */
 export enum RequestErrorCode {

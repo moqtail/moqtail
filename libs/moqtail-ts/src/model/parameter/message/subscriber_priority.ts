@@ -20,6 +20,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Priority of a subscription relative to others in the same session.
  * Lower numbers have higher priority. Range: 0-255.
  * Values outside this range are a PROTOCOL_VIOLATION.

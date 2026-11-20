@@ -28,6 +28,7 @@ import { TrackProperty, ObjectDeliveryTimeoutProperty } from '../property/track_
 import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 import { Forward } from '../parameter/message/forward'
 
+/** @public */
 export class Publish {
   constructor(
     public readonly requestId: bigint,

@@ -40,6 +40,7 @@ import { SwitchFrom } from './message/switch_from'
 import { FillParameters } from './message/fill_parameters'
 import { RangeFilter, RangeFilterKind, encodeRanges } from './message/range_filter'
 
+/** @public */
 export type MessageParameter =
   | ObjectDeliveryTimeout
   | SubgroupDeliveryTimeout
@@ -59,6 +60,7 @@ export type MessageParameter =
   | IncludeProperties
   | SwitchingSetAssignment
 
+/** @public */
 export namespace MessageParameter {
   /**
    * Parses a single KeyValuePair into a MessageParameter.
@@ -135,7 +137,7 @@ export namespace MessageParameter {
     return param instanceof SwitchingSetAssignment
   }
 
-  /** The negotiated Group Order, or {@link (GroupOrder:enum).Original} when unparameterized. */
+  /** The negotiated Group Order, or `GroupOrder.Original` when unparameterized. */
   export function groupOrderOf(params: readonly MessageParameter[]): GroupOrder {
     return params.find(isGroupOrderParam)?.order ?? GroupOrder.Original
   }
@@ -193,6 +195,7 @@ export namespace MessageParameter {
 }
 
 /**
+ * @public
  * Builder for constructing a list of MessageParameters.
  * Mirrors the SetupOptions builder pattern.
  */

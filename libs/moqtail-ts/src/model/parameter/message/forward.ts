@@ -20,6 +20,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Forwarding state for affected subscriptions.
  * Allowed wire values: 0 (don't forward) or 1 (forward).
  * Any other value is a PROTOCOL_VIOLATION.

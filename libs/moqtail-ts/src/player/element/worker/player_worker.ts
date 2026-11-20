@@ -33,7 +33,7 @@ import { within } from '@/player/util/async'
 import type { Engine, Link, MainSide, WorkerHost } from './host'
 import { registerTransferHandlers } from './transfer'
 
-/** @public */
+/** @inline */
 export interface ThreadEnvironment {
   /**
    * The player's worker, absent without one. `has` answers from the worker's own report: its
@@ -42,7 +42,7 @@ export interface ThreadEnvironment {
   readonly worker?: { has(name: string): boolean }
 }
 
-/** @public `context.worker`, for an element whose `threads` allows the worker. */
+/** @inline `context.worker`, for an element whose `threads` allows the worker. */
 export interface WorkerContext {
   has(name: string): boolean
   /**
@@ -58,7 +58,7 @@ export interface WorkerContext {
   inWorker(pad: Pad): boolean
 }
 
-/** @public */
+/** @inline */
 export interface EngineRequest {
   /** Source pads of the element, carrying `THREAD` `worker`: the engine's `init.outputs`, in order. */
   outputs?: Pad[]

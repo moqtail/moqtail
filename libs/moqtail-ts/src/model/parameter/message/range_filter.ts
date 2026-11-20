@@ -23,6 +23,7 @@ import { Parameter } from '../parameter'
 const MAX_U64 = 0xffff_ffff_ffff_ffffn
 
 /**
+ * @public
  * What a Range Filter selects on. Each kind is its own parameter type, and the two
  * property kinds also name the Property they read.
  */
@@ -48,19 +49,21 @@ export namespace RangeFilterKind {
   }
 }
 
-/** An inclusive range of values. An open-ended range has no `end`. */
+/** @public An inclusive range of values. An open-ended range has no `end`. */
 export interface Range {
   readonly start: bigint
   readonly end?: bigint
 }
 
 /**
+ * @public
  * A Range as the wire carries it: the Start as a delta from the End before it, the
  * End as a delta from its own Start.
  */
 export type RangeDelta = readonly [start: bigint, end?: bigint]
 
 /**
+ * @public
  * A Range Filter that cannot be honoured. A peer that sends one is answered with
  * REQUEST_ERROR INVALID_FILTER rather than a closed session: the request is
  * well-formed, it just asks for something that cannot be applied.
@@ -97,6 +100,7 @@ export function encodeRanges(ranges: readonly Range[]): RangeDelta[] {
 }
 
 /**
+ * @public
  * One Range Filter parameter. Unlike other parameters it may repeat in a message,
  * once per SetID (and Property Type).
  *

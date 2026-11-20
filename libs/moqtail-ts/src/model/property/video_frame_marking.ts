@@ -20,6 +20,7 @@ import { LOCPropertyId } from './constant'
 /** The I (independent frame) bit of the RFC 9626 flag octet. */
 const INDEPENDENT = 0x20
 
+/** @public */
 export class VideoFrameMarking {
   static readonly TYPE = LOCPropertyId.VideoFrameMarking
   /** The RFC 9626 frame-marking octets (1 to 4), without the length prefix. */

@@ -23,6 +23,7 @@ import type { ObjectOrderer } from '@/client/ordering'
 
 // TODO: add timeout mechanism for cancelled requests
 // (we cant know how many in-flight objects there are)
+/** @public */
 export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
   public readonly requestId: bigint
   public readonly message: Fetch

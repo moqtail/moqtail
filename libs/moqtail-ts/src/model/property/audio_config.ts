@@ -17,6 +17,7 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCPropertyId } from './constant'
 
+/** @public */
 export class AudioConfig {
   static readonly TYPE = LOCPropertyId.AudioConfig
   constructor(public readonly config: Uint8Array) {}

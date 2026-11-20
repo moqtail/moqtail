@@ -23,6 +23,7 @@ import { FullTrackName } from '../data'
 
 const MAX_VARINT_VALUE = 2n ** 64n - 1n
 
+/** @public */
 export abstract class BaseByteBuffer {
   protected buf: Uint8Array
   protected view: DataView
@@ -158,6 +159,7 @@ export abstract class BaseByteBuffer {
   }
 }
 
+/** @public */
 export class ByteBuffer extends BaseByteBuffer {
   private _length = 0
 
@@ -327,6 +329,7 @@ export class ByteBuffer extends BaseByteBuffer {
   }
 }
 
+/** @public */
 export class FrozenByteBuffer extends BaseByteBuffer {
   constructor(buf: Uint8Array) {
     super(buf)

@@ -17,6 +17,7 @@
 import type { MoqtObject } from '@/model/data/object'
 
 /**
+ * @public
  * A request's consumer-facing object stream. The consumer may cancel it while objects are
  * still in flight, so writes after that, or after it closed or errored, are dropped.
  */

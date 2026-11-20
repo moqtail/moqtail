@@ -27,6 +27,7 @@ import { isSessionClosed } from '@/client/util/stream_reset'
 import { withTimeout } from '@/client/util/timeout'
 
 /**
+ * @public
  * Send half of the control plane: a unidirectional stream this endpoint opens and
  * whose first message must be SETUP.
  */
@@ -68,6 +69,7 @@ export class ControlSendStream {
 }
 
 /**
+ * @public
  * Receive half of the control plane: the unidirectional stream the peer opens,
  * whose first message must be SETUP.
  */
@@ -218,6 +220,7 @@ export class ControlRecvStream {
 }
 
 /**
+ * @public
  * The control plane as a whole: the two independent unidirectional halves opened by
  * each endpoint.
  */

@@ -19,6 +19,7 @@ import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Maximum number of outstanding REQUEST_UPDATEs per request stream: an update counts
  * until its REQUEST_OK or REQUEST_ERROR arrives. Zero, the default when absent, means
  * no limit. Receiving one past the limit closes the session with TOO_MANY_REQUEST_UPDATES.

@@ -19,6 +19,7 @@ import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Free-form implementation identification string, e.g. for logging and debugging.
  * Either peer may send it.
  */

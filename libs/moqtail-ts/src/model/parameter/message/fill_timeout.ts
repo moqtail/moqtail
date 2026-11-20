@@ -19,6 +19,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Duration in milliseconds a relay SHOULD wait for objects it does not yet hold before
  * ending the FETCH. FETCH only (§10.2.5).
  */

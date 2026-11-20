@@ -32,6 +32,7 @@ import { LargestObject } from '../parameter/message/largest_object'
 import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
+ * @public
  * SUBSCRIBE_OK (0x4) keeps a body of its own rather than folding into REQUEST_OK, but
  * like every other response it carries no Request ID: the request stream it arrives on
  * identifies the request (§10.1).

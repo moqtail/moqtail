@@ -18,6 +18,7 @@ import { SubscribeNamespace, RequestError, RequestOk } from '@/model'
 import { logger } from '@/util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
 
+/** @public */
 export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
   public readonly message: SubscribeNamespace

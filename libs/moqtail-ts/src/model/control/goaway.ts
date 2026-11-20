@@ -22,6 +22,7 @@ import { InvalidUTF8Error, LengthExceedsMaxError, NotEnoughBytesError, ProtocolV
 export const MAX_NEW_SESSION_URI_LENGTH = 8192
 
 /**
+ * @public
  * GOAWAY (0x10) winds down a session, or — on a request stream — migrates that one
  * request.
  */

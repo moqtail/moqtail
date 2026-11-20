@@ -18,6 +18,7 @@ import { Location } from '../../model/common/location'
 import { MoqtObject } from '../../model/data/object'
 
 /**
+ * @public
  * In‑memory index of {@link MoqtObject} instances keyed by their {@link Location} (group/subgroup/object),
  * providing ordered insertion and range queries.
  *
@@ -48,6 +49,7 @@ export interface ObjectCache {
   clear(): void
 }
 
+/** @public */
 export class MemoryObjectCache implements ObjectCache {
   private objects: MoqtObject[] = []
 
@@ -110,6 +112,7 @@ export class MemoryObjectCache implements ObjectCache {
   }
 }
 
+/** @public */
 export class RingBufferObjectCache implements ObjectCache {
   private buffer: MoqtObject[]
   private maxSize: number

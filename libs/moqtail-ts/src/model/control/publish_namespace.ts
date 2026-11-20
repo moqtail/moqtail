@@ -26,13 +26,11 @@ import {
 import { AuthorizationToken } from '../parameter/common/authorization_token'
 
 /**
- * Represents a protocol PublishNamespace message, used to announce a track and its parameters.
- *
  * @public
+ * Represents a protocol PublishNamespace message, used to announce a track and its parameters.
  */
 export class PublishNamespace {
   /**
-   * @public
    * Constructs a PublishNamespace message.
    *
    * @param requestId - The request ID for this publish namespace message.
@@ -46,7 +44,6 @@ export class PublishNamespace {
   ) {}
 
   /**
-   * @public
    * Gets the message type for this PublishNamespace message.
    *
    * @returns The ControlMessageType.PublishNamespace value.
@@ -56,7 +53,6 @@ export class PublishNamespace {
   }
 
   /**
-   * @public
    * Serializes the PublishNamespace message into a {@link FrozenByteBuffer}.
    *
    * @returns The serialized buffer.
@@ -81,7 +77,6 @@ export class PublishNamespace {
   }
 
   /**
-   * @public
    * Parses a PublishNamespace message from the given buffer.
    *
    * @param buf - The buffer to parse from.

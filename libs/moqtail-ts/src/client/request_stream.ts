@@ -27,6 +27,7 @@ import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
 
 /**
+ * @public
  * Wraps a WebTransport bidirectional stream carrying one MOQT request.
  * Because a response is correlated by the stream it arrives on, nothing here needs a
  * request id.

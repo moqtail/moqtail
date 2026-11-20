@@ -18,17 +18,15 @@ import { RequestIdError } from '../error'
 import { FullTrackName } from './full_track_name'
 
 /**
+ * @public
  * A bidirectional map between requestId (bigint) and full track names.
  * Used to efficiently look up either by requestId or by name, enforcing uniqueness.
- *
- * @public
  */
 export class RequestIdMap {
   private requestIdToName = new Map<bigint, FullTrackName>()
   private nameToRequestId = new Map<FullTrackName, bigint>()
 
   /**
-   * @public
    * Adds a mapping between a requestId and a full track name.
    *
    * @param requestId - The requestId to associate.
@@ -49,7 +47,6 @@ export class RequestIdMap {
   }
 
   /**
-   * @public
    * Gets the full track name for a given requestId.
    *
    * @param requestId - The requestId to look up.
@@ -64,7 +61,6 @@ export class RequestIdMap {
   }
 
   /**
-   * @public
    * Gets the requestId for a given full track name.
    *
    * @param name - The full track name to look up.
@@ -79,7 +75,6 @@ export class RequestIdMap {
   }
 
   /**
-   * @public
    * Removes a mapping by requestId.
    *
    * @param requestId - The requestId to remove.
@@ -96,7 +91,6 @@ export class RequestIdMap {
   }
 
   /**
-   * @public
    * Removes a mapping by full track name.
    *
    * @param name - The full track name to remove.
@@ -113,7 +107,6 @@ export class RequestIdMap {
   }
 
   /**
-   * @public
    * Checks if the map contains a given requestId.
    *
    * @param requestId - The requestId to check.
@@ -124,7 +117,6 @@ export class RequestIdMap {
   }
 
   /**
-   * @public
    * Checks if the map contains a given full track name.
    *
    * @param name - The full track name to check.

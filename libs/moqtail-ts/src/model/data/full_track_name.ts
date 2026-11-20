@@ -18,10 +18,13 @@ import { Tuple, TupleField } from '../common/tuple'
 import { ByteBuffer, BaseByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { TrackNameError } from '../error/error'
 
+/** @public */
 export const MAX_NAMESPACE_TUPLE_COUNT = 32
+/** @public */
 export const MAX_FULL_TRACK_NAME_LENGTH = 4096
 
 /**
+ * @public
  * Fully-qualified track identifier = hierarchical namespace (tuple) + leaf name bytes.
  *
  * Constraints enforced (throws {@link TrackNameError}):

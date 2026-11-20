@@ -43,6 +43,7 @@ const END_OF_TIMED_OUT_RANGE = 0x20cn
 const MAX_VARINT = 2n ** 64n - 1n
 
 /**
+ * @public
  * The prior Object a Fetch Object is encoded against: each one is written as
  * differences from it.
  */
@@ -62,6 +63,7 @@ export type FetchObjectContext = {
 }
 
 /**
+ * @public
  * Kind discriminator for End-of-Range markers.
  */
 export enum EndOfRangeKind {
@@ -77,6 +79,7 @@ export enum EndOfRangeKind {
 }
 
 /**
+ * @public
  * Payload-bearing fetch object (§11.5, non-End-of-Range form).
  *
  * FETCH objects carry no Object Status field; a zero-length payload

@@ -29,6 +29,7 @@ import { AuthorizationToken } from './common'
 import { SetupOptionType, TokenAliasType } from './constant'
 import { ProtocolViolationError } from '../error/error'
 
+/** @public */
 export type SetupOption =
   | Path
   | MaxAuthTokenCacheSize
@@ -38,6 +39,7 @@ export type SetupOption =
   | MoqtImplementation
   | MaxRequestUpdates
   | SstsAlgorithms
+/** @public */
 export namespace SetupOption {
   export function fromKeyValuePair(pair: KeyValuePair): SetupOption | undefined {
     return (
@@ -90,6 +92,7 @@ export function assertNoAuthorityOverWebTransport(params: KeyValuePair[]): void 
   }
 }
 
+/** @public */
 export class SetupOptions {
   private kvps: KeyValuePair[] = []
 

@@ -26,6 +26,7 @@ function normalizeProperties(properties: KeyValuePair[] | null): KeyValuePair[] 
   return properties
 }
 
+/** @public */
 export class SubgroupObject {
   public readonly objectId: bigint
 

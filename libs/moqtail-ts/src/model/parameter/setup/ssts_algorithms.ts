@@ -20,6 +20,7 @@ import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * The sender-side track switching (SSTS) algorithms this endpoint supports.
  *
  * PROVISIONAL: sender-side track switching is not an adopted extension, so

@@ -21,7 +21,7 @@ import { findProperty } from '@/model/property/find'
 import { PriorGroupIdGapProperty, PriorObjectIdGapProperty } from '@/model/property/object_property'
 import { logger } from '@/util/logger'
 
-/** Why an orderer's window is suspended: a switch in progress, or a fill fetch stream still delivering. */
+/** @public Why an orderer's window is suspended: a switch in progress, or a fill fetch stream still delivering. */
 export type WindowSuspension = 'switch' | 'fill'
 
 interface Held {

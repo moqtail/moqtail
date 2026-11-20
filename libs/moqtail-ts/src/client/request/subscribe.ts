@@ -36,6 +36,7 @@ import { ObjectStream } from '@/client/util/object_stream'
 // TODO: Add timeout mechanism for unsubscribing
 
 /**
+ * @public
  * Represents an active subscription request in MOQT, implementing `PromiseLike`
  * for convenient async resolution when subscription setup succeeds or fails.
  */
@@ -201,6 +202,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
 }
 
 /**
+ * @public
  * Owns the single consumer-facing stream for a SUBSCRIBE that may be switched to a
  * new track one or more times. A soft switch can keep producing from the old track
  * for an unknown time after SUBSCRIBE_OK, and a second switch may be issued before the

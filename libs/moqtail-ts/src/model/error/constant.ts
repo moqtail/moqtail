@@ -16,6 +16,7 @@
 
 import { InvalidTypeError } from './error'
 
+/** @public */
 export enum TerminationCode {
   NO_ERROR = 0x0,
   INTERNAL_ERROR = 0x1,

@@ -17,7 +17,7 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCPropertyId } from './constant'
 
-/** In Timescale units when one applies, else wall-clock µs since the Unix epoch (LOC 2.3.1.1). */
+/** @public In Timescale units when one applies, else wall-clock µs since the Unix epoch (LOC 2.3.1.1). */
 export class Timestamp {
   static readonly TYPE = LOCPropertyId.Timestamp
   constructor(public readonly timestamp: bigint) {}

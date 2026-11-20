@@ -38,6 +38,7 @@ import { AuthorizationToken } from '../parameter/common/authorization_token'
 import { RequestOk } from './request_ok'
 import { RequestError } from './request_error'
 
+/** @public */
 export type ControlMessage =
   | Publish
   | PublishSkipped

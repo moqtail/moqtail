@@ -17,6 +17,7 @@
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
 import { FetchHeaderType } from './constant'
 
+/** @public */
 export class FetchHeader {
   public readonly requestId: bigint
 

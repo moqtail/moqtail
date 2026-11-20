@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+/** @public */
 export enum LogLevel {
   DEBUG = 0,
   LOG = 1,

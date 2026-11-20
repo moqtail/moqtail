@@ -35,6 +35,7 @@ import { SubgroupIds } from './subgroup'
 
 // TODO: Use group order
 // TODO: Use fetch parameters
+/** @public */
 export class FetchPublication {
   readonly #requestId: bigint
   readonly #track: Track

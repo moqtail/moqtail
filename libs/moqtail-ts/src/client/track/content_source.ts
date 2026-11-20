@@ -21,6 +21,7 @@ import { logger } from '../../util/logger'
 
 // TODO: Consider switching to readable stream
 /**
+ * @public
  * Source of already-produced (historical) objects for a track.
  * Backed by an {@link ObjectCache} allowing range retrieval using protocol {@link Location}s.
  * Implementations MUST return objects in ascending location order and MAY return an empty array
@@ -37,6 +38,7 @@ export interface PastObjectSource {
 }
 
 /**
+ * @public
  * Push-oriented live object feed. Wraps a {@link https://developer.mozilla.org/docs/Web/API/ReadableStream | ReadableStream} plus lightweight event subscription helpers.
  * Implementations advance {@link LiveObjectSource.largestLocation | largestLocation} monotonically as objects arrive.
  */
@@ -54,6 +56,7 @@ export interface LiveObjectSource {
 }
 
 /**
+ * @public
  * Aggregates optional historical (`past`) and (`live`) sources for a single track.
  * Either facet may be omitted:
  * - VOD / static content: supply only {@link TrackSource.past | past}
@@ -71,6 +74,7 @@ export interface TrackSource {
   readonly live?: LiveObjectSource
 }
 
+/** @public */
 export class StaticTrackSource implements PastObjectSource {
   readonly cache: ObjectCache
 
@@ -83,6 +87,7 @@ export class StaticTrackSource implements PastObjectSource {
   }
 }
 
+/** @public */
 export class LiveTrackSource implements LiveObjectSource {
   readonly stream: ReadableStream<MoqtObject>
   readonly #listeners = new Set<(obj: MoqtObject) => void>()
@@ -166,6 +171,7 @@ export class LiveTrackSource implements LiveObjectSource {
   }
 }
 
+/** @public */
 export class HybridTrackSource implements TrackSource {
   readonly past: PastObjectSource
   readonly live: LiveObjectSource

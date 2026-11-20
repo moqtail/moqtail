@@ -27,6 +27,7 @@ import {
 import { LocationFilter } from '../parameter/message/location_filter'
 import { Forward } from '../parameter/message/forward'
 
+/** @public */
 export class RequestUpdate {
   constructor(
     public requestId: bigint,

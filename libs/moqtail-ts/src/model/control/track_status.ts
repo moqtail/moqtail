@@ -26,6 +26,7 @@ import {
 import { AuthorizationToken } from '../parameter/common/authorization_token'
 import { LocationFilter } from '../parameter/message/location_filter'
 
+/** @public */
 export class TrackStatus {
   constructor(
     public requestId: bigint,

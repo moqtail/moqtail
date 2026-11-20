@@ -26,6 +26,7 @@ import {
 import { AuthorizationToken } from '../parameter/common/authorization_token'
 import { Forward } from '../parameter/message/forward'
 
+/** @public */
 export class SubscribeNamespace {
   constructor(
     public readonly requestId: bigint,

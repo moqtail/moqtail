@@ -21,6 +21,7 @@ import { Parameter } from '../parameter'
 import { Location } from '../../common'
 
 /**
+ * @public
  * The largest Location in the Track observed by the sending endpoint.
  * If omitted from a message, the sending endpoint has not published or
  * received any Objects in the Track.

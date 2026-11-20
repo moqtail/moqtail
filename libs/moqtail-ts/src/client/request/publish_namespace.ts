@@ -22,6 +22,7 @@ import { logger } from '@/util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
 
 // TODO: add publish namespace done
+/** @public */
 export class PublishNamespaceRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
   public readonly message: PublishNamespace

@@ -21,6 +21,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Assigns a subscription to an SSTS (sender-side track switching) switching
  * set. Carried on SUBSCRIBE and on the PUBLISH_OK of a pushed track.
  *

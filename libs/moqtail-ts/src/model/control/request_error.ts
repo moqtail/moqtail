@@ -23,6 +23,7 @@ import { ControlMessageType, RequestErrorCode } from './constant'
 import { LengthExceedsMaxError, ProtocolViolationError } from '../error/error'
 
 /**
+ * @public
  * REQUEST_ERROR (0x5) refuses any request type. It carries no Request ID: the request
  * stream it arrives on identifies the request (§10.1).
  */

@@ -21,6 +21,7 @@ import { ObjectDatagramType, ObjectStatus } from './constant'
 import { Location } from '../common/location'
 
 /**
+ * @public
  * Represents a unified OBJECT_DATAGRAM message.
  *
  * Type bit layout (form 0b00X0XXXX):

@@ -36,6 +36,7 @@ const ALLOWED: readonly MessageParameterType[] = [
 ]
 
 /**
+ * @public
  * Requests a fill fetch stream, and overrides for it. An omitted parameter keeps
  * the value it has for the live subscription; an omitted LOCATION_FILTER fills
  * over the subscription's own.

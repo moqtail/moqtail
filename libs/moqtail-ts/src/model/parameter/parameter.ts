@@ -16,6 +16,7 @@
 
 import { KeyValuePair } from '../common/pair'
 
+/** @public */
 export interface Parameter {
   toKeyValuePair(): KeyValuePair
 }

@@ -16,6 +16,7 @@
 
 import { InvalidTypeError } from '../error'
 
+/** @public */
 export enum LOCPropertyId {
   Timescale = 0x08,
   VideoFrameMarking = 0x09,
@@ -26,6 +27,7 @@ export enum LOCPropertyId {
   CodecString = 0x11,
 }
 
+/** @public */
 export enum TrackPropertyType {
   ObjectDeliveryTimeout = 0x02,
   MaxCacheDuration = 0x04,
@@ -60,7 +62,6 @@ export function locPropertyIdFromNumber(value: number): LOCPropertyId {
 }
 
 /**
- * @public
  * A registration-policy range in the Property Type space. `to` is absent for the
  * open-ended top range.
  */
@@ -70,9 +71,7 @@ export interface PropertyRange {
 }
 
 /**
- * @public
  * Registration-policy ranges for the Property Type space.
- *
  */
 export const PropertyRanges = {
   /** Standards Action or IESG Approval (1-byte encoding). */
@@ -94,7 +93,6 @@ function inRange(range: PropertyRange, typeValue: bigint): boolean {
 }
 
 /**
- * @public
  * True if a Property Type is reserved for application-specific use (either encoding-width
  * range), for which no IANA registration is permitted.
  */

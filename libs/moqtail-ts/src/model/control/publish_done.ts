@@ -19,6 +19,7 @@ import { ReasonPhrase } from '../common/reason_phrase'
 import { LengthExceedsMaxError } from '../error/error'
 import { ControlMessageType, PublishDoneStatusCode } from './constant'
 
+/** @public */
 export class PublishDone {
   /**
    * The Stream Count a publisher sends when it cannot name the exact number of streams

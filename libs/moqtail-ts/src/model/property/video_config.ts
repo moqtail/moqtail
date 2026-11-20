@@ -17,6 +17,7 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCPropertyId } from './constant'
 
+/** @public */
 export class VideoConfig {
   static readonly TYPE = LOCPropertyId.VideoConfig
   constructor(public readonly config: Uint8Array) {}

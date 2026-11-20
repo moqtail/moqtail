@@ -18,6 +18,7 @@ import { KeyValuePair } from '../../common/pair'
 import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
+/** @public */
 export class Path implements Parameter {
   static readonly TYPE = SetupOptionType.Path
   constructor(public readonly moqtPath: string) {}

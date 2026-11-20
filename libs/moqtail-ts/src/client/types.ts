@@ -51,6 +51,7 @@ import type { SubscribeNamespaceRequest } from '@/client/request/subscribe_names
 import type { TrackStatusRequest } from '@/client/request/track_status'
 
 /**
+ * @public
  * Discriminated union of every in‑flight MOQ‑tail control request tracked by the {@link MOQtailClient}.
  *
  * Each concrete request type encapsulates the original control message plus coordination primitives
@@ -95,6 +96,7 @@ export type MOQtailRequest =
 export type TrackAliasHolder = { requestId: bigint; fullTrackName: FullTrackName }
 
 /**
+ * @public
  * Default for {@link MOQtailClientOptions.trackAliasResolutionTimeoutMs}: how long a
  * data stream waits for the control message that establishes its track alias.
  *
@@ -105,6 +107,7 @@ export type TrackAliasHolder = { requestId: bigint; fullTrackName: FullTrackName
 export const DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS = 2000
 
 /**
+ * @public
  * Default for {@link MOQtailClientOptions.switchDrainTimeoutMs}: how long a track a
  * soft switch handed over from may stay quiet before it is retired anyway.
  *
@@ -115,6 +118,7 @@ export const DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS = 2000
 export const DEFAULT_SWITCH_DRAIN_TIMEOUT_MS = 2000
 
 /**
+ * @public
  * Default for {@link MOQtailClientOptions.fillOpenTimeoutMs}: how long after SUBSCRIBE_OK
  * a fill fetch stream may take to open before ordering stops waiting for it.
  */
@@ -128,6 +132,7 @@ export const DEFAULT_FILL_OPEN_TIMEOUT_MS = 1000
 export const DEFAULT_MAX_FILTER_RANGES = 32n
 
 /**
+ * @public
  * Options for the {@link MOQtailClient} constructor: connection target, protocol
  * negotiation, and timeouts. Nothing happens on the network until
  * {@link MOQtailClient.init}.
@@ -296,6 +301,7 @@ export interface FetchResult {
 }
 
 /**
+ * @public
  * Called for an End of Range marker on a fetch stream: every Location after the
  * previous Object, if any, up to and including `location`, does not exist, is unknown,
  * or timed out, as `kind` says. Without it, an unknown or timed-out range looks the
@@ -304,6 +310,7 @@ export interface FetchResult {
 export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => void
 
 /**
+ * @public
  * Parameters for {@link MOQtailClient.subscribe | subscribing} to a track's live objects.
  *
  * @example From the next object
@@ -342,7 +349,7 @@ export type SubscribeOptions = {
   fullTrackName: FullTrackName
   /** Subscriber priority (0 = highest, 255 = lowest). Values outside range are clamped. Fractional values are rounded. */
   priority: number
-  /** Desired {@link (GroupOrder:enum)} (e.g. {@link (GroupOrder:enum).Original}) specifying delivery ordering semantics. */
+  /** Desired `GroupOrder` (e.g. `GroupOrder.Original`) specifying delivery ordering semantics. */
   groupOrder: GroupOrder
   /** If present, forward parameter (0x10) is sent with the provided value */
   forward?: boolean
@@ -362,6 +369,7 @@ export type SubscribeOptions = {
 }
 
 /**
+ * @public
  * Changes applied to an existing SUBSCRIBE via {@link MOQtailClient.subscribeUpdate}.
  *
  * @example Narrowing a live window to groups 200 through 210
@@ -388,6 +396,7 @@ export type SubscribeUpdateOptions = {
 }
 
 /**
+ * @public
  * Parameters for {@link MOQtailClient.switch | switching} an existing SUBSCRIBE to a new track.
  *
  * @example Switching a subscription to a new track
@@ -420,6 +429,7 @@ export type SwitchOptions = {
 }
 
 /**
+ * @public
  * Configuration for the early discard policy applied to incoming subgroup streams.
  */
 export type EarlyDiscardPolicyConfig = {
@@ -428,6 +438,7 @@ export type EarlyDiscardPolicyConfig = {
 }
 
 /**
+ * @public
  * Options for {@link MOQtailClient.fetch | performing a FETCH} of Objects already published.
  *
  * @example Groups 10 through 12, inclusive
@@ -452,7 +463,7 @@ export type EarlyDiscardPolicyConfig = {
 export type FetchOptions = {
   /** Request priority (0 = highest, 255 = lowest). Rounded & clamped. */
   priority: number
-  /** {@link (GroupOrder:enum)} governing sequencing. */
+  /** `GroupOrder` governing sequencing. */
   groupOrder: GroupOrder
   /** Fully qualified track identifier ({@link FullTrackName}). */
   fullTrackName: FullTrackName

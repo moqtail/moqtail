@@ -19,6 +19,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Time in milliseconds after which the sender will terminate the subscription.
  * A value of 0 means the subscription does not expire or expires at an unknown time.
  * The receiver can extend the subscription by sending a REQUEST_UPDATE.

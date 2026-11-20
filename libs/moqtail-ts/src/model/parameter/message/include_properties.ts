@@ -20,6 +20,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Whether the response carries Track Properties: the OK answering a SUBSCRIBE,
  * TRACK_STATUS or FETCH, or each PUBLISH a SUBSCRIBE_TRACKS brings. With 0 the
  * Track Properties field is still there, but empty.

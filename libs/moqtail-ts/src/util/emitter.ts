@@ -39,7 +39,7 @@ export class Emitter<Events extends { [K in keyof Events]: (...args: any[]) => v
     this.#target.addEventListener(event, wrapper)
   }
 
-  /** Removes `listener`, the same function given to {@link Emitter.on}, from `event`. */
+  /** Removes `listener`, the same function given to `on()`, from `event`. */
   off<K extends keyof Events & string>(event: K, listener: Events[K]): void {
     const wrappers = this.#wrappers.get(event)
     const wrapper = wrappers?.get(listener)

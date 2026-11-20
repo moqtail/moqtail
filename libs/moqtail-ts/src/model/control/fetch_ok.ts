@@ -28,6 +28,7 @@ import { TrackProperty, ObjectDeliveryTimeoutProperty } from '../property/track_
 import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
+ * @public
  * FETCH_OK (0x18) keeps a body of its own rather than folding into REQUEST_OK, but like
  * every other response it carries no Request ID: the request stream it arrives on
  * identifies the request (§10.1).

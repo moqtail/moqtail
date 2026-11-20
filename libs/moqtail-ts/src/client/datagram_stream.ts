@@ -20,6 +20,7 @@ import { logger } from '@/util/logger'
 import type { ClientEvents } from './types'
 
 /**
+ * @public
  * Sends MoqtObjects as WebTransport datagrams.
  * Parallel to SendStream but for datagram-based delivery.
  *

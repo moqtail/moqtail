@@ -35,11 +35,12 @@ const FIELD_COUNT: Record<LocationFilterType, number> = {
 }
 
 /**
+ * @public
  * The range of Locations a subscription or fetch selects. The Location Filter
  * Type decides which fields are set, and the value is not length-prefixed.
  *
  * Every Group here is absolute, except `startGroup` of a
- * {@link (LocationFilterType:enum).RelativeStart}, which counts back from the Next
+ * `LocationFilterType.RelativeStart`, which counts back from the Next
  * Group: 0 is the Next Group, 1 the current one. The wire carries the End Group
  * as a delta from the Start Group; that is undone on the way in and redone on
  * the way out.

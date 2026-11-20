@@ -16,6 +16,7 @@
 
 import { InvalidTypeError } from '../error'
 
+/** @public */
 export enum SetupOptionType {
   Path = 0x01,
   AuthorizationToken = 0x03,
@@ -56,6 +57,7 @@ export function setupOptionTypeFromNumber(value: number): SetupOptionType {
   }
 }
 
+/** @public */
 export enum MessageParameterType {
   ObjectDeliveryTimeout = 0x02,
   AuthorizationToken = 0x03,
@@ -143,6 +145,7 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
   }
 }
 
+/** @public */
 export enum TokenAliasType {
   Delete = 0x0,
   Register = 0x1,

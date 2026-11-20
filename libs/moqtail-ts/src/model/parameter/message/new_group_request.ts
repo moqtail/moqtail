@@ -19,6 +19,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * The largest Group ID in the Track known by the subscriber, plus 1.
  * A value of 0 indicates the subscriber has no Group information for the Track.
  * Only valid for tracks with the DYNAMIC_GROUPS property (value 1).

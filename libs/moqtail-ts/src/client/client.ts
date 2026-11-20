@@ -957,7 +957,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    * @returns Either a {@link RequestError} or `{ requestId, subscribeOk, stream, done }`.
    * @throws : {@link MOQtailError} If the client is destroyed.
    * @throws : {@link ProtocolViolationError} If required fields are missing or inconsistent.
-   * @throws : {@link InvalidFilterError} If the Range Filters exceed the server's MAX_FILTER_RANGES; nothing is sent.
+   * @throws : `InvalidFilterError` If the Range Filters exceed the server's MAX_FILTER_RANGES; nothing is sent.
    * @throws : {@link InternalError} On transport/protocol failure (disconnect is triggered before rethrow).
    *
    * @example Subscribe to the latest object and receive future objects as they arrive
@@ -1419,7 +1419,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    *
    * Field highlights (in {@link FetchOptions}):
    * - priority: 0 (highest) .. 255 (lowest); out-of-range rejected; non-integers rounded by caller expectation.
-   * - groupOrder: {@link (GroupOrder:enum).Original} to preserve publisher order; or reorder ascending/descending if supported by server.
+   * - groupOrder: `GroupOrder.Original` to preserve publisher order; or reorder ascending/descending if supported by server.
    * - typeAndProps: Discriminated union carrying parameters specific to each fetch mode (see examples).
    * - parameters: Optional version-specific extension block.
    *
@@ -1703,7 +1703,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    *
    * Parameter semantics:
    * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
-   * - parameters: Optional {@link MessageParameters}; omitted =\> default instance.
+   * - parameters: Optional `MessageParameters`; omitted =\> default instance.
    *
    * Returns: {@link RequestOk} on success (namespace added to `publishedNamespaces`) or {@link RequestError} explaining refusal.
    *

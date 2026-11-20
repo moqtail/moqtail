@@ -20,6 +20,7 @@ import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '..
 import { NotEnoughBytesError, ProtocolViolationError } from '../error/error'
 import { PropertyRanges, TrackPropertyType } from './constant'
 
+/** @public */
 export class ImmutablePropertiesObjectProperty {
   static readonly TYPE = TrackPropertyType.ImmutableProperties
 
@@ -61,6 +62,7 @@ function rejectMandatoryTrackProperty(pair: KeyValuePair): void {
   }
 }
 
+/** @public */
 export class PriorGroupIdGapProperty {
   static readonly TYPE = TrackPropertyType.PriorGroupIdGap
 
@@ -76,6 +78,7 @@ export class PriorGroupIdGapProperty {
   }
 }
 
+/** @public */
 export class PriorObjectIdGapProperty {
   static readonly TYPE = TrackPropertyType.PriorObjectIdGap
 
@@ -91,6 +94,7 @@ export class PriorObjectIdGapProperty {
   }
 }
 
+/** @public */
 export class UnknownObjectProperty {
   constructor(public readonly kvp: KeyValuePair) {}
 
@@ -99,9 +103,11 @@ export class UnknownObjectProperty {
   }
 }
 
+/** @public */
 export type ObjectProperty =
   ImmutablePropertiesObjectProperty | PriorGroupIdGapProperty | PriorObjectIdGapProperty | UnknownObjectProperty
 
+/** @public */
 export namespace ObjectProperty {
   export function fromKeyValuePair(pair: KeyValuePair): ObjectProperty {
     rejectMandatoryTrackProperty(pair)

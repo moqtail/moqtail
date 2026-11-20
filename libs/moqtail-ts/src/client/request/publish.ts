@@ -18,6 +18,7 @@ import { Publish, RequestError, RequestOk } from '@/model'
 import { logger } from '@/util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
 
+/** @public */
 export class PublishRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
   public readonly message: Publish

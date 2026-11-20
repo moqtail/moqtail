@@ -19,12 +19,14 @@ import { TokenAliasType, tokenAliasTypeFromNumber, MessageParameterType } from '
 import { Parameter } from '../parameter'
 import { ByteBuffer, FrozenByteBuffer } from '../../common/byte_buffer'
 
+/** @public */
 export type AuthTokenVariant =
   | { aliasType: TokenAliasType.Delete; tokenAlias: bigint }
   | { aliasType: TokenAliasType.Register; tokenAlias: bigint; tokenType: bigint; tokenValue: Uint8Array }
   | { aliasType: TokenAliasType.UseAlias; tokenAlias: bigint }
   | { aliasType: TokenAliasType.UseValue; tokenType: bigint; tokenValue: Uint8Array }
 
+/** @public */
 export class AuthorizationToken implements Parameter {
   static readonly TYPE = MessageParameterType.AuthorizationToken
   private constructor(public readonly variant: AuthTokenVariant) {}

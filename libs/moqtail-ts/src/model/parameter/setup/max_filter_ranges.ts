@@ -19,6 +19,7 @@ import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Limits the total number of Ranges the peer may have across all Range filter parameters
  * of a single subscription or fetch. Zero, the default when absent, means the peer may
  * not send Range filters at all.

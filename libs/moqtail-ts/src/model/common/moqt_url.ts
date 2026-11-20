@@ -20,7 +20,6 @@ import { ProtocolViolationError } from '@/model/error/error'
 const MOQT_SCHEME = /^moqt:\/\//i
 
 /**
- * @public
  * A `moqt://` fragment, `#<type>:<value>`. Processed locally and never sent to the
  * server (§3.1).
  */
@@ -30,7 +29,6 @@ export interface MoqtFragment {
 }
 
 /**
- * @public
  * A parsed `moqt://authority/path[?query][#fragment]` URI.
  *
  * `moqt-URI = "moqt" "://" authority path-abempty [ "?" query ]`, with an optional
@@ -105,7 +103,6 @@ function parseFragment(fragment: string): MoqtFragment {
 }
 
 /**
- * @public
  * Resolves a session URL to the URL WebTransport is actually opened with.
  *
  * `moqt://` is the scheme callers are meant to use (§3.1); it is mapped to the

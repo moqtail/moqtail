@@ -30,6 +30,7 @@ import { FullTrackName } from './full_track_name'
 import { SubgroupObject } from './subgroup_object'
 import { Location } from '../common/location'
 
+/** @public */
 export class MoqtObject {
   public readonly location: Location
   public readonly subgroupId: bigint | null

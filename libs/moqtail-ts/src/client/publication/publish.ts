@@ -163,7 +163,7 @@ export class PublishPublication {
    * Applies a REQUEST_UPDATE the peer sent on this publication's request stream. It
    * can move the Forward State and the Range Filters; what a publisher sends, and
    * when, is otherwise its own to decide.
-   * @throws :{@link InvalidFilterError} If the Range Filters the publication would be
+   * @throws :`InvalidFilterError` If the Range Filters the publication would be
    * left with cannot be applied; nothing is updated.
    */
   update(msg: RequestUpdate): void {

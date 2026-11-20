@@ -15,6 +15,7 @@
  */
 
 /**
+ * @public
  * Base class for all MOQtail errors.
  */
 export class MOQtailError extends Error {
@@ -25,6 +26,7 @@ export class MOQtailError extends Error {
 }
 
 /**
+ * @public
  * Not enough bytes in buffer to satisfy a read.
  */
 export class NotEnoughBytesError extends MOQtailError {
@@ -38,6 +40,7 @@ export class NotEnoughBytesError extends MOQtailError {
 }
 
 /**
+ * @public
  * Cannot cast between two incompatible types.
  */
 export class CastingError extends MOQtailError {
@@ -52,6 +55,7 @@ export class CastingError extends MOQtailError {
 }
 
 /**
+ * @public
  * Value too large to encode as varint.
  */
 export class VarIntOverflowError extends MOQtailError {
@@ -64,6 +68,7 @@ export class VarIntOverflowError extends MOQtailError {
 }
 
 /**
+ * @public
  * Length exceeds maximum allowed by protocol.
  */
 export class LengthExceedsMaxError extends MOQtailError {
@@ -77,6 +82,7 @@ export class LengthExceedsMaxError extends MOQtailError {
 }
 
 /**
+ * @public
  * Key/value formatting error.
  */
 export class KeyValueFormattingError extends MOQtailError {
@@ -86,6 +92,7 @@ export class KeyValueFormattingError extends MOQtailError {
 }
 
 /**
+ * @public
  * Invalid discriminant or type tag.
  */
 export class InvalidTypeError extends MOQtailError {
@@ -98,6 +105,7 @@ export class InvalidTypeError extends MOQtailError {
 }
 
 /**
+ * @public
  * Invalid enum discriminant / value encountered when mapping to a protocol enum.
  */
 export class InvalidEnumValue extends MOQtailError {
@@ -110,6 +118,7 @@ export class InvalidEnumValue extends MOQtailError {
 }
 
 /**
+ * @public
  * Invalid UTF-8 encountered in a string or bytes field.
  */
 export class InvalidUTF8Error extends MOQtailError {
@@ -122,6 +131,7 @@ export class InvalidUTF8Error extends MOQtailError {
 }
 
 /**
+ * @public
  * Generic protocol violation.
  */
 export class ProtocolViolationError extends MOQtailError {
@@ -134,6 +144,7 @@ export class ProtocolViolationError extends MOQtailError {
 }
 
 /**
+ * @public
  * Track naming error.
  */
 export class TrackNameError extends MOQtailError {
@@ -146,6 +157,7 @@ export class TrackNameError extends MOQtailError {
 }
 
 /**
+ * @public
  * Request ID error.
  */
 export class RequestIdError extends MOQtailError {
@@ -158,6 +170,7 @@ export class RequestIdError extends MOQtailError {
 }
 
 /**
+ * @public
  * Operation timed out.
  */
 export class TimeoutError extends MOQtailError {
@@ -167,6 +180,7 @@ export class TimeoutError extends MOQtailError {
 }
 
 /**
+ * @public
  * Internal error.
  */
 export class InternalError extends MOQtailError {
@@ -179,6 +193,7 @@ export class InternalError extends MOQtailError {
 }
 
 /**
+ * @public
  * Connection terminated.
  */
 export class TerminationError extends MOQtailError {

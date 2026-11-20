@@ -19,6 +19,7 @@ import { ProtocolViolationError } from '../error'
 import { SubgroupHeaderType } from './constant'
 
 // TODO: couple type and subgroup id
+/** @public */
 export class SubgroupHeader {
   /**
    * Absent on the wire, and still unknown here, when the type says the Subgroup ID

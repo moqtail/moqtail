@@ -97,8 +97,9 @@ export type PadSignal =
 /** @public Items a connection holds before `write()` waits. */
 export const CONNECTION_CAPACITY = 32
 
-/** A transform, a sink, or a source taking a pad of an element it loaded. */
+/** @inline A transform, a sink, or a source taking a pad of an element it loaded. */
 export type Consumer = BaseElement & { receive(pad: Pad, item: PadItem): void | Promise<void> }
+/** @inline */
 type ErrorHandler = (error: unknown, destination: Pad) => void
 
 /** @public One end of a connection between two elements. */

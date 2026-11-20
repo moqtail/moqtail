@@ -20,7 +20,7 @@ import { InvalidEnumValue } from './error'
  * @public
  * Codes carried when resetting a request stream or sending STOP_SENDING on one.
  *
- * A separate registry from {@link (RequestErrorCode:enum)}, which disagrees with it on
+ * A separate registry from `RequestErrorCode`, which disagrees with it on
  * the same names: `GOING_AWAY` is `0x4` here but `0x6` there.
  */
 export enum StreamResetCode {

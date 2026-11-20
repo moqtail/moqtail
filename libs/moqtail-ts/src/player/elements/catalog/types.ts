@@ -43,7 +43,7 @@ export type CatalogTrack = Catalog['tracks'][number]
 /** @public The media timeline template of MSF 7.4.1, with named fields. */
 export type MediaTimelineTemplate = NonNullable<CatalogTrack['template']>
 
-/** A valid catalog document, as JSON. */
+/** @inline A valid catalog document, as JSON. */
 export interface CatalogDocument {
   tracks: Record<string, unknown>[]
   [field: string]: unknown

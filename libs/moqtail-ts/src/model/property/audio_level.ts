@@ -17,6 +17,7 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCPropertyId } from './constant'
 
+/** @public */
 export class AudioLevel {
   static readonly TYPE = LOCPropertyId.AudioLevel
   constructor(public readonly audioLevel: bigint) {}

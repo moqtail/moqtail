@@ -17,7 +17,6 @@
 import { MOQtailError, StreamResetCode } from '@/model/error'
 
 /**
- * @public
  * The peer reset this stream, or told us to stop sending on it, with a code.
  */
 export class PeerStreamResetError extends MOQtailError {
@@ -42,7 +41,6 @@ class StreamResetError extends Error {
 }
 
 /**
- * @public
  * The reason to hand `writer.abort()` or `reader.cancel()` so the stream is torn down
  * with `code`.
  *
@@ -74,7 +72,6 @@ export function streamResetReason(code: StreamResetCode): Error {
 }
 
 /**
- * @public
  * The code the peer reset a stream with, or `undefined` if `error` is not a stream
  * reset or carries a code this draft does not define.
  */
@@ -94,7 +91,6 @@ export function isSessionClosed(error: unknown): boolean {
 }
 
 /**
- * @public
  * Re-types a failed read: a peer reset becomes a {@link PeerStreamResetError} naming
  * the code, anything else is passed through untouched.
  */

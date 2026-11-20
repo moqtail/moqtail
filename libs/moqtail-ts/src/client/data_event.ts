@@ -24,10 +24,10 @@ import { StreamResetCode } from '@/model/error/stream_reset'
 import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
 
-/** `in` for a stream the peer opened, `out` for one this client opened. */
+/** @public `in` for a stream the peer opened, `out` for one this client opened. */
 export type DataDirection = 'in' | 'out'
 
-/** What every data event carries. */
+/** @public What every data event carries. */
 export type DataEventBase = {
   direction: DataDirection
   /** Local to this client, unique per data stream; every later event on the stream carries it. */
@@ -40,7 +40,7 @@ export type DataEventBase = {
   at: number
 }
 
-/** A data stream opened: what its header says. */
+/** @public A data stream opened: what its header says. */
 export type DataHeaderEvent = DataEventBase & {
   kind: 'header'
   stream: 'subgroup' | 'fetch'
@@ -56,7 +56,7 @@ export type DataHeaderEvent = DataEventBase & {
   fullTrackName?: FullTrackName
 }
 
-/** One object written or read. Only its identity and size are reported, never its payload. */
+/** @public One object written or read. Only its identity and size are reported, never its payload. */
 export type DataObjectEvent = DataEventBase & {
   kind: 'object'
   groupId: bigint
@@ -72,13 +72,14 @@ export type DataObjectEvent = DataEventBase & {
   locTimestamp?: bigint
 }
 
-/** A data stream ended: `fin` when it closed cleanly, `reset` when either side reset it. */
+/** @public A data stream ended: `fin` when it closed cleanly, `reset` when either side reset it. */
 export type DataStreamEndEvent = DataEventBase & {
   kind: 'end'
   reason: 'fin' | 'reset' | 'error'
   resetCode?: StreamResetCode
 }
 
+/** @public */
 export type DataEvent = DataHeaderEvent | DataObjectEvent | DataStreamEndEvent
 
 /** Names the track a data stream header belongs to, if known. */

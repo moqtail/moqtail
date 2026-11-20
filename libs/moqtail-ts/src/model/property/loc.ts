@@ -23,9 +23,11 @@ import { VideoConfig } from './video_config'
 import { AudioConfig } from './audio_config'
 import { CodecString } from './codec_string'
 
+/** @public */
 export type LOCProperty =
   Timestamp | Timescale | VideoFrameMarking | AudioLevel | VideoConfig | AudioConfig | CodecString
 
+/** @public */
 export namespace LOCProperty {
   export function fromKeyValuePair(pair: KeyValuePair): LOCProperty | undefined {
     return (
@@ -66,6 +68,7 @@ export namespace LOCProperty {
   }
 }
 
+/** @public */
 export class LOCProperties {
   private kvps: KeyValuePair[] = []
 

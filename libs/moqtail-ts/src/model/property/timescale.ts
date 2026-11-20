@@ -17,7 +17,7 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCPropertyId } from './constant'
 
-/** Valid as a track property too (LOC 6.1 Table 1). */
+/** @public Valid as a track property too (LOC 6.1 Table 1). */
 export class Timescale {
   static readonly TYPE = LOCPropertyId.Timescale
 

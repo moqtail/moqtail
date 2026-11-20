@@ -21,6 +21,7 @@ import { greaseValue } from '../common/grease'
 import { LengthExceedsMaxError } from '../error/error'
 
 /**
+ * @public
  * The first message each endpoint sends on its control stream.
  *
  * Both peers send the same message; there are no separate client and server forms and

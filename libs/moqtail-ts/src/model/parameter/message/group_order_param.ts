@@ -21,6 +21,7 @@ import { Parameter } from '../parameter'
 import { GroupOrder } from '../../control/constant'
 
 /**
+ * @public
  * How to prioritize Objects from different groups (Ascending=0x1 or Descending=0x2).
  * Values outside this range are a PROTOCOL_VIOLATION (Original/0x0 is not a valid wire value).
  * If omitted from SUBSCRIBE, the publisher's track preference is used.

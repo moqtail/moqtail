@@ -30,7 +30,6 @@ export const GREASE_BASE = 0x9dn
 const GREASE_MAX = 0x3fffffffffffffden
 
 /**
- * @public
  * True if `value` is a reserved GREASE value, i.e. `0x7f * N + 0x9D` for some
  * non-negative `N`.
  */
@@ -40,7 +39,6 @@ export function isGrease(value: bigint | number): boolean {
 }
 
 /**
- * @public
  * The `N`-th GREASE value, `0x7f * N + 0x9D`, or undefined if it would exceed what a
  * varint can carry (the pattern is capped at `0x3fffffffffffffde`).
  */

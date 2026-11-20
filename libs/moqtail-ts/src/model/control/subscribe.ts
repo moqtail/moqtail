@@ -29,6 +29,7 @@ import { LocationFilter } from '../parameter/message/location_filter'
 import { Forward } from '../parameter/message/forward'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
 
+/** @public */
 export class Subscribe {
   constructor(
     public requestId: bigint,

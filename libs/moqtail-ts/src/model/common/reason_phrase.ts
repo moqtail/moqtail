@@ -17,21 +17,19 @@
 import { LengthExceedsMaxError, InvalidUTF8Error, NotEnoughBytesError, CastingError } from '../error/error'
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from './byte_buffer'
 /**
- * The maximum allowed length (in bytes) for a ReasonPhrase.
  * @public
+ * The maximum allowed length (in bytes) for a ReasonPhrase.
  */
 export const MAX_REASON_PHRASE_LEN = 1024
 
 /**
+ * @public
  * Represents a protocol ReasonPhrase, a short UTF-8 string used for error or status reporting.
  * Enforces a maximum byte length and validates encoding.
- *
- * @public
  */
 export class ReasonPhrase {
   /**
    * The underlying phrase string.
-   * @public
    */
   readonly #phrase: string
 
@@ -41,7 +39,6 @@ export class ReasonPhrase {
    * @param phrase - The string to use as the reason phrase.
    * @throws {@link InvalidUTF8Error} if encoding fails.
    * @throws {@link LengthExceedsMaxError} if the encoded phrase exceeds {@link MAX_REASON_PHRASE_LEN} bytes.
-   * @public
    */
   constructor(phrase: string) {
     let encodedPhrase: Uint8Array
@@ -60,7 +57,6 @@ export class ReasonPhrase {
 
   /**
    * Returns the phrase string.
-   * @public
    */
   public get phrase(): string {
     return this.#phrase
@@ -71,7 +67,6 @@ export class ReasonPhrase {
    * varint(length_of_phrase_bytes) || phrase_bytes
    *
    * @returns The serialized buffer.
-   * @public
    */
   public serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
@@ -91,7 +86,6 @@ export class ReasonPhrase {
    * @throws :{@link LengthExceedsMaxError} if the length exceeds {@link MAX_REASON_PHRASE_LEN}.
    * @throws :{@link NotEnoughBytesError} if the buffer does not contain enough bytes.
    * @throws :{@link InvalidUTF8Error} if decoding fails.
-   * @public
    */
   public static deserialize(buf: BaseByteBuffer): ReasonPhrase {
     const lenBig = buf.getVI() // Read length varint

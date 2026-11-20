@@ -18,6 +18,7 @@ import { KeyValuePair } from '../../common/pair'
 import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
+/** @public */
 export class MaxAuthTokenCacheSize implements Parameter {
   static readonly TYPE = SetupOptionType.MaxAuthTokenCacheSize
   constructor(public readonly maxSize: bigint) {}

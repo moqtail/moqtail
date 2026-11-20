@@ -19,6 +19,7 @@ import { LOCPropertyId } from './constant'
 
 const utf8 = new TextDecoder('utf-8', { fatal: true })
 
+/** @public */
 export class CodecString {
   static readonly TYPE = LOCPropertyId.CodecString
 

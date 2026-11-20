@@ -29,7 +29,7 @@ import { hasBom, invalidCatalog, toBytes } from './strings'
 import type { Catalog, CatalogDocument, CatalogTrack } from './types'
 import { substituteVariables } from './variables'
 
-/** @public What a catalog is parsed against. */
+/** What a catalog is parsed against. */
 export interface ParseContext {
   /** The catalog track's namespace, inherited by tracks without one. */
   namespace: Tuple
@@ -37,7 +37,7 @@ export interface ParseContext {
   variables: Record<string, string>
 }
 
-/** @public A parsed catalog and the non-fatal problems found on the way. */
+/** A parsed catalog and the non-fatal problems found on the way. */
 export interface ParseResult {
   catalog: Catalog
   warnings: PlayerError[]

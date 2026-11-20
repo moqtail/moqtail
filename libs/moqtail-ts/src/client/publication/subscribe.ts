@@ -192,7 +192,7 @@ export class SubscribePublication {
   /**
    * Updates the subscription parameters and locations based on a RequestUpdate message.
    * @param msg - The update message containing new request details.
-   * @throws :{@link InvalidFilterError} If the Range Filters the subscription would be
+   * @throws :`InvalidFilterError` If the Range Filters the subscription would be
    * left with cannot be applied; nothing is updated.
    */
   update(msg: RequestUpdate): void {

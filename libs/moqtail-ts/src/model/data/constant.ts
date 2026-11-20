@@ -59,7 +59,6 @@ export enum ObjectDatagramType {
 }
 
 /**
- * @public
  * Namespace for ObjectDatagramType utilities.
  */
 export namespace ObjectDatagramType {

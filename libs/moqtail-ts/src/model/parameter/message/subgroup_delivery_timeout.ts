@@ -19,6 +19,7 @@ import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
+ * @public
  * Duration in milliseconds the relay SHOULD continue to attempt forwarding a Subgroup.
  * A value of 0 means no timeout is set (§8).
  */

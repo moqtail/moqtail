@@ -27,6 +27,7 @@ import {
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
 import { LocationFilter } from '../parameter/message/location_filter'
 
+/** @public */
 export class Fetch {
   constructor(
     public readonly requestId: bigint,
@@ -36,7 +37,7 @@ export class Fetch {
 
   /**
    * The requested range. A FETCH without a LOCATION_FILTER parameter asks for the
-   * whole track up to the Largest Object, the same as a {@link (LocationFilterType:enum).None} filter.
+   * whole track up to the Largest Object, the same as a `LocationFilterType.None` filter.
    */
   get locationFilter(): LocationFilter {
     return this.parameters.find(MessageParameter.isLocationFilter) ?? new LocationFilter(LocationFilterType.None)

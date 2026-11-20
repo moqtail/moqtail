@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-/** testsrc's LOC tracks played with `player.sink(canvas)`, the decoders loaded by the chain. */
+/** LOC tracks played with `player.sink(canvas)`, the decoders loaded by the chain. */
 
 import { beforeAll, expect, onTestFinished, test, vi } from 'vitest'
 import { userEvent } from 'vitest/browser'
@@ -112,6 +112,32 @@ test('LOC plays on a canvas, in sync, through the webcodecs transforms the chain
     expect(Math.abs(timestamp - currentTime)).toBeLessThan(1 / framerate + 1 / 60 + 0.01)
   }
 
+  expect(errors).toEqual([])
+})
+
+test('a rendition VideoDecoder cannot decode, such as HEVC in headless Chromium, leaves the set', async () => {
+  // testsrc's renditions all decode, so its LOC video is made one that doesn't
+  const isConfigSupported = VideoDecoder.isConfigSupported.bind(VideoDecoder)
+  const spy = vi
+    .spyOn(VideoDecoder, 'isConfigSupported')
+    .mockImplementation(async (config) =>
+      config.codec.startsWith('avc3') ? { supported: false, config } : isConfigSupported(config),
+    )
+  onTestFinished(() => spy.mockRestore())
+  const canvas = document.createElement('canvas')
+  document.body.append(canvas)
+  const player = new MOQtailPlayer().source(testsrc.uri()).sink(canvas)
+  const errors: PlayerError[] = []
+  player.on('error', (error) => errors.push(error))
+  onTestFinished(async () => {
+    await player.destroy()
+    canvas.remove()
+  })
+
+  await player.start()
+  await until(() => player.state === 'playing', 'playing')
+  const renditions = player.mediaSources.flatMap((s) => s.getRenditions())
+  expect(renditions.map((r) => r.id)).toEqual(['audio-loc'])
   expect(errors).toEqual([])
 })
 

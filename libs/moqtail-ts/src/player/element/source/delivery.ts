@@ -24,6 +24,7 @@ import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult, Swit
 import { Location } from '@/model/common/location'
 import { GroupOrder, LocationFilterType, PublishDoneStatusCode } from '@/model/control/constant'
 import { RequestError } from '@/model/control/request_error'
+import { ObjectForwardingPreference, ObjectStatus } from '@/model/data/constant'
 import { FullTrackName } from '@/model/data/full_track_name'
 import type { MoqtObject } from '@/model/data/object'
 import { FillParameters } from '@/model/parameter/message/fill_parameters'
@@ -650,6 +651,25 @@ if (import.meta.vitest) {
         { groupDuration: 2 },
         { seekable: { start: 2, end: 6 } },
       ])
+    })
+
+    test('objects without a payload never reach the pad', async () => {
+      const { MoqtObject } = await import('@/model/data/object')
+      const empty = (object: number, status: ObjectStatus) =>
+        MoqtObject.newWithStatus(
+          FullTrackName.tryNew('ns', 'v1'),
+          new Location(1n, BigInt(object)),
+          0,
+          ObjectForwardingPreference.Subgroup,
+          0,
+          null,
+          status,
+        )
+      const c = await cmafChain([cmafTrack('v1')])
+      await flush()
+      c.client.last.push(mediaObject(1, 0), empty(1, ObjectStatus.Normal), empty(2, ObjectStatus.EndOfGroup))
+      await flush()
+      expect(c.trace()).toEqual(['props live,mimeType,track', '1.0'])
     })
 
     test("the sink's backpressure stops the read loop", async () => {

@@ -91,7 +91,11 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
   async receive(pad: Pad, item: PadItem): Promise<void> {
     if (this.#fatal) throw this.#fatal
     const state = this.#states.get(pad)
-    if (!state) return
+    if (!state) {
+      // The pad went away while this was in flight; only the receiver closes a frame
+      if (item.type === 'frame') item.frame.payload.close()
+      return
+    }
     if (item.type !== 'properties') return this.receiveMedia(pad, state, item)
     const previous = state.properties
     state.properties = { ...previous, ...item.properties }

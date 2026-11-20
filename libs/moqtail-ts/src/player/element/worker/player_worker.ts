@@ -115,7 +115,13 @@ export class PlayerWorker {
   /** Resolves false, and terminates it, once the worker failed to load or to report in time. */
   async start(signal: AbortSignal): Promise<boolean> {
     const failed = Promise.withResolvers<never>()
-    this.#worker.addEventListener('error', (event) => failed.reject(event), { signal })
+    const onError = (event: Event) => {
+      failed.reject(event)
+      // Past startup, an error no engine caught: every owner is in the one player, so one reports it
+      const error = new PlayerError('MEDIA_FAILURE', 'The player worker failed', { cause: event })
+      ;[...this.#owners][0]?.fail(error)
+    }
+    this.#worker.addEventListener('error', onError, { signal })
     try {
       const report = within(
         Promise.race([this.#host.environment(), failed.promise]),
@@ -288,6 +294,7 @@ if (import.meta.vitest) {
   type TestSource = import('@/player/testing/elements').TestSource
   type CollectingSink = import('@/player/testing/elements').CollectingSink
   type WorkerSink = import('@/player/testing/worker').WorkerSink
+  type EngineClass = import('./host').EngineClass
 
   afterEach(() => {
     RecordEngine.created.length = 0
@@ -371,6 +378,32 @@ if (import.meta.vitest) {
       expect(objects(RecordEngine.created[0]!.items)).toEqual([0, 1, 2, 3])
       await flush()
       await w.chain.destroy()
+    })
+
+    test('an engine whose constructor throws fails its element, and close() on it still settles', async () => {
+      const Throws = class {
+        constructor() {
+          throw new Error('no engine')
+        }
+      } as unknown as EngineClass
+      const worker = new PlayerWorker(inProcessWorker({ 'worker-throw': Throws }))
+      await worker.start(new AbortController().signal)
+      const failures: PlayerError[] = []
+      const context = worker.context({ element: undefined, fail: (error) => failures.push(error) })!
+      const engine = context.create<Engine & { close(): void }>('worker-throw')
+      await vi.waitUntil(() => failures.length > 0)
+      await engine.close()
+      expect(failures).toMatchObject([{ code: 'MEDIA_FAILURE', element: 'worker-throw' }])
+    })
+
+    test('an error the worker throws after startup fails the player', async () => {
+      const port = inProcessWorker()
+      const worker = new PlayerWorker(port)
+      await worker.start(new AbortController().signal)
+      const failures: PlayerError[] = []
+      worker.context({ element: undefined, fail: (error) => failures.push(error) })
+      port.dispatchEvent(new Event('error'))
+      expect(failures).toMatchObject([{ code: 'MEDIA_FAILURE', message: 'The player worker failed' }])
     })
 
     test('an element whose threads needs the worker fails init without one', async () => {

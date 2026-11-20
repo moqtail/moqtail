@@ -62,6 +62,7 @@ export class WorkerHost {
   readonly #classes: ReadonlyMap<string, EngineClass>
   readonly #engines = new Map<number, Engine>()
   readonly #outputs = new Map<number, Output>()
+  readonly #reports = new Map<number, Comlink.Remote<(report: unknown) => void>>()
   #main: Comlink.Remote<MainSide> | undefined
 
   constructor(classes: ReadonlyMap<string, EngineClass>) {
@@ -94,16 +95,24 @@ export class WorkerHost {
     options: unknown,
     report: ((report: unknown) => void) | undefined,
   ): void {
-    const Class = this.#classes.get(name)
-    if (!Class) throw new TypeError(`The worker has no engine for "${name}"`)
-    const writers = outputs.map((key) => {
-      const output = new Output(id, (error) => void this.#main?.fail(id, error))
-      this.#outputs.set(key, output)
-      return (item: PadOutput) => output.write(item)
-    })
-    const engine = new Class({ outputs: writers, options, report: report ?? (() => {}) })
-    this.#engines.set(id, engine)
-    Comlink.expose(engine, port)
+    // Comlink hands a proxied function over as a remote, whose port goes on `release()`
+    if (report) this.#reports.set(id, report as unknown as Comlink.Remote<(report: unknown) => void>)
+    try {
+      const Class = this.#classes.get(name)
+      if (!Class) throw new TypeError(`The worker has no engine for "${name}"`)
+      const writers = outputs.map((key) => {
+        const output = new Output(id, (error) => void this.#main?.fail(id, error))
+        this.#outputs.set(key, output)
+        return (item: PadOutput) => output.write(item)
+      })
+      const engine = new Class({ outputs: writers, options, report: (value) => void this.#reports.get(id)?.(value) })
+      this.#engines.set(id, engine)
+      Comlink.expose(engine, port)
+    } catch (error) {
+      // The element's `close()` waits on this port all the same
+      Comlink.expose({ close() {} }, port)
+      throw error
+    }
   }
 
   route(key: number, route: 'bridge' | Link[]): void {
@@ -121,6 +130,8 @@ export class WorkerHost {
   /** Its element already closed the engine. */
   release(id: number): void {
     this.#engines.delete(id)
+    this.#reports.get(id)?.[Comlink.releaseProxy]()
+    this.#reports.delete(id)
     for (const [key, output] of this.#outputs) {
       if (output.producer !== id) continue
       output.close()

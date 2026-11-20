@@ -23,6 +23,8 @@ export type Status = PlayerState;
 export interface Features {
   ssts: boolean;
   switchFrom: boolean;
+  /** Plays on a canvas through the player API, since `<moqtail-video>` can't yet. */
+  canvas: boolean;
 }
 
 export interface PresetNamespace {

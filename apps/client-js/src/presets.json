@@ -9,7 +9,7 @@
           "label": "Test Source",
           "videoTracks": 1,
           "audioTracks": 1,
-          "features": ["CMAF"]
+          "features": ["CMAF", "LOC"]
         },
         {
           "id": "ch00",

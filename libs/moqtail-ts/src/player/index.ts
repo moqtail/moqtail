@@ -30,6 +30,7 @@ export {
   type AbrController,
 } from './plugin'
 export { MSE } from '@/player/elements/mse'
+export { Playout } from '@/player/elements/playout'
 export { rangeAt } from '@/player/elements/mse/gaps'
 export { eachClient, followData } from '@/player/follow'
 export { liveBuffer, type LiveBufferConfig } from '@/player/plugins/buffer'
@@ -44,6 +45,7 @@ export {
 } from '@/player/plugins/abr'
 export { ssts, SstsSource, SSTS_ALGORITHMS, type SstsConfig } from '@/player/plugins/ssts'
 export type { MSEOptions } from '@/player/elements/mse/sink'
+export type { PlayoutOptions } from '@/player/elements/playout/sink'
 export {
   defineElement,
   hasInterface,

@@ -43,6 +43,8 @@ interface DecoderInit {
 
 /** Chunks waiting in the decoder before a packet holds its connection back. */
 const DECODE_QUEUE_LIMIT = 4
+/** Frames open past this when the decoder fails hint it ran out of buffers. */
+const OPEN_FRAMES_EXPECTED = 2
 /** Codecs whose WebCodecs registrations read Annex B without a description. */
 const ANNEX_B_CODECS = /^(avc[13]|hev1|hvc1)\./
 
@@ -56,6 +58,8 @@ export class Decoding {
   readonly #output: (item: PadOutput) => Promise<void>
   readonly #fail: (error: PlayerError) => void
   #pending: PendingObject[] = []
+  /** Frames written that the consumer hasn't closed yet: each holds a decoder buffer. */
+  #open: VideoFrame[] = []
   #properties: Partial<PadProperties> = {}
   #decoder: VideoDecoder | AudioDecoder | undefined
   #kind: 'video' | 'audio' = 'video'
@@ -185,7 +189,22 @@ export class Decoding {
       this.#outputTimescale = timescale
       void this.#output({ type: 'properties', properties: { timescale } })
     }
+    if (this.#kind === 'video') {
+      this.#open = this.#open.filter((frame) => frame.format !== null)
+      this.#open.push(payload as VideoFrame)
+    }
     this.#lastWrite = this.#output({ type: 'frame', frame: { ...base, payload } })
+  }
+
+  /** Running out of decoder memory shows up here, not in the consumer holding the frames. */
+  #failure(): string {
+    const open = this.#open.filter((frame) => frame.format !== null)
+    if (open.length === 0) return 'Decoding failed'
+    const timestamps = open.map((frame) => frame.timestamp)
+    const span = (Math.max(...timestamps) - Math.min(...timestamps)) / 1_000_000
+    const message = `Decoding failed with ${open.length} decoded frames still open, spanning ${span.toFixed(2)} s`
+    if (open.length <= OPEN_FRAMES_EXPECTED) return message
+    return `${message}: playback is too far behind for the frames the decoder can keep alive, lower the target latency`
   }
 
   async #flush(): Promise<void> {
@@ -208,7 +227,7 @@ export class Decoding {
     this.#fail(
       error instanceof PlayerError
         ? error
-        : new PlayerError('MEDIA_FAILURE', 'Decoding failed', { element: 'webcodecs', cause: error }),
+        : new PlayerError('MEDIA_FAILURE', this.#failure(), { element: 'webcodecs', cause: error }),
     )
   }
 }

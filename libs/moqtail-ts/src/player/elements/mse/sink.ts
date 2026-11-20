@@ -15,11 +15,9 @@
  */
 
 import { logger } from '@/util/logger'
-import { SinkElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
-import { CapabilityCode } from '@/player/element/define'
-import type { MediaSinkElement } from '@/player/element/interfaces'
 import type { Pad, PadEvent, PadItem, PadProperties, PadSignal } from '@/player/element/pad'
+import { MediaSink, type SinkPadState } from '@/player/element/sink/media_sink'
 import { PlayerError } from '@/player/error'
 import { handledResolvers } from '@/player/util/async'
 import { BufferQueue } from './buffer_queue'
@@ -50,8 +48,7 @@ export interface MSEOptions {
 }
 
 /** What the sink keeps per sink pad. */
-interface PadState {
-  properties: PadProperties
+interface PadState extends SinkPadState {
   /** Set once the source buffers exist, cleared by a rebuild. */
   queue?: BufferQueue | undefined
   /** Appended before the pad's next packet. */
@@ -64,7 +61,6 @@ interface PadState {
   replaceFrom: number
   /** Live only: seconds buffered ahead when an append hit the quota with nothing behind to free. */
   quotaAhead?: number | undefined
-  ended: boolean
   /** Start times of the groups in the buffer, so a quota retry never cuts into the playing one. */
   keyframes: number[]
   /** The group of the last appended packet; unset when the next one doesn't continue it. */
@@ -88,16 +84,10 @@ const RELAYED_EVENTS = ['playing', 'pause', 'stalled', 'waiting', 'timeupdate', 
  * source buffer per pad, created together once negotiation is over, appends through
  * one queue per buffer, retention, seeking, gap jumping, and end of stream.
  */
-export class MSESink extends SinkElement implements MediaSinkElement {
-  readonly #target = new EventTarget()
-  readonly addEventListener = this.#target.addEventListener.bind(this.#target)
-  readonly removeEventListener = this.#target.removeEventListener.bind(this.#target)
-  readonly dispatchEvent = this.#target.dispatchEvent.bind(this.#target)
-
+export class MSESink extends MediaSink<PadState> {
   readonly #video: HTMLVideoElement
   readonly #Backend: typeof MediaSource
   readonly #seekTracker: SeekTracker
-  readonly #pads = new Map<Pad, PadState>()
   readonly #remotePlayback: boolean
   readonly #timer: ReturnType<typeof setInterval>
   readonly #options: Required<Omit<MSEOptions, 'video'>>
@@ -106,8 +96,6 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   /** Resolved once the source buffers exist; a rebuild replaces it. */
   #buffers = handledResolvers()
   #created = false
-  #negotiated = false
-  #live = false
   /** The live seekable range last set. */
   #seekable: { start: number; end: number } | undefined
   /** Where playback last sat still, since when (ms), and the nudges tried there. */
@@ -117,7 +105,6 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   /** Where playback continues after a rebuild, instead of the start position. */
   #resumeAt: number | undefined
   #rebuiltAfterFailure = false
-  #fatal: PlayerError | undefined
   /** Resolved and replaced whenever something that may make room happens. */
   #changed = Promise.withResolvers<void>()
 
@@ -150,10 +137,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
 
     this.on('padadded', (pad) => this.#padAdded(pad))
     this.on('padremoved', (pad) => this.#padRemoved(pad))
-    this.on('nomorepads', () => {
-      this.#negotiated = true
-      this.#createBuffers()
-    })
+    this.on('nomorepads', () => this.#createBuffers())
     this.#attach()
   }
 
@@ -182,13 +166,13 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   }
 
   get liveEdgeStart(): number {
-    if (!this.#live || !this.#seekable) return NaN
-    return liveEdgeStart(this.#seekable.end, this.#properties())
+    if (!this.live || !this.#seekable) return NaN
+    return liveEdgeStart(this.#seekable.end, this.padProperties())
   }
 
   get dvrRange(): { start: number; end: number } | undefined {
-    const windowed = this.#properties().some((p) => p.accessibleWindow !== undefined)
-    return this.#live && windowed ? this.#seekable : undefined
+    const windowed = this.padProperties().some((p) => p.accessibleWindow !== undefined)
+    return this.live && windowed ? this.#seekable : undefined
   }
 
   setPlaybackRate(rate: number): void {
@@ -208,16 +192,23 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     return this.#seekTracker.seek(mediaTime)
   }
 
-  /** One pad per role. */
-  negotiate(pad: Pad): boolean {
-    return this.matchesCapabilities(pad) && !this.pads.some((p) => roleOf(p) === roleOf(pad))
+  override async destroy(): Promise<void> {
+    clearInterval(this.#timer)
+    this.#seekTracker.fail(new PlayerError('ABORTED', 'The sink was destroyed', { element: 'mse' }))
+    this.#detach()
+    this.#video.disableRemotePlayback = this.#remotePlayback
+    await super.destroy()
   }
 
-  async receive(pad: Pad, item: PadItem): Promise<void> {
-    if (this.#fatal) throw this.#fatal
-    const state = this.#pads.get(pad)
-    if (!state) return
-    if (item.type === 'properties') return this.#applyProperties(state, item.properties)
+  protected newPadState(): PadState {
+    return { properties: {}, seeks: 0, epoch: 0, replaceFrom: 0, ended: false, keyframes: [] }
+  }
+
+  protected async receiveMedia(
+    pad: Pad,
+    state: PadState,
+    item: Exclude<PadItem, { type: 'properties' }>,
+  ): Promise<void> {
     if (item.type !== 'packet') return
     if (state.seeks > 0) return
     const epoch = state.epoch
@@ -235,6 +226,35 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   }
 
   /** Appends the pending init data, then `payload`. False when nothing was appended and playback goes on. */
+  protected override async propertiesChanged(
+    state: PadState,
+    changes: Partial<PadProperties>,
+    previous: PadProperties,
+  ): Promise<void> {
+    if (changes.track !== undefined && previous.track !== undefined && changes.track !== previous.track)
+      state.replacedBefore = 'next group'
+    if (changes.initData) state.initData = changes.initData
+    if (changes.live !== undefined || changes.duration !== undefined || changes.seekable !== undefined) {
+      void this.#applyDuration()
+    }
+    const mimeType = changes.mimeType
+    if (state.queue && mimeType && mimeType !== previous.mimeType) await state.queue.run((b) => b.changeType(mimeType))
+    this.#createBuffers()
+  }
+
+  protected padEvent(_pad: Pad, state: PadState, event: PadEvent): void {
+    if (event.type === 'eos') void this.#endOfStream()
+    else if (event.reason === 'gap') this.#checkGap()
+    else if (state.seeks > 0) this.#seekAnswered(state, event.failed === true)
+  }
+
+  protected padSignal(pad: Pad, state: PadState, signal: PadSignal): void {
+    if (signal.type === 'flush') {
+      // Everything the pad buffered goes once the source answers: what comes next replaces it all
+      this.#seekUpstream(pad, state, this.#video.currentTime, 0)
+    }
+  }
+
   async #append(state: PadState, queue: BufferQueue, payload: Uint8Array): Promise<boolean> {
     const source = this.#source
     const now = () => this.#video.currentTime
@@ -248,12 +268,12 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     } catch (error) {
       // Rebuilt meanwhile: the upstream seek fetches this packet again
       if (queue !== state.queue || this.context.signal.aborted) return false
-      if (this.#live && isQuotaExceeded(error)) {
+      if (this.live && isQuotaExceeded(error)) {
         state.quotaAhead = bufferedAhead(queue.buffer, now())
         return false
       }
       this.#mediaFailed(source, error)
-      if (this.#fatal) throw this.#fatal
+      if (this.fatal) throw this.fatal
       return false
     }
   }
@@ -270,52 +290,25 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     }
   }
 
-  override async destroy(): Promise<void> {
-    clearInterval(this.#timer)
-    this.#seekTracker.fail(new PlayerError('ABORTED', 'The sink was destroyed', { element: 'mse' }))
-    this.#detach()
-    this.#video.disableRemotePlayback = this.#remotePlayback
-    await super.destroy()
-  }
-
   readonly #notify = () => {
     this.#changed.resolve()
     this.#changed = Promise.withResolvers()
   }
 
   #padAdded(pad: Pad): void {
-    if (pad.direction !== 'sink') return
-    this.#pads.set(pad, { properties: {}, seeks: 0, epoch: 0, replaceFrom: 0, ended: false, keyframes: [] })
-    pad.onEvent((event) => this.#onEvent(pad, event))
-    pad.onSignal((signal) => this.#onSignal(pad, signal))
-    if (this.#created) this.#rebuild()
+    if (pad.direction === 'sink' && this.#created) this.#rebuild()
   }
 
   #padRemoved(pad: Pad): void {
-    if (!this.#pads.delete(pad) || this.context.signal.aborted) return
+    if (pad.direction !== 'sink' || this.context.signal.aborted) return
     if (this.#created) this.#rebuild()
     else this.#createBuffers()
   }
 
-  async #applyProperties(state: PadState, changes: Partial<PadProperties>): Promise<void> {
-    const previous = state.properties.mimeType
-    if (changes.track !== undefined && state.properties.track !== undefined && changes.track !== state.properties.track)
-      state.replacedBefore = 'next group'
-    state.properties = { ...state.properties, ...changes }
-    if (changes.initData) state.initData = changes.initData
-    if (changes.live !== undefined) this.#live = changes.live
-    if (changes.live !== undefined || changes.duration !== undefined || changes.seekable !== undefined) {
-      void this.#applyDuration()
-    }
-    const mimeType = changes.mimeType
-    if (state.queue && mimeType && mimeType !== previous) await state.queue.run((b) => b.changeType(mimeType))
-    this.#createBuffers()
-  }
-
   /** Creates every source buffer together, once negotiation is over and each pad has its `mimeType`. */
   #createBuffers(): void {
-    const states = [...this.#pads.values()]
-    if (this.#created || !this.#negotiated || this.#source.readyState !== 'open') return
+    const states = [...this.states.values()]
+    if (this.#created || !this.negotiated || this.#source.readyState !== 'open') return
     if (states.length === 0 || states.some((s) => !s.properties.mimeType)) return
     this.#created = true
     try {
@@ -339,7 +332,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
    * seeks upstream once to where the data stops.
    */
   async #makeRoom(pad: Pad, state: PadState, epoch: number): Promise<boolean> {
-    if (this.#live) {
+    if (this.live) {
       if (state.quotaAhead === undefined) return true
       const end = (state.queue && bufferedEnd(state.queue.buffer)) ?? this.#video.currentTime
       if (end - this.#video.currentTime >= state.quotaAhead / 2) return false
@@ -350,7 +343,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     while (!this.#hasRoom(state) && state.epoch === epoch) {
       await this.#changed.promise
       this.context.signal.throwIfAborted()
-      if (this.#fatal) throw this.#fatal
+      if (this.fatal) throw this.fatal
     }
     return true
   }
@@ -368,7 +361,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   /** Once every source buffer has data, jumps to the latest of their starts (or the rebuild's position). */
   #maybeStart(): void {
     if (this.#started || !this.#created) return
-    const buffers = [...this.#pads.values()].map((s) => s.queue!.buffer)
+    const buffers = [...this.states.values()].map((s) => s.queue!.buffer)
     if (buffers.some((b) => b.buffered.length === 0)) return
     this.#started = true
     this.#seekTracker.jump(this.#resumeAt ?? Math.max(...buffers.map((b) => b.buffered.start(0))))
@@ -376,37 +369,13 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     this.emit('ready')
   }
 
-  #onEvent(pad: Pad, event: PadEvent): boolean {
-    const state = this.#pads.get(pad)
-    if (!state) return true
-    if (event.type === 'eos') {
-      state.ended = true
-      void this.#endOfStream()
-    } else if (event.reason === 'gap') {
-      this.#checkGap()
-    } else if (state.seeks > 0) {
-      this.#seekAnswered(state, event.failed === true)
-    }
-    return true
-  }
-
-  #onSignal(pad: Pad, signal: PadSignal): boolean {
-    const state = this.#pads.get(pad)
-    if (!state) return true
-    if (signal.type === 'flush') {
-      // Everything the pad buffered goes once the source answers: what comes next replaces it all
-      this.#seekUpstream(pad, state, this.#video.currentTime, 0)
-    }
-    return true
-  }
-
   /** A seek the sink didn't make: upstream unless the target is buffered and no upstream seek is pending. */
   #onSeeking(): void {
     if (!this.#seekTracker.seeking()) return
     const target = this.#video.currentTime
-    const pending = [...this.#pads.values()].some((s) => s.seeks > 0)
+    const pending = [...this.states.values()].some((s) => s.seeks > 0)
     if (!pending && rangeAt(target, this.#video.buffered) !== -1) return
-    for (const [pad, state] of this.#pads) this.#seekUpstream(pad, state, target)
+    for (const [pad, state] of this.states) this.#seekUpstream(pad, state, target)
   }
 
   /**
@@ -448,7 +417,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     if (!this.#started) return
     this.#dropReplaced()
     if (video.seeking) return this.#unstrand()
-    const target = gapJumpTarget(video.currentTime, video.buffered, this.#live, this.#options.liveEdgeDelay)
+    const target = gapJumpTarget(video.currentTime, video.buffered, this.live, this.#options.liveEdgeDelay)
     if (target !== undefined && target > video.currentTime) this.#seekTracker.jump(target)
     else this.#unstrand()
   }
@@ -466,7 +435,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
    * buffer has data past it, nothing will fill the spot, so it jumps to where the data starts.
    */
   #jumpToData(time: number, buffered: TimeRanges): void {
-    for (const state of this.#pads.values()) {
+    for (const state of this.states.values()) {
       if (state.seeks > 0 || !state.queue || (bufferedEnd(state.queue.buffer) ?? 0) <= time) return
     }
     for (let i = 0; i < buffered.length; i++)
@@ -497,7 +466,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
    */
   #dropReplaced(): void {
     const time = this.#video.currentTime
-    for (const state of this.#pads.values()) {
+    for (const state of this.states.values()) {
       const before = state.replacedBefore
       if (typeof before !== 'number' || time < before || !state.queue) continue
       state.replacedBefore = undefined
@@ -509,7 +478,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   /** A live sink that fell behind the seekable range jumps near the end of `buffered`. A paused one stays paused. */
   #onVisible(): void {
     const video = this.#video
-    if (document.visibilityState !== 'visible' || !this.#live || !this.#started || !video.buffered.length) return
+    if (document.visibilityState !== 'visible' || !this.live || !this.#started || !video.buffered.length) return
     const seekable = video.seekable.length ? video.seekable : video.buffered
     if (video.currentTime < seekable.start(0))
       this.#seekTracker.jump(liveEdge(video.buffered, this.#options.liveEdgeDelay))
@@ -517,11 +486,10 @@ export class MSESink extends SinkElement implements MediaSinkElement {
 
   /** Ends the stream once every pad received `eos`, behind pending appends. */
   async #endOfStream(): Promise<void> {
-    const states = () => [...this.#pads.values()]
-    if (!this.#created || !states().every((s) => s.ended)) return
+    if (!this.#created || !this.allPadsEnded()) return
     const source = this.#source
-    await Promise.all(states().map((s) => s.queue?.run(() => {})))
-    if (source !== this.#source || source.readyState !== 'open' || !states().every((s) => s.ended)) return
+    await Promise.all([...this.states.values()].map((s) => s.queue?.run(() => {})))
+    if (source !== this.#source || source.readyState !== 'open' || !this.allPadsEnded()) return
     try {
       source.endOfStream()
     } catch (error) {
@@ -531,8 +499,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
 
   /** Sets the duration once no source buffer is updating: `Infinity` live, so `seekable` is the live range. */
   async #applyDuration(): Promise<void> {
-    const queues = [...this.#pads.values()].flatMap((s) => s.queue ?? [])
-    const duration = this.#live ? Infinity : vodDuration(this.#properties())
+    const queues = [...this.states.values()].flatMap((s) => s.queue ?? [])
+    const duration = this.live ? Infinity : vodDuration(this.padProperties())
     const source = this.#source
     if (duration === undefined || queues.length === 0 || source.duration === duration) return
     // Set it at once when every buffer is idle: by the time each queue drains, another append may have started
@@ -553,8 +521,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
    */
   #updateSeekable(): void {
     const source = this.#source
-    if (!this.#live || source.readyState !== 'open') return
-    const properties = this.#properties()
+    if (!this.live || source.readyState !== 'open') return
+    const properties = this.padProperties()
     const range = liveSeekable(this.#video.buffered, properties)
     if (!range || (range.start === this.#seekable?.start && range.end === this.#seekable.end)) return
     this.#seekable = range
@@ -562,19 +530,15 @@ export class MSESink extends SinkElement implements MediaSinkElement {
       source.setLiveSeekableRange(range.start, range.end)
   }
 
-  #properties(): PadProperties[] {
-    return [...this.#pads.values()].map((s) => s.properties)
-  }
-
   /**
    * An append or decode failure. The first rebuilds the media source, a second is fatal.
    * Failures of a media source that was already replaced are ignored.
    */
   #mediaFailed(source: MediaSource, cause: unknown): void {
-    if (source !== this.#source || this.#fatal || this.context.signal.aborted) return
+    if (source !== this.#source || this.fatal || this.context.signal.aborted) return
     if (this.#rebuiltAfterFailure) {
       // shortcut: a fatal media error event only surfaces on the next receive(), fine while sources keep writing
-      this.#fatal = new PlayerError('MEDIA_FAILURE', 'Playback failed again after a rebuild', { element: 'mse', cause })
+      this.fail(new PlayerError('MEDIA_FAILURE', 'Playback failed again after a rebuild', { element: 'mse', cause }))
       this.#notify()
       return
     }
@@ -594,7 +558,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     this.#resumeAt = resumeAt
     this.#buffers.resolve() // receives still waiting on the old buffers see no queue and drop their packet
     this.#buffers = handledResolvers()
-    for (const [pad, state] of this.#pads) {
+    for (const [pad, state] of this.states) {
       state.queue = undefined
       state.initData = state.properties.initData
       state.keyframes = []
@@ -630,8 +594,4 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     this.#url = undefined
     this.#video.load()
   }
-}
-
-function roleOf(pad: Pad): string | undefined {
-  return pad.capabilities.find((c) => c.code === CapabilityCode.ROLE)?.value
 }

@@ -38,11 +38,15 @@ export function annexB(payload: Uint8Array): Uint8Array | undefined {
   return withStartCodes(payload) ?? (startsWith(payload, SHORT_START_CODE) ? payload : undefined)
 }
 
-/** The AudioSpecificConfig (ISO/IEC 14496-3 1.6.2.1) of an `mp4a.40.<object type>` codec, else undefined. */
+/**
+ * The AudioSpecificConfig (ISO/IEC 14496-3 1.6.2.1) of an `mp4a.40.<object type>` codec, else
+ * undefined, also for a channel count its 4-bit channel configuration can't hold.
+ */
 export function aacDescription(codec: string, sampleRate: number, numberOfChannels: number): Uint8Array | undefined {
   const objectType = Number(/^mp4a\.40\.(\d+)$/.exec(codec)?.[1])
   // Object types from 31 on need an escape this doesn't write
   if (!(objectType > 0 && objectType < 31)) return undefined
+  if (!(numberOfChannels > 0 && numberOfChannels < 16)) return undefined
   const index = SAMPLE_RATES.indexOf(sampleRate)
   const rate: [value: number, bits: number][] =
     index === -1
@@ -129,6 +133,7 @@ if (import.meta.vitest) {
       // AAC-LC, escape 0xf, 24 bits of 50 kHz, mono
       expect(aacDescription('mp4a.40.2', 50_000, 1)).toEqual(new Uint8Array([0x17, 0x80, 0x61, 0xa8, 0x08]))
       expect(aacDescription('opus', 48_000, 2)).toBeUndefined()
+      expect(aacDescription('mp4a.40.2', 48_000, 16)).toBeUndefined()
     })
   })
 

@@ -140,6 +140,10 @@ export class Chain {
     for (const declaration of this.#declarationsOf('source')) await declaration.context.destroy()
   }
 
+  fail(error: PlayerError): void {
+    if (!this.#destroyed) this.host.fail(error)
+  }
+
   /** Listens to an element's emitted events. Called by `context.attach()`. */
   watch(element: BaseElement, context?: InstanceContext): void {
     if (context) this.#contexts.set(element, context)
@@ -227,12 +231,11 @@ export class Chain {
   }
 
   #receiveFailed(error: unknown, destination: Pad): void {
-    if (this.#destroyed) return
     const name = nameOf(destination.element)
     if (error instanceof PlayerError) {
-      this.host.fail(error)
+      this.fail(error)
     } else {
-      this.host.fail(new PlayerError('MEDIA_FAILURE', `"${name}" failed on an item`, { element: name, cause: error }))
+      this.fail(new PlayerError('MEDIA_FAILURE', `"${name}" failed on an item`, { element: name, cause: error }))
     }
   }
 

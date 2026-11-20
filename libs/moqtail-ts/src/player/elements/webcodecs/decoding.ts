@@ -48,11 +48,13 @@ const ANNEX_B_CODECS = /^(avc[13]|hev1|hvc1)\./
 
 /**
  * Decodes the items of one `loc` pad and writes them, decoded, through `output`, whose promise
- * is the consumer's backpressure. It only uses what a dedicated worker has, so it runs in one too.
+ * is the consumer's backpressure, and reports its first failure outside `receive()` to `fail`.
+ * It only uses what a dedicated worker has, so it runs in one too.
  */
 export class Decoding {
   readonly #codecs: Codecs
   readonly #output: (item: PadOutput) => Promise<void>
+  readonly #fail: (error: PlayerError) => void
   #pending: PendingObject[] = []
   #properties: Partial<PadProperties> = {}
   #decoder: VideoDecoder | AudioDecoder | undefined
@@ -64,17 +66,17 @@ export class Decoding {
   #lastWrite = Promise.resolve()
   /** The `timescale` property the output carries. */
   #outputTimescale: number | undefined
-  #error: unknown
+  #failed = false
 
-  constructor(codecs: Codecs, output: (item: PadOutput) => Promise<void>) {
+  constructor(codecs: Codecs, output: (item: PadOutput) => Promise<void>, fail: (error: PlayerError) => void) {
     this.#codecs = codecs
     this.#output = output
+    this.#fail = fail
   }
 
   async receive(item: PadItem): Promise<void> {
     await this.#tail
-    // shortcut: a decoder error only surfaces on the next receive(), fine while sources keep writing
-    if (this.#error) throw this.#error
+    if (this.#failed) return
     if (item.type === 'properties') return this.#applyProperties(item.properties)
     if (item.type === 'packet') await this.#decode(item.packet)
   }
@@ -115,9 +117,7 @@ export class Decoding {
     if (!decoderConfig) return
     const init: DecoderInit = {
       output: (payload) => this.#decoded(payload),
-      error: (error) => {
-        this.#error = new PlayerError('MEDIA_FAILURE', 'Decoding failed', { element: 'webcodecs', cause: error })
-      },
+      error: (error) => this.#reportFailure(error),
     }
     if ('sampleRate' in decoderConfig) {
       const { codec, sampleRate, numberOfChannels } = decoderConfig
@@ -199,19 +199,30 @@ export class Decoding {
   }
 
   #enqueue(step: () => Promise<void>): void {
-    this.#tail = this.#tail.then(step).catch((error: unknown) => {
-      this.#error ??= error
-    })
+    this.#tail = this.#tail.then(step).catch((error: unknown) => this.#reportFailure(error))
+  }
+
+  #reportFailure(error: unknown): void {
+    if (this.#failed) return
+    this.#failed = true
+    this.#fail(
+      error instanceof PlayerError
+        ? error
+        : new PlayerError('MEDIA_FAILURE', 'Decoding failed', { element: 'webcodecs', cause: error }),
+    )
   }
 }
 
-/** `current` if it's a `Decoder`, else a new one, configured with `config` once it's supported. */
+/**
+ * `current` if it's a `Decoder`, else a new one that replaces and closes it, configured with
+ * `config` once it's supported.
+ */
 async function configured<D extends { configure(config: C): void }, C extends { codec: string }>(
   Decoder: {
     new (init: DecoderInit): D
     isConfigSupported(config: C): Promise<{ supported?: boolean }>
   },
-  current: unknown,
+  current: VideoDecoder | AudioDecoder | undefined,
   init: DecoderInit,
   config: C,
 ): Promise<D> {
@@ -219,7 +230,12 @@ async function configured<D extends { configure(config: C): void }, C extends { 
   if (!supported) {
     throw new PlayerError('MEDIA_FAILURE', `WebCodecs can't decode "${config.codec}"`, { element: 'webcodecs' })
   }
-  const decoder = current instanceof Decoder ? current : new Decoder(init)
+  if (current instanceof Decoder) {
+    current.configure(config)
+    return current
+  }
+  if (current && current.state !== 'closed') current.close()
+  const decoder = new Decoder(init)
   decoder.configure(config)
   return decoder
 }

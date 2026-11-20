@@ -54,7 +54,11 @@ export class WebCodecsTransform extends TransformElement {
   #inputAdded(input: Pad): void {
     // Negotiated, so the definition converts it
     const output = this.createPad('src', convertedCapabilities(this.definition.capabilities, input.capabilities)!)
-    const decoding = new Decoding(this.#codecs, (item) => output.write(item))
+    const decoding = new Decoding(
+      this.#codecs,
+      (item) => output.write(item),
+      (error) => this.context.fail(error),
+    )
     input.onEvent((event) => {
       decoding.event(event)
       return true
@@ -177,7 +181,7 @@ if (import.meta.vitest) {
       ...WebCodecs,
       init: async (context) => new WebCodecsTransform(context, fakes.codecs),
     })
-    const transform = await definition.init(detachedContext())
+    const transform = await definition.init({ ...detachedContext(), fail: (error) => chain.fail(error) })
     chain.addTransform(transform)
     chain.addSink(collectingSink({ packaging: 'raw', setup: (k) => (sink = k) }))
     await chain.init(new AbortController().signal)
@@ -371,13 +375,22 @@ if (import.meta.vitest) {
     expect(d.closed).toEqual([1000])
   })
 
-  test('a decoder error fails the next item with MEDIA_FAILURE', async () => {
+  test('a decoder error fails with MEDIA_FAILURE at once, and later items are dropped', async () => {
     const d = await decoding()
     await d.write(properties(), packet(1, 0, 0))
     d.decoders[0]!.fail()
-    expect(d.failures).toEqual([])
-    await d.write(packet(1, 1, 1000))
     expect(d.failures).toMatchObject([{ code: 'MEDIA_FAILURE', element: 'webcodecs' }])
+    await d.write(packet(1, 1, 1000), properties('vp8'))
+    expect(d.failures).toHaveLength(1)
     expect(d.trace().slice(1)).toEqual(['1.0 @0'])
+  })
+
+  test('a config of the other kind closes the decoder it replaces', async () => {
+    const d = await decoding()
+    await d.write(properties(), {
+      type: 'properties',
+      properties: { decoderConfig: { codec: 'opus', sampleRate: 48_000, numberOfChannels: 2 } },
+    })
+    expect(d.decoders.map((decoder) => decoder.state)).toEqual(['closed', 'configured'])
   })
 }

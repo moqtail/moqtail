@@ -82,7 +82,7 @@ async function decoded(
     s.emit('nomorepads')
   }
   chain.addSource(testSource({ script }), {})
-  chain.addTransform(await WebCodecs.init(detachedContext()))
+  chain.addTransform(await WebCodecs.init({ ...detachedContext(), fail: (error) => chain.fail(error) }))
   chain.addSink(collectingSink({ packaging: 'raw', setup: (k) => (sink = k) }))
   await chain.init(new AbortController().signal)
   const pad = source!.pads[0]!

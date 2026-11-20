@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: js-checks-${{ github.event.pull_request.number }}
+  group: js-checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

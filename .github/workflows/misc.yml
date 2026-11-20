@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr-checks-${{ github.event.pull_request.number }}
+  group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

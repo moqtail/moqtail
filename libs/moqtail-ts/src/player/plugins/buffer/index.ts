@@ -15,18 +15,9 @@
  */
 
 import { definePlugin } from '@/player/plugin'
-import { CATCHUP_RATE, LiveBufferController, TARGET_LATENCY } from './live'
+import { LIVE_BUFFER_DEFAULTS, LiveBufferController, type LiveBufferConfig } from './live'
 
-/** @public */
-export interface LiveBufferConfig {
-  /** The playback rate when behind the target latency; `2 - catchupRate` when ahead. Between 1 and 2, default 1.1. */
-  catchupRate?: number
-  /**
-   * Seconds of latency to hold when the catalog sets no `targetLatency` or `buffers`. Measured like the
-   * catalog's: wallclock latency when the timeline has it, else the forward buffer. Above 0, default 1.
-   */
-  targetLatency?: number
-}
+export type { LiveBufferConfig } from './live'
 
 /**
  * @public
@@ -37,10 +28,34 @@ export interface LiveBufferConfig {
 export const liveBuffer = definePlugin({
   name: 'live-buffer',
   priority: Infinity,
-  init: ({ catchupRate = CATCHUP_RATE, targetLatency = TARGET_LATENCY }: LiveBufferConfig = {}) => {
+  init: (options: LiveBufferConfig = {}) => {
+    const {
+      catchupRate = LIVE_BUFFER_DEFAULTS.catchupRate,
+      targetLatency = LIVE_BUFFER_DEFAULTS.targetLatency,
+      tolerance = LIVE_BUFFER_DEFAULTS.tolerance,
+      stallThreshold = LIVE_BUFFER_DEFAULTS.stallThreshold,
+      minRate = LIVE_BUFFER_DEFAULTS.minRate,
+      jumpFactor = LIVE_BUFFER_DEFAULTS.jumpFactor,
+      jumpTolerance = LIVE_BUFFER_DEFAULTS.jumpTolerance,
+    } = options
     if (!(catchupRate > 1 && catchupRate < 2)) throw new TypeError('catchupRate must be between 1 and 2')
     if (!(targetLatency > 0 && targetLatency < Infinity)) throw new TypeError('targetLatency must be a positive number')
-    return new LiveBufferController(catchupRate, targetLatency)
+    if (!(tolerance >= 0 && tolerance < Infinity)) throw new TypeError('tolerance must be a non-negative number')
+    if (!(stallThreshold >= 0 && stallThreshold < Infinity)) {
+      throw new TypeError('stallThreshold must be a non-negative number')
+    }
+    if (!(minRate > 0 && minRate <= 1)) throw new TypeError('minRate must be between 0 and 1')
+    if (!(jumpFactor > 1 && jumpFactor < Infinity)) throw new TypeError('jumpFactor must be above 1')
+    if (!(jumpTolerance > 0 && jumpTolerance < Infinity)) throw new TypeError('jumpTolerance must be a positive number')
+    return new LiveBufferController({
+      catchupRate,
+      targetLatency,
+      tolerance,
+      stallThreshold,
+      minRate,
+      jumpFactor,
+      jumpTolerance,
+    })
   },
   features: (controller) => [{ type: 'buffer-controller', item: controller }],
 })

@@ -26,7 +26,7 @@ import { Playout } from '@/player/elements/playout'
 import { RENDER_QUEUE_LIMIT } from '@/player/elements/playout/engine'
 import type { PlayoutSink } from '@/player/elements/playout/sink'
 import type { MOQtailPlayer } from '@/player/player'
-import { LiveBufferController } from '@/player/plugins/buffer/live'
+import { LIVE_BUFFER_DEFAULTS, LiveBufferController } from '@/player/plugins/buffer/live'
 import { flush, testChain, testSource, type TestSource } from '@/player/testing/elements'
 import { chainWorker } from './harness/thread'
 
@@ -88,7 +88,7 @@ describe('playout', () => {
     const s = await open({ video: false })
     const feed = live(s, { lead: 1.2 })
     const player = Object.assign(new Emitter(), { sources: [], mediaSources: [] }) as unknown as MOQtailPlayer
-    const controller = new LiveBufferController(1.5, 0.5)
+    const controller = new LiveBufferController({ ...LIVE_BUFFER_DEFAULTS, catchupRate: 1.5, targetLatency: 0.5 })
     controller.attach(player, s.sink)
     onTestFinished(() => controller.detach())
     await s.sink.play()

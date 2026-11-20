@@ -18,12 +18,13 @@ import { CapabilityCode, defineElement, type Capabilities } from '@/player/eleme
 import { MEDIA_SINK } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
 import { PlayoutSink, type PlayoutOptions } from './sink'
+import { PREROLL } from './worklet'
 
 /**
  * @public
  * Plays live `raw` video and audio pads: video on a canvas, in sync with the audio when the
  * tracks share the epoch clock, audio through an AudioWorklet. It refuses non-live streams and
- * seeks forward only. `player.sink(canvas)` adds it with `{ canvas }`.
+ * seeks forward only. `player.sink(canvas, options)` adds it with `{ ...options, canvas }`.
  */
 export const Playout = defineElement({
   type: 'sink',
@@ -46,7 +47,10 @@ export const Playout = defineElement({
     // With a worker it may transfer, which a context rules out: it's checked once the element decides
     if (!context.worker && !options.canvas.getContext('2d'))
       throw new TypeError('The playout canvas already has a context other than "2d"')
-    return new PlayoutSink(context, options.canvas)
+    const { preroll = PREROLL } = options
+    if (!(preroll >= 0 && preroll < Infinity))
+      throw new TypeError('Playout option preroll must be a non-negative number')
+    return new PlayoutSink(context, options.canvas, preroll)
   },
 })
 

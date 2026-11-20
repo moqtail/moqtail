@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { PROCESSOR_NAME, PROCESSOR_SOURCE } from './worklet'
+import { PROCESSOR_NAME, PROCESSOR_SOURCE, type ProcessorOptions } from './worklet'
 
 /** The main-thread side of audio playout. */
 export interface AudioOutput {
@@ -24,10 +24,14 @@ export interface AudioOutput {
 
 /**
  * A suspended context at the media's sample rate, so samples map one to one to media time at
- * rate 1, and the playout processor connected to its output.
+ * rate 1, and the playout processor, waiting for `preroll` media seconds, connected to its output.
  * shortcut: keeps the first chunk's sample rate and channel count, rebuild it if a switch changes them
  */
-export async function createAudioOutput(sampleRate: number, numberOfChannels: number): Promise<AudioOutput> {
+export async function createAudioOutput(
+  sampleRate: number,
+  numberOfChannels: number,
+  preroll: number,
+): Promise<AudioOutput> {
   const context = new AudioContext({ latencyHint: 'interactive', sampleRate })
   void context.suspend()
   // The package ships no worklet file. A strict CSP can block `blob:` modules.
@@ -43,6 +47,7 @@ export async function createAudioOutput(sampleRate: number, numberOfChannels: nu
   const node = new AudioWorkletNode(context, PROCESSOR_NAME, {
     numberOfInputs: 0,
     outputChannelCount: [numberOfChannels],
+    processorOptions: { preroll } satisfies ProcessorOptions['processorOptions'],
   })
   // shortcut: no volume or mute, a GainNode goes here once asked
   node.connect(context.destination)

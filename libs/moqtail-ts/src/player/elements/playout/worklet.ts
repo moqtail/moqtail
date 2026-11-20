@@ -35,8 +35,11 @@ export type ProcessorReport =
   /** Media seconds of the chunks played out or dropped so far: the engine holds samples back on it. */
   | { type: 'consumed'; seconds: number }
 
-declare const registerProcessor: (name: string, processor: new () => AudioWorkletProcessorBase) => void
-declare const AudioWorkletProcessor: new () => { readonly port: MessagePort }
+declare const registerProcessor: (
+  name: string,
+  processor: new (options: ProcessorOptions) => AudioWorkletProcessorBase,
+) => void
+declare const AudioWorkletProcessor: new (options: ProcessorOptions) => { readonly port: MessagePort }
 declare const sampleRate: number
 declare const currentTime: number
 
@@ -45,19 +48,24 @@ interface AudioWorkletProcessorBase {
   process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean
 }
 
+/** What `new AudioWorkletNode()` passes the processor. */
+export interface ProcessorOptions {
+  processorOptions: { preroll: number }
+}
+
 export const PROCESSOR_NAME = 'moqtail-playout'
 
-/** Media seconds queued before the clock starts or restarts after a stall; liveBuffer's stall threshold. */
+/** The default preroll: media seconds queued before the clock starts or restarts after a stall; liveBuffer's default stall threshold. */
 export const PREROLL = 0.5
 
 /** The module the worklet loads. */
-export const PROCESSOR_SOURCE = `(${processorModule.toString()})(${JSON.stringify(PROCESSOR_NAME)}, ${PREROLL}, ${createStretch.toString()})`
+export const PROCESSOR_SOURCE = `(${processorModule.toString()})(${JSON.stringify(PROCESSOR_NAME)}, ${createStretch.toString()})`
 
 /**
  * Runs in the `AudioWorkletGlobalScope` from its source text, so it references nothing outside
  * itself and avoids syntax a bundler lowers to helpers, such as `#private` fields.
  */
-function processorModule(name: string, preroll: number, createStretch: (sampleRate: number) => Stretch): void {
+function processorModule(name: string, createStretch: (sampleRate: number) => Stretch): void {
   interface Chunk {
     planes: Float32Array[]
     timestamp: number
@@ -90,9 +98,11 @@ function processorModule(name: string, preroll: number, createStretch: (sampleRa
     declare stretch: Stretch
     /** What `window` copies into, reused: this runs on the audio thread. */
     declare input: Float32Array[]
+    declare preroll: number
 
-    constructor() {
-      super()
+    constructor(options: ProcessorOptions) {
+      super(options)
+      this.preroll = options.processorOptions.preroll
       this.chunks = []
       this.position = 0
       this.rate = 1
@@ -142,7 +152,7 @@ function processorModule(name: string, preroll: number, createStretch: (sampleRa
       let played = 0
       let head = this.head()
       // Silence while refilling after a stall counts as drift, so the clock holds
-      if (head && (!this.started || this.starved) && !this.ending && this.end! - this.mediaTime(head) < preroll)
+      if (head && (!this.started || this.starved) && !this.ending && this.end! - this.mediaTime(head) < this.preroll)
         head = undefined
       if (head && !this.started) {
         this.started = true
@@ -309,8 +319,8 @@ if (import.meta.vitest) {
       AudioWorkletProcessor: class {
         readonly port = port
       },
-      registerProcessor: (_name: string, Processor: new () => AudioWorkletProcessorBase) => {
-        processor = new Processor()
+      registerProcessor: (_name: string, Processor: new (options: ProcessorOptions) => AudioWorkletProcessorBase) => {
+        processor = new Processor({ processorOptions: { preroll: PREROLL } })
       },
     }
     Object.assign(globalThis, scope)

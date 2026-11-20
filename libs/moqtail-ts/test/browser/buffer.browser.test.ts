@@ -22,7 +22,7 @@
 
 import type { BufferController } from '@/player'
 import { CatalogElement } from '@/player/elements/catalog/element'
-import { LiveBufferController } from '@/player/plugins/buffer/live'
+import { LIVE_BUFFER_DEFAULTS, LiveBufferController } from '@/player/plugins/buffer/live'
 import { bufferPlugin } from '@/player/testing/elements'
 import { ch07, describe, expect, test, warmUp } from './harness/test'
 
@@ -45,7 +45,10 @@ describe('buffer controller', () => {
 
   test('liveBuffer converges to the target latency and returns to rate 1', async ({ open }) => {
     // A strong rate, so the forward buffer grows from ~0.4 s to the target in seconds
-    const buffer = withTargets({ target: 1500 }, new LiveBufferController(1.5, 1))
+    const buffer = withTargets(
+      { target: 1500 },
+      new LiveBufferController({ ...LIVE_BUFFER_DEFAULTS, catchupRate: 1.5 }),
+    )
     const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(buffer)] } })
     await s.until(() => Math.abs(s.latency() - 1.5) < 0.15 && s.video.playbackRate === 1, 'latency at 1.5 s')
     const settled = s.mark()
@@ -55,7 +58,9 @@ describe('buffer controller', () => {
   })
 
   test('liveBuffer holds the default 1 s on a catalog without targets', async ({ open }) => {
-    const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(new LiveBufferController(1.5, 1))] } })
+    const s = await open(ch07.uri(), {
+      player: { plugins: [bufferPlugin(new LiveBufferController({ ...LIVE_BUFFER_DEFAULTS, catchupRate: 1.5 }))] },
+    })
     await s.until(() => Math.abs(s.latency() - 1) < 0.15 && s.video.playbackRate === 1, 'latency at 1 s')
     const settled = s.mark()
     await s.played(3)
@@ -64,7 +69,10 @@ describe('buffer controller', () => {
   })
 
   test('liveBuffer leaves a seek back alone, and follows again after a seek to the end', async ({ open }) => {
-    const buffer = withTargets({ target: 1500 }, new LiveBufferController(1.5, 1))
+    const buffer = withTargets(
+      { target: 1500 },
+      new LiveBufferController({ ...LIVE_BUFFER_DEFAULTS, catchupRate: 1.5 }),
+    )
     const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(buffer)] } })
     await s.until(() => Math.abs(s.latency() - 1.5) < 0.15, 'latency at 1.5 s')
     await s.seekLive(-10)

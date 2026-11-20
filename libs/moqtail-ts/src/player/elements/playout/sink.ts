@@ -25,6 +25,11 @@ import { PlayoutEngine, type EngineReport } from './engine'
 /** @public Options of the `Playout` sink, given through `player.sink(canvas)`. */
 export interface PlayoutOptions {
   canvas: HTMLCanvasElement
+  /**
+   * Media seconds queued before playback starts or restarts after a stall. Lower it with liveBuffer's
+   * `stallThreshold`, which keeps the forward buffer above it. At least 0, default 0.5.
+   */
+  preroll?: number
 }
 
 interface PlayoutPadState extends SinkPadState {
@@ -43,6 +48,8 @@ const TIME_UPDATE_INTERVAL_MS = 250
 export class PlayoutSink extends MediaSink<PlayoutPadState> {
   readonly preciseRate = true
   readonly #canvas: HTMLCanvasElement
+  /** Seconds. */
+  readonly #preroll: number
   /** Resolved once the element knows where the engine runs. */
   readonly #engine = Promise.withResolvers<PlayoutEngine | Comlink.Remote<PlayoutEngine>>()
   #placed: { engine: PlayoutEngine } | { engine: Comlink.Remote<PlayoutEngine>; worker: true } | undefined
@@ -59,9 +66,10 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   #ready = false
   #timeUpdate = -Infinity
 
-  constructor(context: ElementContext, canvas: HTMLCanvasElement) {
+  constructor(context: ElementContext, canvas: HTMLCanvasElement, preroll: number) {
     super(context)
     this.#canvas = canvas
+    this.#preroll = preroll
     this.on('padadded', (pad) => {
       this.#place(pad)
       this.#setTracks()
@@ -191,7 +199,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
     const offscreen =
       worker && pads.length > 0 && pads.every((pad) => worker.inWorker(pad)) && offscreenOf(this.#canvas)
     if (worker && offscreen) {
-      const options = { canvas: offscreen }
+      const options = { canvas: offscreen, preroll: this.#preroll }
       this.#placed = {
         engine: worker.create<PlayoutEngine>('playout', { options, transfer: [offscreen], report }),
         worker: true,
@@ -202,7 +210,9 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
         this.fail(new PlayerError('UNSUPPORTED_SOURCE', failure, { element: 'playout' }))
         return
       }
-      this.#placed = { engine: new PlayoutEngine({ outputs: [], options: { canvas: this.#canvas }, report }) }
+      this.#placed = {
+        engine: new PlayoutEngine({ outputs: [], options: { canvas: this.#canvas, preroll: this.#preroll }, report }),
+      }
     }
     this.#engine.resolve(this.#placed.engine)
     for (const pad of pads) this.#place(pad)
@@ -218,7 +228,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
 
   /** Created on the first `AudioData`'s format, which the engine reports. */
   #audioOutput(sampleRate: number, numberOfChannels: number): void {
-    this.#audio ??= createAudioOutput(sampleRate, numberOfChannels).then(
+    this.#audio ??= createAudioOutput(sampleRate, numberOfChannels, this.#preroll).then(
       async (output) => {
         this.#output = output
         if (this.context.signal.aborted) {

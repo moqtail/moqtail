@@ -59,7 +59,7 @@ const DECODE_QUEUE_LIMIT = 4
  * shortcut: a target latency past it pins liveBuffer slow again, raise it or let the source report what it holds if one does
  */
 const HELD_LIMIT = 10
-/** How far the held seconds move before they're signalled again: half of liveBuffer's tolerance. */
+/** How far the held seconds move before they're signalled again: half of liveBuffer's default tolerance. */
 const HELD_REPORT_STEP = 0.05
 /** Codecs whose WebCodecs registrations read Annex B without a description. */
 const ANNEX_B_CODECS = /^(avc[13]|hev1|hvc1)\./

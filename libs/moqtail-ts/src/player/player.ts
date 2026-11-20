@@ -49,6 +49,7 @@ import { MSE, checkOptions } from '@/player/elements/mse'
 import { rangeAt } from '@/player/elements/mse/gaps'
 import type { MSEOptions } from '@/player/elements/mse/sink'
 import { Playout } from '@/player/elements/playout'
+import type { PlayoutOptions } from '@/player/elements/playout/sink'
 import { Emitter } from '@/util/emitter'
 import { logger } from '@/util/logger'
 import { acquire, check, clientKey, currentClient, release, type ClientOptions, type SlotMember } from './client_slot'
@@ -319,9 +320,9 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return this
   }
 
-  /** A video element gets the `MSE` sink with `options`, a canvas the `Playout` sink. */
+  /** A video element gets the `MSE` sink with `options`, a canvas the `Playout` sink with them. */
   sink(video: HTMLVideoElement, options?: Omit<MSEOptions, 'video'>): this
-  sink(canvas: HTMLCanvasElement): this
+  sink(canvas: HTMLCanvasElement, options?: Omit<PlayoutOptions, 'canvas'>): this
   sink(definition: SinkElementDefinition, options?: Record<string, unknown>): this
   sink(
     target: HTMLVideoElement | HTMLCanvasElement | SinkElementDefinition,
@@ -333,7 +334,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       checkOptions(sinkOptions)
       this.#chain.addSink(MSE, sinkOptions)
     } else if (typeof HTMLCanvasElement !== 'undefined' && target instanceof HTMLCanvasElement) {
-      this.#chain.addSink(Playout, { canvas: target })
+      this.#chain.addSink(Playout, { ...options, canvas: target })
     } else if ('init' in target && target.type === 'sink') this.#chain.addSink(target, options)
     else throw new TypeError('sink() takes an HTMLVideoElement, an HTMLCanvasElement or a sink element definition')
     this.#stage = 'sink'

@@ -42,36 +42,64 @@ export interface BufferState {
 /** A playback rate, or a jump to `jumpTo` seconds behind the end of the buffer; negative is past it. */
 export type BufferDecision = { rate: number } | { jumpTo: number }
 
-export const CATCHUP_RATE = 1.1
-/** The target latency when the catalog sets none, in seconds. */
-export const TARGET_LATENCY = 1
-/** How far the forward buffer may stray from its goal before the rate changes. */
-const TOLERANCE = 0.1
-/** Below this forward buffer playback is about to stall; no goal is lower. */
-const STALL_THRESHOLD = 0.5
-/** The slowest rate, when about to stall. */
-const MIN_RATE = 0.6
-/** A forward buffer this many times its goal is jumped instead of caught up. */
-const JUMP_FACTOR = 4
-/** With jumps only: how far the forward buffer may stray from its goal before one. A jump is a visible skip. */
-const JUMP_TOLERANCE = 0.5
+/** @public */
+export interface LiveBufferConfig {
+  /** The playback rate when behind the target latency; `2 - catchupRate` when ahead. Between 1 and 2, default 1.1. */
+  catchupRate?: number
+  /**
+   * Seconds of latency to hold when the catalog sets no `targetLatency` or `buffers`. Measured like the
+   * catalog's: wallclock latency when the timeline has it, else the forward buffer. Above 0, default 1.
+   */
+  targetLatency?: number
+  /** Seconds the forward buffer may stray from its goal before the rate changes. At least 0, default 0.1. */
+  tolerance?: number
+  /**
+   * Seconds of forward buffer below which playback is about to stall; no goal is lower. At least 0, default 0.5.
+   * On a canvas, lower the playout sink's `preroll` with it, else each stall still refills 0.5 s.
+   */
+  stallThreshold?: number
+  /** The slowest rate, when about to stall. Above 0 and at most 1, default 0.6. */
+  minRate?: number
+  /** A forward buffer this many times its goal is jumped instead of caught up. Above 1, default 4. */
+  jumpFactor?: number
+  /**
+   * On a sink without a precise rate: seconds the forward buffer may stray from its goal before
+   * a jump, which is a visible skip. Above 0, default 0.5.
+   */
+  jumpTolerance?: number
+}
+
+export const LIVE_BUFFER_DEFAULTS: Required<LiveBufferConfig> = {
+  catchupRate: 1.1,
+  targetLatency: 1,
+  tolerance: 0.1,
+  stallThreshold: 0.5,
+  minRate: 0.6,
+  jumpFactor: 4,
+  jumpTolerance: 0.5,
+}
 
 /**
  * The forward buffer that gives the target latency is the goal, never below the stall
  * threshold or `min` nor above `max`. Without a target the latency stays where it is. With
  * `'jump'` correction the rate stays 1 and a forward buffer off its goal jumps to it.
  */
-export function decide(state: BufferState, catchupRate: number, correction: 'rate' | 'jump' = 'rate'): BufferDecision {
+export function decide(
+  state: BufferState,
+  config: Required<LiveBufferConfig>,
+  correction: 'rate' | 'jump' = 'rate',
+): BufferDecision {
   const { forward, latency, target = latency, min = 0, max = Infinity } = state
+  const { catchupRate, tolerance, stallThreshold, minRate, jumpFactor, jumpTolerance } = config
   const exact = forward + target - latency
-  const goal = Math.min(Math.max(exact, min, STALL_THRESHOLD), max)
+  const goal = Math.min(Math.max(exact, min, stallThreshold), max)
   // Far behind the target (a seek back): land at it past the buffer at once, not chase the buffer end
-  if (forward > goal * JUMP_FACTOR) return { jumpTo: -exact > goal * JUMP_FACTOR ? exact : goal }
-  if (correction === 'jump') return Math.abs(forward - goal) > JUMP_TOLERANCE ? { jumpTo: goal } : { rate: 1 }
-  if (forward > goal + TOLERANCE) return { rate: catchupRate }
-  if (forward >= goal - TOLERANCE) return { rate: 1 }
+  if (forward > goal * jumpFactor) return { jumpTo: -exact > goal * jumpFactor ? exact : goal }
+  if (correction === 'jump') return Math.abs(forward - goal) > jumpTolerance ? { jumpTo: goal } : { rate: 1 }
+  if (forward > goal + tolerance) return { rate: catchupRate }
+  if (forward >= goal - tolerance) return { rate: 1 }
   const slow = 2 - catchupRate
-  return { rate: forward < STALL_THRESHOLD ? Math.max(MIN_RATE, (slow * forward) / STALL_THRESHOLD) : slow }
+  return { rate: forward < stallThreshold ? Math.max(minRate, (slow * forward) / stallThreshold) : slow }
 }
 
 interface Attached {
@@ -81,13 +109,11 @@ interface Attached {
 }
 
 /**
- * Catches up at `catchupRate` when behind the target latency, slows to `2 - catchupRate`
- * when ahead; on a sink without a precise rate it jumps instead. Without catalog targets the target latency is `targetLatency`.
+ * Catches up at `config.catchupRate` when behind the target latency, slows to `2 - catchupRate`
+ * when ahead; on a sink without a precise rate it jumps instead. Without catalog targets the target latency is `config.targetLatency`.
  */
 export class LiveBufferController implements BufferController {
-  readonly #catchupRate: number
-  /** Seconds. */
-  readonly #targetLatency: number
+  readonly #config: Required<LiveBufferConfig>
   #attached: Attached | undefined
   /** Of the first playing track that has any; seconds. */
   #targets: Omit<BufferState, 'forward' | 'latency'> | undefined
@@ -97,9 +123,8 @@ export class LiveBufferController implements BufferController {
   /** Cleared by a seek behind the live edge, set again by one to it (proposal 0007). */
   #following = true
 
-  constructor(catchupRate: number, targetLatency: number) {
-    this.#catchupRate = catchupRate
-    this.#targetLatency = targetLatency
+  constructor(config: Required<LiveBufferConfig>) {
+    this.#config = config
   }
 
   attach(player: MOQtailPlayer, sink: MediaSinkElement): void {
@@ -163,10 +188,10 @@ export class LiveBufferController implements BufferController {
     const range = rangeAt(currentTime, buffered)
     if (range === -1) return // the sink jumps gaps itself
     const forward = buffered.end(range) - currentTime
-    const targets = this.#targets ?? { target: this.#targetLatency, min: undefined, max: undefined }
+    const targets = this.#targets ?? { target: this.#config.targetLatency, min: undefined, max: undefined }
     const state = { forward, latency: this.#latency(currentTime, forward), ...targets }
     // A sink whose clock stalls on each rate change would undo a catch-up and start the next one
-    const decision = decide(state, this.#catchupRate, sink.preciseRate ? 'rate' : 'jump')
+    const decision = decide(state, this.#config, sink.preciseRate ? 'rate' : 'jump')
     if ('jumpTo' in decision) {
       // A failed jump leaves playback where it was
       sink.seek(liveEdge(buffered, decision.jumpTo)).catch(() => {})
@@ -204,7 +229,7 @@ if (import.meta.vitest) {
     ...s,
   })
   const rate = (s: Partial<BufferState>) => {
-    const decision = decide(state(s), CATCHUP_RATE)
+    const decision = decide(state(s), LIVE_BUFFER_DEFAULTS)
     return 'rate' in decision ? { rate: Math.round(decision.rate * 100) / 100 } : decision
   }
 
@@ -235,8 +260,16 @@ if (import.meta.vitest) {
     expect(rate({ forward: 3, latency: 3, target: undefined, max: 2 })).toEqual({ rate: 1.1 })
   })
 
+  test('the config replaces each default', () => {
+    const tuned = (s: Partial<BufferState>, config: LiveBufferConfig) =>
+      decide(state(s), { ...LIVE_BUFFER_DEFAULTS, ...config })
+    expect(tuned({ forward: 2.2, latency: 2.2 }, { tolerance: 0.3 })).toEqual({ rate: 1 })
+    expect(tuned({ forward: 0.1, latency: 0.1 }, { stallThreshold: 0.2, minRate: 0.8 })).toEqual({ rate: 0.8 })
+    expect(tuned({ forward: 5, latency: 5 }, { jumpFactor: 2 })).toEqual({ jumpTo: 2 })
+  })
+
   test("'jump' correction keeps rate 1 and jumps to the goal once the forward buffer is 0.5 s off it", () => {
-    const jump = (s: Partial<BufferState>) => decide(state(s), CATCHUP_RATE, 'jump')
+    const jump = (s: Partial<BufferState>) => decide(state(s), LIVE_BUFFER_DEFAULTS, 'jump')
     expect(jump({ forward: 2.25, latency: 2.25 })).toEqual({ rate: 1 })
     expect(jump({ forward: 0.25, latency: 0.25, target: 0.25 })).toEqual({ rate: 1 }) // no slowdown near a stall
     expect(jump({ forward: 2.75, latency: 2.75 })).toEqual({ jumpTo: 2 })

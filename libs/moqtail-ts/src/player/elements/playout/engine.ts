@@ -17,12 +17,14 @@
 import type { PadEvent, PadItem, PadSignal } from '@/player/element/pad'
 import type { Engine, EngineInit } from '@/player/element/worker/host'
 import { PlayerError } from '@/player/error'
-import { PREROLL, type ProcessorMessage, type ProcessorReport } from './worklet'
+import type { ProcessorMessage, ProcessorReport } from './worklet'
 
 type Role = 'video' | 'audio'
 
 export interface PlayoutEngineOptions {
   canvas: HTMLCanvasElement | OffscreenCanvas
+  /** Seconds. */
+  preroll: number
 }
 
 /** Which tracks play, and which clock video follows. */
@@ -75,6 +77,8 @@ const AUDIO_QUEUE_LIMIT = 2
 export class PlayoutEngine implements Engine {
   readonly #canvas: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
   readonly #report: (report: EngineReport) => void
+  /** Seconds. */
+  readonly #preroll: number
   /** The render queue, oldest first. */
   readonly #frames: VideoFrame[] = []
   readonly #ended = new Set<Role>()
@@ -118,6 +122,7 @@ export class PlayoutEngine implements Engine {
     // Both canvases give the same 2D API, and the element ruled out a context of another kind
     const canvas = init.options.canvas as OffscreenCanvas
     this.#canvas = canvas.getContext('2d')!
+    this.#preroll = init.options.preroll
     this.#report = init.report
   }
 
@@ -337,7 +342,7 @@ export class PlayoutEngine implements Engine {
   /**
    * Draws the latest due frame and closes the ones before it: drawing one per animation frame
    * falls further behind whenever frames come faster than the display refreshes. Without a clock
-   * the next frame is due once `PREROLL` is queued, and the wall clock starts at it.
+   * the next frame is due once the preroll is queued, and the wall clock starts at it.
    */
   #present(now: number | undefined): void {
     let due: VideoFrame | undefined
@@ -346,7 +351,7 @@ export class PlayoutEngine implements Engine {
       const prerolled =
         this.#ended.has('video') ||
         this.#frames.length >= RENDER_QUEUE_LIMIT ||
-        (first && last && seconds(last.timestamp - first.timestamp) >= PREROLL)
+        (first && last && seconds(last.timestamp - first.timestamp) >= this.#preroll)
       if (!prerolled) return
       due = this.#frames.shift()
       if (due) this.#wall = { media: seconds(due.timestamp), reference: performance.now() / 1000, skew: 0 }
@@ -516,6 +521,7 @@ function seconds(micros: number): number {
 if (import.meta.vitest) {
   const { test, expect, beforeEach, afterEach, vi } = import.meta.vitest
   const { settle } = await import('@/player/testing/elements')
+  const { PREROLL } = await import('./worklet')
   type Frame = import('@/player/element/pad').Frame
   let now: number
   let frame: (() => void) | undefined
@@ -560,7 +566,11 @@ if (import.meta.vitest) {
   async function playing(roles: readonly Role[] = ['video', 'audio']) {
     const context = { canvas: { width: 0, height: 0 }, drawImage: () => {} }
     const canvas = { getContext: () => context } as unknown as OffscreenCanvas
-    const engine = new PlayoutEngine({ outputs: [], options: { canvas }, report: (report) => reports.push(report) })
+    const engine = new PlayoutEngine({
+      outputs: [],
+      options: { canvas, preroll: PREROLL },
+      report: (report) => reports.push(report),
+    })
     const port = {
       onmessage: null as ((event: { data: ProcessorReport }) => void) | null,
       postMessage: (message: ProcessorMessage) => posted.push(message),

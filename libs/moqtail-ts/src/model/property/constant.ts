@@ -23,6 +23,7 @@ export enum LOCPropertyId {
   VideoConfig = 0x0d,
   AudioConfig = 0x0f,
   Timestamp = 0x10,
+  CodecString = 0x11,
 }
 
 export enum TrackPropertyType {
@@ -51,6 +52,8 @@ export function locPropertyIdFromNumber(value: number): LOCPropertyId {
       return LOCPropertyId.AudioConfig
     case 0x10:
       return LOCPropertyId.Timestamp
+    case 0x11:
+      return LOCPropertyId.CodecString
     default:
       throw new InvalidTypeError('locPropertyIdFromNumber', `Invalid LOC property id: ${value}`)
   }

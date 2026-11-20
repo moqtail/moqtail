@@ -17,6 +17,7 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCPropertyId } from './constant'
 
+/** Valid as a track property too (LOC 6.1 Table 1). */
 export class Timescale {
   static readonly TYPE = LOCPropertyId.Timescale
 
@@ -28,7 +29,7 @@ export class Timescale {
 
   static fromKeyValuePair(pair: KeyValuePair): Timescale | undefined {
     const type = Number(pair.typeValue)
-    if (type === Timescale.TYPE && typeof pair.value === 'bigint') {
+    if (type === Timescale.TYPE && typeof pair.value === 'bigint' && pair.value > 0n) {
       return new Timescale(pair.value)
     }
     return undefined
@@ -44,6 +45,11 @@ if (import.meta.vitest) {
       const parsed = Timescale.fromKeyValuePair(pair)
       expect(parsed).toBeInstanceOf(Timescale)
       expect(parsed?.timescale).toBe(value)
+    })
+
+    test('should return undefined for a zero timescale', () => {
+      const pair = KeyValuePair.tryNewVarInt(LOCPropertyId.Timescale, 0n)
+      expect(Timescale.fromKeyValuePair(pair)).toBeUndefined()
     })
 
     test('should return undefined for a different type', () => {

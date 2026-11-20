@@ -66,8 +66,8 @@ export type DataObjectEvent = DataEventBase & {
   /** Set for an object that carries a status instead of a payload. */
   objectStatus?: ObjectStatus
   /**
-   * The object's LOC Timestamp property, when it carries one: the sender's media time,
-   * in whatever unit and clock the sender chose.
+   * The object's LOC Timestamp property, when it carries one: in Timescale units when one
+   * applies, else wall-clock µs since the Unix epoch (LOC 2.3.1.1).
    */
   locTimestamp?: bigint
 }

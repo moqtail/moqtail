@@ -26,56 +26,86 @@ export function createStretch(sampleRate: number) {
   const segment = Math.round(sampleRate * 0.04)
   const overlap = Math.round(sampleRate * 0.008)
   const seek = Math.round(sampleRate * 0.015)
+  const span = segment + overlap + seek
+  // Coarse then fine, as SoundTouch's quick seek: about a seventh of a full search's correlations
+  const coarse = 8
+  // Reused across segments: this runs on the audio thread
   let output: Float32Array[] = []
+  let tail: Float32Array[] = []
   let left = 0
-  /** Where the last segment would have gone on, until a segment at rate 1 lands back on the position. */
-  let tail: Float32Array[] | undefined
+  /** The last segment's `tail` is where it would have gone on, until a segment lands back on the play position. */
+  let aligned = false
 
-  /** The offset into `plane` that matches `from` best, by normalised cross-correlation. */
-  function bestOffset(from: Float32Array, plane: Float32Array): number {
-    let best = 0
+  /** Normalised cross-correlation of `from` with `plane` at `offset`. */
+  function score(from: Float32Array, plane: Float32Array, offset: number): number {
+    let product = 0
+    let energy = 1e-9
+    for (let i = 0; i < overlap; i++) {
+      const sample = plane[offset + i]!
+      product += from[i]! * sample
+      energy += sample * sample
+    }
+    return product / Math.sqrt(energy)
+  }
+
+  /** The best of the offsets from `start` to `end`, `step` apart. */
+  function scan(from: Float32Array, plane: Float32Array, start: number, end: number, step: number): number {
+    let best = start
     let bestScore = -Infinity
-    for (let offset = 0; offset <= seek; offset++) {
-      let product = 0
-      let energy = 1e-9
-      for (let i = 0; i < overlap; i++) {
-        const sample = plane[offset + i]!
-        product += from[i]! * sample
-        energy += sample * sample
-      }
-      const score = product / Math.sqrt(energy)
-      if (score > bestScore) {
+    for (let offset = Math.max(0, start); offset <= Math.min(seek, end); offset += step) {
+      const value = score(from, plane, offset)
+      if (value > bestScore) {
         best = offset
-        bestScore = score
+        bestScore = value
       }
     }
     return best
   }
 
-  return {
-    /** Input samples `fill` needs from the play position on. */
-    span: segment + overlap + seek,
+  function bestOffset(from: Float32Array, plane: Float32Array): number {
+    const around = scan(from, plane, 0, seek, coarse)
+    return scan(from, plane, around - coarse + 1, around + coarse - 1, 1)
+  }
 
-    /** At rate 1 it winds down with one segment that ends back on the play position. */
+  return {
+    /** Input samples `fill` reads from the play position on. */
+    span,
+
+    /** Samples queued from the play position for a segment at `rate`, which plays `rate` times its length. */
+    needs(rate: number): number {
+      return Math.max(span, Math.ceil(rate * segment))
+    },
+
+    /** At rate 1 it winds down with one segment that lands back on the play position. */
     running(rate: number): boolean {
-      return rate !== 1 || tail !== undefined || left > 0
+      return rate !== 1 || aligned || left > 0
     },
 
     due(): boolean {
       return left === 0
     },
 
-    /** The next segment from `input`, `span` samples per channel from the play position. */
-    fill(input: Float32Array[], rate: number): void {
-      const offset = tail && rate !== 1 ? bestOffset(tail[0]!, input[0]!) : 0
-      output = input.map((plane, channel) => {
-        const out = plane.slice(offset, offset + segment)
-        const from = tail?.[channel]
-        if (from) for (let i = 0; i < overlap; i++) out[i] = from[i]! + (out[i]! - from[i]!) * (i / overlap)
-        return out
-      })
-      tail = rate === 1 ? undefined : input.map((plane) => plane.slice(offset + segment, offset + segment + overlap))
+    /**
+     * The next segment from `input`, `span` samples per channel from the play position. Returns
+     * the samples the play position skips: at rate 1, the last segment's alignment.
+     */
+    fill(input: Float32Array[], rate: number): number {
+      if (output.length !== input.length) {
+        output = input.map(() => new Float32Array(segment))
+        tail = input.map(() => new Float32Array(overlap))
+        aligned = false
+      }
+      const offset = aligned ? bestOffset(tail[0]!, input[0]!) : 0
+      for (const [channel, plane] of input.entries()) {
+        const out = output[channel]!
+        out.set(plane.subarray(offset, offset + segment))
+        const from = tail[channel]!
+        if (aligned) for (let i = 0; i < overlap; i++) out[i] = from[i]! + (out[i]! - from[i]!) * (i / overlap)
+        from.set(plane.subarray(offset + segment, offset + segment + overlap))
+      }
+      aligned = rate !== 1
       left = segment
+      return rate === 1 ? offset : 0
     },
 
     write(target: Float32Array[], at: number): void {
@@ -86,7 +116,7 @@ export function createStretch(sampleRate: number) {
     },
 
     reset(): void {
-      tail = undefined
+      aligned = false
       left = 0
     },
   }
@@ -96,10 +126,10 @@ if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
   const RATE = 48_000
 
-  test('a sine keeps its pitch at 0.8 and 1.25', () => {
+  test('a sine keeps its pitch at 0.8, 1.25 and 2', () => {
     const tone = 440
     const input = Float32Array.from({ length: RATE * 2 }, (_, i) => Math.sin((2 * Math.PI * tone * i) / RATE))
-    for (const rate of [0.8, 1.25]) {
+    for (const rate of [0.8, 1.25, 2]) {
       const stretch = createStretch(RATE)
       const out = [new Float32Array(RATE)]
       let position = 0

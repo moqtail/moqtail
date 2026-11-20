@@ -88,6 +88,8 @@ function processorModule(name: string, preroll: number, createStretch: (sampleRa
     /** Set by `end`: no preroll to wait for. */
     declare ending: boolean
     declare stretch: Stretch
+    /** What `window` copies into, reused: this runs on the audio thread. */
+    declare input: Float32Array[]
 
     constructor() {
       super()
@@ -102,6 +104,7 @@ function processorModule(name: string, preroll: number, createStretch: (sampleRa
       this.reported = 0
       this.ending = false
       this.stretch = createStretch(sampleRate)
+      this.input = []
       this.restart()
       this.port.onmessage = (event: MessageEvent<ProcessorMessage>) => this.receive(event.data)
     }
@@ -152,6 +155,8 @@ function processorModule(name: string, preroll: number, createStretch: (sampleRa
         this.write(output, played, chunk)
         this.position += this.rate
       }
+      // Ran out: what the segment holds is from before the stall
+      if (played < length) this.stretch.reset()
       for (let i = played; i < length; i++) for (const channel of output) channel[i] = 0
       this.reportConsumed()
       this.report(played, length - played, skew)
@@ -176,22 +181,29 @@ function processorModule(name: string, preroll: number, createStretch: (sampleRa
     write(output: Float32Array[], at: number, chunk: Chunk): void {
       const stretch = this.stretch
       if (stretch.running(this.rate) && stretch.due()) {
-        const input = this.window(stretch.span)
+        const input = this.window(stretch.span, stretch.needs(this.rate))
         // Too little queued to stretch: played at the rate's pitch until the queue refills
-        if (input) stretch.fill(input, this.rate)
-        else stretch.reset()
+        if (input) {
+          // The media the last segment's alignment skips plays ahead of the clock unless counted
+          const skipped = stretch.fill(input, this.rate)
+          this.position += skipped
+          this.drift -= skipped / sampleRate
+        } else stretch.reset()
       }
       if (!stretch.due()) stretch.write(output, at)
       else for (let channel = 0; channel < output.length; channel++) output[channel]![at] = this.sample(chunk, channel)
     }
 
-    /** `length` samples per channel from the position on, or undefined if fewer are queued. */
-    window(length: number): Float32Array[] | undefined {
+    /** `length` samples per channel from the position on, or undefined if fewer than `needed` are queued. */
+    window(length: number, needed: number): Float32Array[] | undefined {
       const start = Math.floor(this.position)
       let queued = -start
       for (const chunk of this.chunks) queued += chunk.planes[0]!.length
-      if (queued < length) return undefined
-      const planes = this.chunks[0]!.planes.map(() => new Float32Array(length))
+      if (queued < needed) return undefined
+      const channels = this.chunks[0]!.planes.length
+      if (this.input.length !== channels || this.input[0]!.length !== length)
+        this.input = Array.from({ length: channels }, () => new Float32Array(length))
+      const planes = this.input
       let offset = -start
       for (const chunk of this.chunks) {
         if (offset >= length) break
@@ -374,6 +386,21 @@ if (import.meta.vitest) {
     post({ type: 'rate', rate: 1 })
     for (let i = 0; i < 40; i++) quantum(128)
     for (const step of steps(128)) expect(step).toBeCloseTo(1, 1)
+  })
+
+  test("at rate 2 it stretches only with a segment's worth queued, and a stall drops what the segment held", () => {
+    Object.assign(globalThis, { sampleRate: 48_000 })
+    new Function(PROCESSOR_SOURCE)()
+    const chunk = (timestamp: number, length: number, value?: number): ProcessorMessage => {
+      const planes = [Float32Array.from({ length }, (_, j) => value ?? j)]
+      return { type: 'samples', planes, timestamp, duration: length / 48_000 }
+    }
+    post(chunk(100, 3200))
+    post({ type: 'end' })
+    post({ type: 'rate', rate: 2 })
+    quantum(2048)
+    post(chunk(100.1, 4000, 7))
+    expect(quantum(128).every((v) => v === 7)).toBe(true)
   })
 
   test('reports the seconds it played out or dropped, once per change', () => {

@@ -32,7 +32,8 @@ import type { Pad } from './pad'
 
 /** Where a pad goes, by definitions: the elements it passes through, ending in the sinks, and how many were loaded. */
 export interface Route {
-  path: ElementDefinition[]
+  /** Each element on the way, with the capabilities of the pad it takes. */
+  path: { definition: ElementDefinition; capabilities: Capabilities }[]
   loaded: number
 }
 
@@ -138,22 +139,24 @@ export function routeOf(
     const next = declared.transforms.findIndex((t, i) => i > position && takes(t, current))
     if (next !== -1) {
       const transform = declared.transforms[next]!
+      route.path.push({ definition: transform, capabilities: current })
       // Without an out bundle that converts it, the output keeps the input's capabilities
       current = convertedCapabilities(transform.capabilities, current) ?? current
-      route.path.push(transform)
       position = next
       continue
     }
     const sinks = declared.sinks.filter((s) => takes(s, current))
     if (sinks.length > 0) {
-      route.path.push(...sinks)
+      route.path.push(...sinks.map((definition) => ({ definition, capabilities: current })))
       return route
     }
     const targets = [...declared.transforms.slice(position + 1), ...declared.sinks]
     const plan = planTransforms(current, loadable, (c) => targets.some((t) => takes(t, c)))
     if (!plan) return undefined
-    for (const transform of plan) current = convertedCapabilities(transform.capabilities, current)!
-    route.path.push(...plan)
+    for (const transform of plan) {
+      route.path.push({ definition: transform, capabilities: current })
+      current = convertedCapabilities(transform.capabilities, current)!
+    }
     route.loaded += plan.length
   }
 }
@@ -279,9 +282,16 @@ if (import.meta.vitest) {
       const raw = sink('raw')
       const filter = testTransform({ name: 'filter', takes: 'raw' })
       const route = routeOf(pad('loc', 'video'), { transforms: [filter], sinks: [raw] }, [decoder])
-      expect(route).toEqual({ path: [decoder, filter, raw], loaded: 1 })
+      expect(route).toEqual({
+        path: [
+          { definition: decoder, capabilities: pad('loc', 'video') },
+          { definition: filter, capabilities: pad('raw', 'video') },
+          { definition: raw, capabilities: pad('raw', 'video') },
+        ],
+        loaded: 1,
+      })
       expect(routeOf(pad('cmaf', 'video'), { transforms: [], sinks: [sink('cmaf')] }, [decoder])).toEqual({
-        path: [sink('cmaf')],
+        path: [{ definition: sink('cmaf'), capabilities: pad('cmaf', 'video') }],
         loaded: 0,
       })
       expect(routeOf(pad('loc', 'video'), { transforms: [], sinks: [sink('cmaf')] }, [decoder])).toBeUndefined()

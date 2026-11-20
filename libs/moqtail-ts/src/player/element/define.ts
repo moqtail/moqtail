@@ -85,8 +85,9 @@ export interface ElementDefinition<
   readonly provides?: P
   /**
    * Whether this element can handle `track`'s media, asked during selection before any instance exists.
-   * Leaving it out means yes. Called with tracks whose pads it would take, or produce in a chain of transforms.
-   * Answers are kept per role, packaging, codec, MIME type, size, sample rate and channels for the chain's life.
+   * Leaving it out means yes. Called with the track as the pad it would take carries it, so behind a decoder
+   * its packaging is `raw`. Yes answers are kept per role, packaging, codec, MIME type, size, sample rate and
+   * channels for the chain's life.
    * It isn't part of `negotiate`, which is synchronous, since decoders answer asynchronously and per rendition.
    */
   supports?(track: Identifiers): boolean | Promise<boolean>

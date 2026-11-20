@@ -29,6 +29,7 @@ import {
   CapabilityCode,
   definitionOf,
   hasInterface,
+  type Capabilities,
   type ElementDefinition,
   type Identifiers,
   type SinkElementDefinition,
@@ -72,6 +73,9 @@ const MEDIA_FIELDS = [
   'samplerate',
   'channelConfig',
 ] as const
+
+/** Loaded transforms a pad may pass through in a row, in case one's output pad gets it loaded again. */
+const MAX_LOADED_DEPTH = 8
 
 export class Chain {
   /** Instances shared through `context.load()`, by definition, then by tracks. */
@@ -137,9 +141,14 @@ export class Chain {
     }
     const pending = this.#pending ?? []
     this.#pending = undefined
-    for (const { pad, release } of pending) {
-      if (pad.element.pads.includes(pad)) await this.#route(pad)
-      release()
+    try {
+      for (const { pad, release } of pending) {
+        const loading = pad.element.pads.includes(pad) ? this.#route(pad) : undefined
+        if (loading) await abortable(loading, signal)
+        release()
+      }
+    } finally {
+      for (const { release } of pending) release()
     }
 
     await abortable(Promise.all(sources.map((d) => d.done.promise)), signal)
@@ -182,7 +191,9 @@ export class Chain {
     const declared = { transforms: this.#definitionsOf('transform'), sinks }
     const route = routeOf(capabilities, declared, this.host.transformDefinitions())
     if (!route) return undefined
-    const supported = await Promise.all(route.path.map((definition) => this.#supports(definition, track)))
+    const supported = await Promise.all(
+      route.path.map((step) => this.#supports(step.definition, receivedTrack(track, step.capabilities))),
+    )
     return supported.every(Boolean) ? route.loaded : undefined
   }
 
@@ -275,6 +286,10 @@ export class Chain {
     const targets = this.#takenByHolder(pad) ?? selectTargets(pad, this.#transforms, this.#sinks, position)
     for (const target of targets) this.#connect(pad, target)
     if (targets.length > 0) return undefined
+    if (this.#loadedDepth(pad.element) >= MAX_LOADED_DEPTH) {
+      this.#unlinked(pad, new Error(`${MAX_LOADED_DEPTH} transforms were loaded in a row`))
+      return undefined
+    }
     const plan = planTransforms(pad.capabilities, this.host.transformDefinitions(), (capabilities) => {
       // Never added to an element: negotiate only reads its capabilities
       const probe = new Pad('src', pad.element, capabilities)
@@ -290,27 +305,29 @@ export class Chain {
     return loading
   }
 
-  /** A new instance for this pad only, so it has one upstream and sits where the pad was. */
+  /**
+   * A new instance for this pad only, so it has one upstream and sits where the pad was.
+   * Never rejects: the pad's held writes and `init()` wait on it.
+   */
   async #load(pad: Pad, definition: TransformElementDefinition): Promise<void> {
     const context = new InstanceContext(this)
-    let transform: TransformElement
     try {
-      transform = await context.create(definition)
+      const transform = await context.create(definition)
+      if (this.#destroyed || !pad.element.pads.includes(pad)) {
+        await context.destroy()
+        return
+      }
+      if (!transform.negotiate(pad)) {
+        await context.destroy()
+        this.#unlinked(pad)
+        return
+      }
+      this.#loaded.set(transform, pad.element)
+      this.#connect(pad, transform)
     } catch (cause) {
       this.#unlinked(pad, cause)
-      return
+      await context.destroy().catch(() => {}) // the pad's warning already carries the failure
     }
-    if (this.#destroyed || !pad.element.pads.includes(pad)) {
-      await context.destroy()
-      return
-    }
-    if (!transform.negotiate(pad)) {
-      await context.destroy()
-      this.#unlinked(pad)
-      return
-    }
-    this.#loaded.set(transform, pad.element)
-    this.#connect(pad, transform)
   }
 
   /** A loaded transform sits where the pad it took was, followed back to a declared element or a source. */
@@ -318,6 +335,12 @@ export class Chain {
     let position = element
     while (this.#loaded.has(position)) position = this.#loaded.get(position)!
     return position
+  }
+
+  #loadedDepth(element: BaseElement): number {
+    let depth = 0
+    for (let current = element; this.#loaded.has(current); current = this.#loaded.get(current)!) depth++
+    return depth
   }
 
   #connect(pad: Pad, target: Consumer): void {
@@ -332,20 +355,23 @@ export class Chain {
     this.host.warn(new PlayerError('PAD_UNLINKED', message, { element: name, ...(cause !== undefined && { cause }) }))
   }
 
-  /** Answers are kept for the chain's life, so a catalog update doesn't ask the browser again. */
+  /** Yes answers are kept for the chain's life, so a catalog update doesn't ask the browser again. */
   #supports(definition: ElementDefinition, track: Identifiers): Promise<boolean> {
     if (!definition.supports) return Promise.resolve(true)
-    let answers = this.#supported.get(definition)
-    if (!answers) {
-      answers = new Map()
-      this.#supported.set(definition, answers)
-    }
+    const answers = this.#supported.get(definition) ?? new Map<string, Promise<boolean>>()
+    this.#supported.set(definition, answers)
     const key = canonicalJson(MEDIA_FIELDS.map((field) => track[field]))
-    let answer = answers.get(key)
-    if (!answer) {
-      answer = Promise.resolve(definition.supports(track))
-      answers.set(key, answer)
+    const kept = answers.get(key)
+    if (kept) return kept
+    const answer = Promise.resolve(definition.supports(track))
+    answers.set(key, answer)
+    // A no or a failure may not hold later, as when a decoder frees up
+    const forget = () => {
+      if (answers.get(key) === answer) answers.delete(key)
     }
+    answer.then((yes) => {
+      if (!yes) forget()
+    }, forget)
     return answer
   }
 
@@ -389,6 +415,12 @@ export class Chain {
 
 function isEventTimeline(pad: Pad): boolean {
   return pad.capabilities.some((c) => c.code === CapabilityCode.PACKAGING && c.value === 'eventtimeline')
+}
+
+/** `track` as a pad with `capabilities` carries it, as a decoder's output carries it `raw`. */
+function receivedTrack(track: Identifiers, capabilities: Capabilities): Identifiers {
+  const packaging = capabilities.find((c) => c.code === CapabilityCode.PACKAGING)?.value
+  return packaging === undefined ? track : { ...track, packaging }
 }
 
 function nameOf(element: BaseElement): string {
@@ -627,13 +659,23 @@ if (import.meta.vitest) {
       expect(sink!.items()).toEqual([packet(1), packet(2), packet(3)])
     })
 
-    test('a transform that fails to load or declines the pad leaves it unlinked, and one loaded for a removed pad is released', async () => {
+    test('a transform that fails to load, throws or declines the pad leaves it unlinked, and one loaded for a removed pad is released', async () => {
       const failed = new Error('no decoder')
-      const failing = loading({ ...testTransform({ takes: 'loc', makes: 'raw' }), init: () => Promise.reject(failed) })
-      failing.chain.addSource(locSource(undefined, 'video'), {})
-      failing.chain.addSink(collectingSink({ packaging: 'raw' }))
-      await failing.chain.init(signal())
-      expect(failing.warnings).toMatchObject([{ code: 'PAD_UNLINKED', cause: failed }])
+      const throwing = (t: Transform) => {
+        t.negotiate = () => {
+          throw failed
+        }
+      }
+      for (const definition of [
+        { ...testTransform({ takes: 'loc', makes: 'raw' }), init: () => Promise.reject(failed) },
+        testTransform({ takes: 'loc', makes: 'raw', setup: throwing }),
+      ]) {
+        const failing = loading(definition)
+        failing.chain.addSource(locSource(undefined, 'video'), {})
+        failing.chain.addSink(collectingSink({ packaging: 'raw' }))
+        await failing.chain.init(signal())
+        expect(failing.warnings).toMatchObject([{ code: 'PAD_UNLINKED', cause: failed }])
+      }
 
       const declined: Transform[] = []
       const decline = (t: Transform) => {
@@ -664,6 +706,28 @@ if (import.meta.vitest) {
       expect([loaded[0]!.signal.aborted, warnings]).toEqual([true, []])
     })
 
+    test('a transform whose pads keep what it takes is loaded only so many times in a row', async () => {
+      const loaded: Transform[] = []
+      // Its definition says it makes raw, but its instances' pads stay loc
+      const echo = testTransform({ takes: 'loc', setup: (t) => loaded.push(t) })
+      const { chain, warnings } = loading({ ...testTransform({ takes: 'loc', makes: 'raw' }), init: echo.init })
+      chain.addSource(locSource(undefined, 'video'), {})
+      chain.addSink(collectingSink({ packaging: 'raw' }))
+      await chain.init(signal())
+      expect([loaded.length, warnings]).toMatchObject([MAX_LOADED_DEPTH, [{ code: 'PAD_UNLINKED' }]])
+    })
+
+    test('an aborted init stops waiting for a transform that never loads', async () => {
+      const { chain } = loading({ ...testTransform({ takes: 'loc', makes: 'raw' }), init: () => new Promise(() => {}) })
+      chain.addSource(locSource(undefined, 'video'), {})
+      chain.addSink(collectingSink({ packaging: 'raw' }))
+      const abort = new AbortController()
+      const init = chain.init(abort.signal)
+      await flush()
+      abort.abort(new Error('stopped'))
+      await expect(init).rejects.toThrow('stopped')
+    })
+
     test('a loaded transform goes with its input pad, and with the chain', async () => {
       const loaded: Transform[] = []
       const { chain } = loading(testTransform({ takes: 'loc', makes: 'raw', setup: (t) => loaded.push(t) }))
@@ -682,10 +746,10 @@ if (import.meta.vitest) {
       expect(loaded[1]!.signal.aborted).toBe(true)
     })
 
-    test('cost: the transforms to load, undefined once an element on the way doesn’t support the track, 0 without sinks', async () => {
+    test('cost: the transforms to load, undefined once an element on the way doesn’t support the track it takes, 0 without sinks', async () => {
       const asked: string[] = []
       const supports = (name: string) => (track: Identifiers) => {
-        asked.push(`${name} ${track.codec}`)
+        asked.push(`${name} ${track.packaging} ${track.codec}`)
         return track.codec !== 'hvc1'
       }
       const loc = testSource({ name: 'loc', packaging: 'loc', probe: (t) => t.packaging === 'loc' })
@@ -701,11 +765,11 @@ if (import.meta.vitest) {
       )
       chain.addSink(collectingSink({ packaging: 'raw' }))
       expect([await chain.cost(video('avc1')), await chain.cost(video('hvc1'))]).toEqual([1, undefined])
-      // A catalog update brings new track objects; the answers are kept by media fields
-      expect(await chain.cost(video('avc1', { bitrate: 2 }))).toBe(1)
-      expect(asked).toEqual(['decoder avc1', 'decoder hvc1'])
+      // A catalog update brings new track objects; a yes is kept by media fields, a no is asked again
+      expect([await chain.cost(video('avc1', { bitrate: 2 })), await chain.cost(video('hvc1'))]).toEqual([1, undefined])
+      expect(asked.splice(0)).toEqual(['decoder loc avc1', 'decoder loc hvc1', 'decoder loc hvc1'])
 
-      // A declared transform's answer counts like a sink's, and costs nothing
+      // A declared transform's answer counts like a sink's, and costs nothing; the sink is asked about its raw pad
       const declared = testChain(() => [loc])
       declared.chain.addTransform(decoder)
       declared.chain.addSink({ ...collectingSink({ packaging: 'raw' }), supports: supports('sink') })
@@ -713,6 +777,7 @@ if (import.meta.vitest) {
         0,
         undefined,
       ])
+      expect(asked).toEqual(['decoder loc avc1', 'sink raw avc1', 'decoder loc hvc1', 'sink raw hvc1'])
       // Unreachable from the source's pad
       const cmaf = testChain(() => [loc])
       cmaf.chain.addSink(collectingSink())

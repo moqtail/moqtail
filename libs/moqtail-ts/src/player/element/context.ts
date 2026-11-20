@@ -62,6 +62,8 @@ export interface ElementContext {
    * How many transforms the chain would load to take the pad of the source `probe()` picks for `track`
    * to a declared sink. Undefined when none is reached, or an element on the way doesn't `supports` the
    * track. 0 without declared sinks, or for a source whose definition doesn't say what pad it makes.
+   * Worked out from capabilities, not `negotiate`: a declared transform that declines a pad it could take,
+   * as WebCodecs does past its first, still gets transforms loaded for it.
    */
   cost(track: Identifiers): Promise<number | undefined>
 }
@@ -97,6 +99,7 @@ export class InstanceContext implements ElementContext {
   /** Loaded instances this one holds a reference to. */
   readonly #holding = new Set<Loaded>()
   #element: BaseElement | undefined
+  #destroying: Promise<void> | undefined
 
   constructor(chain: Chain, tracks: readonly CatalogTrack[] = [], catalog?: CatalogReader) {
     this.#chain = chain
@@ -182,8 +185,20 @@ export class InstanceContext implements ElementContext {
     return loaded.element as Promise<E>
   }
 
-  /** Aborts the signal, destroys the element, then releases what it loaded. */
-  async destroy(): Promise<void> {
+  /** Aborts the signal, destroys the element once, then releases what it loaded. */
+  destroy(): Promise<void> {
+    // Called during init, before the constructor ran: `create` destroys the element once init returns
+    if (!this.#element) return this.#destroy()
+    this.#destroying ??= this.#destroy()
+    return this.#destroying
+  }
+
+  async release(element: BaseElement): Promise<void> {
+    const loaded = [...this.#holding].find((l) => l.context.element === element)
+    if (loaded) await this.#drop(loaded)
+  }
+
+  async #destroy(): Promise<void> {
     this.#abort.abort()
     const element = this.#element
     try {
@@ -192,11 +207,6 @@ export class InstanceContext implements ElementContext {
       if (element) this.#chain.unregister(element)
       for (const loaded of [...this.#holding]) await this.#drop(loaded)
     }
-  }
-
-  async release(element: BaseElement): Promise<void> {
-    const loaded = [...this.#holding].find((l) => l.context.element === element)
-    if (loaded) await this.#drop(loaded)
   }
 
   async #drop(loaded: Loaded): Promise<void> {
@@ -274,6 +284,19 @@ if (import.meta.vitest) {
       expect([v1.signal.aborted, v2.signal.aborted]).toEqual([true, false])
       await b.ctx.release(v2)
       expect(v2.signal.aborted).toBe(true)
+    })
+
+    test('destroy runs the element’s destroy once, however often it is called', async () => {
+      const { sources } = await parents(1)
+      const source = sources[0]!
+      const destroy = source.destroy.bind(source)
+      let calls = 0
+      source.destroy = () => {
+        calls++
+        return destroy()
+      }
+      await Promise.all([teardown(source), teardown(source)])
+      expect(calls).toBe(1)
     })
 
     test('unshared loads of one track coexist, with their own options', async () => {

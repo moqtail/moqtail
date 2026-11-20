@@ -314,6 +314,16 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     if (media.length === 0) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'No track in the catalog is playable', { element: 'catalog' })
     }
+    // Playing on with an advertised role missing would hide that this browser can't play it
+    const advertised = catalog.tracks.filter(isCandidate)
+    for (const role of ['video', 'audio']) {
+      const tracks = advertised.filter((t) => t.role === role && t.renderGroup === advertised[0]!.renderGroup)
+      if (tracks.length === 0 || media.some((s) => s.tracks[0]!.role === role)) continue
+      const codecs = [...new Set(tracks.map((t) => t.codec ?? t.packaging))].join(', ')
+      throw new PlayerError('UNSUPPORTED_SOURCE', `No ${role} track in the catalog is playable (${codecs})`, {
+        element: 'catalog',
+      })
+    }
     const { sets: timelines, skipped } = selectEventTimelines(catalog.tracks, selection)
     for (const track of skipped) {
       const message = `No element handles event timeline "${track.name}" (${track.eventType})`

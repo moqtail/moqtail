@@ -182,6 +182,17 @@ if (import.meta.vitest) {
       await unplayable.init
       expect(unplayable.settled()).toBe('UNSUPPORTED_SOURCE')
 
+      // Each advertised role needs a playable track, video or audio
+      for (const missing of ['video', 'audio']) {
+        const partial = await setup()
+        const tracks = [track('v1', 'video'), track('a1', 'audio')].map((t) =>
+          t.role === missing ? { ...t, packaging: 'other' } : t,
+        )
+        await partial.push(object(1, 0, bytes(catalog(tracks))))
+        await partial.init
+        expect([partial.settled(), partial.log]).toEqual(['UNSUPPORTED_SOURCE', []])
+      }
+
       const bad = await setup()
       await bad.push(object(1, 0, bytes('{')))
       await bad.init

@@ -194,13 +194,13 @@ test('a custom engine between webcodecs and playout links both its pads in the w
   expect(errors).toEqual([])
 })
 
-test('a rendition VideoDecoder cannot decode, such as HEVC in headless Chromium, leaves the set', async () => {
-  // testsrc's renditions all decode, so its LOC video is made one that doesn't
+test('advertised video VideoDecoder cannot decode, neither avc1 nor avc3, fails instead of playing audio alone', async () => {
+  // testsrc's LOC video decodes as avc1 and avc3, so both are made to fail
   const isConfigSupported = VideoDecoder.isConfigSupported.bind(VideoDecoder)
   const spy = vi
     .spyOn(VideoDecoder, 'isConfigSupported')
     .mockImplementation(async (config) =>
-      config.codec.startsWith('avc3') ? { supported: false, config } : isConfigSupported(config),
+      config.codec.startsWith('avc') ? { supported: false, config } : isConfigSupported(config),
     )
   onTestFinished(() => spy.mockRestore())
   const canvas = document.createElement('canvas')
@@ -208,11 +208,8 @@ test('a rendition VideoDecoder cannot decode, such as HEVC in headless Chromium,
   const player = new MOQtailPlayer(playerOptions()).source(testsrc.uri()).sink(canvas)
   const { errors } = watch(player, canvas)
 
-  await player.start()
-  await until(() => player.state === 'playing', 'playing')
-  const renditions = player.mediaSources.flatMap((s) => s.getRenditions())
-  expect(renditions.map((r) => r.id)).toEqual(['audio-loc'])
-  expect(errors).toEqual([])
+  await expect(player.start()).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE', element: 'catalog' })
+  expect(errors).toMatchObject([{ code: 'UNSUPPORTED_SOURCE', message: expect.stringContaining('No video track') }])
 })
 
 test('a second player on one canvas plays on it, or fails at once if the first drew from the worker', async () => {

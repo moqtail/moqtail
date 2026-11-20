@@ -53,6 +53,8 @@ interface Anchor {
  * shortcut: unmeasured on hardware decoders, lower it if one stalls or fails below it
  */
 export const RENDER_QUEUE_LIMIT = 60
+/** Seconds of audio posted and not yet consumed before `receive()` waits: a context the page won't start consumes none. */
+const AUDIO_QUEUE_LIMIT = 2
 
 /**
  * Renders what the element hands it: video on a canvas on each animation frame, and audio by
@@ -74,7 +76,7 @@ export class PlayoutEngine {
   #tracks: PlayoutTracks = { video: false, audio: false, clock: 'wall' }
   #state: 'idle' | 'playing' | 'paused' = 'idle'
   #rate = 1
-  /** Resolved and replaced whenever the render queue shrinks. */
+  /** Resolved and replaced whenever the render queue or the audio queue shrinks. */
   #room = Promise.withResolvers<void>()
   #loop: number | undefined
   /** Media time of the frame on screen. */
@@ -87,7 +89,9 @@ export class PlayoutEngine {
   #wall: Anchor | undefined
   #output: OutputTimestamp | undefined
   #skew = 0
-  #audioStarved = false
+  /** Media seconds of audio posted, and of it consumed as the processor reported. */
+  #audioPosted = 0
+  #audioConsumed = 0
   #seekTarget: number | undefined
   #playingReported = false
   #done = false
@@ -115,7 +119,7 @@ export class PlayoutEngine {
       payload.close()
       return
     }
-    if (payload instanceof AudioData) this.#receiveAudio(payload)
+    if (payload instanceof AudioData) await this.#receiveAudio(payload)
     else await this.#receiveVideo(payload)
   }
 
@@ -178,6 +182,11 @@ export class PlayoutEngine {
     this.#audio = undefined
     this.#skews.length = 0
     this.#wall = undefined
+    // Paused, nothing is presented until play(), which starts over at the live edge
+    if (this.#state === 'paused') {
+      this.#seekTarget = undefined
+      this.#report({ type: 'seeked' })
+    }
   }
 
   /** The clocks go on from where they are, `rate` times as fast as their reference. */
@@ -220,7 +229,7 @@ export class PlayoutEngine {
   }
 
   /** Planes copied out and transferred: the processor gets self-contained messages. */
-  #receiveAudio(data: AudioData): void {
+  async #receiveAudio(data: AudioData): Promise<void> {
     const planes = Array.from({ length: data.numberOfChannels }, (_, planeIndex) => {
       const plane = new Float32Array(data.numberOfFrames)
       data.copyTo(plane, { planeIndex, format: 'f32-planar' })
@@ -230,11 +239,15 @@ export class PlayoutEngine {
     const duration = seconds(data.duration)
     data.close()
     this.#audioEnd = timestamp + duration
+    this.#audioPosted += duration
     // shortcut: allocates per chunk on the audio thread; a SharedArrayBuffer ring when crossOriginIsolated avoids it, upgrade if glitches show up
     this.#post(
       { type: 'samples', planes, timestamp, duration },
       planes.map((p) => p.buffer),
     )
+    while (this.#state !== 'paused' && !this.#done && this.#audioQueued() >= AUDIO_QUEUE_LIMIT) {
+      await this.#room.promise
+    }
   }
 
   readonly #tick = (): void => {
@@ -311,7 +324,9 @@ export class PlayoutEngine {
   #checkEnded(): void {
     if (!this.#tracks.video && !this.#tracks.audio) return
     const videoDone = !this.#tracks.video || (this.#ended.has('video') && this.#frames.length === 0)
-    const audioDone = !this.#tracks.audio || (this.#ended.has('audio') && this.#audioStarved)
+    // A context that never ran, as one the page won't start, plays nothing more
+    const audioDone =
+      !this.#tracks.audio || (this.#ended.has('audio') && (this.#audioQueued() === 0 || this.#output === undefined))
     if (!videoDone || !audioDone) return
     this.#stopLoop()
     this.#done = true
@@ -347,12 +362,14 @@ export class PlayoutEngine {
         break
       }
       case 'starved':
-        this.#audioStarved = true
         this.#starved('audio')
         break
       case 'fed':
-        this.#audioStarved = false
         this.#fed('audio')
+        break
+      case 'consumed':
+        this.#audioConsumed = report.seconds
+        this.#roomMade()
         break
     }
   }
@@ -388,6 +405,10 @@ export class PlayoutEngine {
     if (this.#starving.delete(role) && this.#starving.size === 0) this.#report({ type: 'playing' })
   }
 
+  #audioQueued(): number {
+    return this.#audioPosted - this.#audioConsumed
+  }
+
   #roomMade(): void {
     this.#room.resolve()
     this.#room = Promise.withResolvers()
@@ -411,4 +432,142 @@ function clockAt(anchor: Anchor, rate: number, reference: number, skew: number):
 /** WebCodecs timestamps and durations are µs. */
 function seconds(micros: number): number {
   return micros / 1_000_000
+}
+
+if (import.meta.vitest) {
+  const { test, expect, beforeEach, afterEach, vi } = import.meta.vitest
+  const { settle } = await import('@/player/testing/elements')
+  let now: number
+  let frame: (() => void) | undefined
+  let reports: EngineReport[]
+  let posted: ProcessorMessage[]
+
+  class FakeAudioData {
+    readonly numberOfChannels = 1
+    readonly numberOfFrames = 1
+    readonly timestamp: number
+    readonly duration: number
+    constructor(time: number, duration: number) {
+      this.timestamp = time * 1_000_000
+      this.duration = duration * 1_000_000
+    }
+    copyTo() {}
+    close() {}
+  }
+
+  beforeEach(() => {
+    now = 1000
+    frame = undefined
+    reports = []
+    posted = []
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => {
+      frame = callback
+      return 1
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {
+      frame = undefined
+    })
+    vi.stubGlobal('AudioData', FakeAudioData)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  /** A playing engine on the audio clock, and a way to send it processor reports. */
+  async function playing(tracks: Partial<PlayoutTracks> = {}) {
+    const canvas = { canvas: { width: 0, height: 0 }, drawImage: () => {} } as unknown as CanvasRenderingContext2D
+    const engine = new PlayoutEngine(canvas, (report) => reports.push(report))
+    const port = {
+      onmessage: null as ((event: { data: ProcessorReport }) => void) | null,
+      postMessage: (message: ProcessorMessage) => posted.push(message),
+    }
+    await engine.attachAudio(port as unknown as MessagePort)
+    await engine.setTracks({ video: true, audio: true, clock: 'audio', ...tracks })
+    await engine.play()
+    const processor = (report: ProcessorReport) => port.onmessage!({ data: report })
+    /** The context is heard at `contextTime` now, and runs with the wall clock. */
+    const running = (contextTime: number) =>
+      engine.outputTimestamp({ contextTime, time: performance.timeOrigin + performance.now() })
+    return { engine, processor, running }
+  }
+
+  const audio = (time: number, duration = 0.5) => new FakeAudioData(time, duration) as unknown as AudioData
+  /** The current time an animation frame presents. */
+  const presented = () => {
+    frame!()
+    return reports.filter((report) => report.type === 'presentation').at(-1)!.currentTime
+  }
+  const ended = () => reports.some((report) => report.type === 'ended')
+
+  test('a skew applies once its quantum is heard, and a rate change re-anchors the clock where it is', async () => {
+    const { engine, processor, running } = await playing()
+    processor({ type: 'start', contextTime: 5, mediaTime: 100 })
+    await running(5)
+    expect(presented()).toBeCloseTo(100, 5)
+    processor({ type: 'drift', contextTime: 5.6, drift: 0.2, gap: 0 })
+    now += 500
+    expect(presented()).toBeCloseTo(100.5, 5)
+    now += 200
+    expect(presented()).toBeCloseTo(100.5, 5)
+    await engine.setPlaybackRate(2)
+    expect(presented()).toBeCloseTo(100.5, 5)
+    now += 100
+    expect(presented()).toBeCloseTo(100.7, 5)
+  })
+
+  test('a seek holds the time at its target until the processor starts there, and settles at once while paused', async () => {
+    const { engine, processor, running } = await playing({ video: false })
+    processor({ type: 'start', contextTime: 5, mediaTime: 100 })
+    await running(5)
+    now += 1000
+    expect(presented()).toBeCloseTo(101, 5)
+    await engine.seek(103)
+    expect(posted.at(-1)).toEqual({ type: 'seek', time: 103 })
+    expect(presented()).toBe(103)
+    processor({ type: 'start', contextTime: 6, mediaTime: 103 })
+    expect(reports.filter((report) => report.type === 'seeked')).toHaveLength(1)
+    now += 100
+    expect(presented()).toBeCloseTo(103.1, 5)
+    await engine.pause()
+    await engine.seek(104)
+    expect(reports.at(-1)).toEqual({ type: 'seeked' })
+  })
+
+  test('audio past the queue limit holds receive() until the processor consumes some, or a pause', async () => {
+    const { engine, processor } = await playing()
+    for (const time of [0, 0.5, 1]) await engine.receive(audio(time))
+    let held = true
+    const fourth = engine.receive(audio(1.5)).then(() => {
+      held = false
+    })
+    await settle()
+    expect(held).toBe(true)
+    processor({ type: 'consumed', seconds: 0.5 })
+    await fourth
+    const fifth = engine.receive(audio(2))
+    await engine.pause()
+    await fifth
+  })
+
+  test('ended waits for the audio queued on a running context, but not on one that never ran', async () => {
+    const never = await playing()
+    await never.engine.receive(audio(0))
+    for (const role of ['video', 'audio'] as const) await never.engine.end(role)
+    frame!()
+    expect(ended()).toBe(true)
+
+    reports = []
+    const { engine, processor, running } = await playing()
+    await engine.receive(audio(0))
+    await running(5)
+    for (const role of ['video', 'audio'] as const) await engine.end(role)
+    frame!()
+    expect(ended()).toBe(false)
+    processor({ type: 'consumed', seconds: 0.5 })
+    frame!()
+    expect(ended()).toBe(true)
+  })
 }

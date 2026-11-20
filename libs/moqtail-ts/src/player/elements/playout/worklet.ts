@@ -29,6 +29,8 @@ export type ProcessorReport =
   | { type: 'drift'; contextTime: number; drift: number; gap: number }
   | { type: 'starved' }
   | { type: 'fed' }
+  /** Media seconds of the chunks played out or dropped so far: the engine holds samples back on it. */
+  | { type: 'consumed'; seconds: number }
 
 declare const registerProcessor: (name: string, processor: new () => AudioWorkletProcessorBase) => void
 declare const AudioWorkletProcessor: new () => { readonly port: MessagePort }
@@ -75,6 +77,8 @@ function processorModule(name: string): void {
     declare starved: boolean
     /** Of the last chunk received: silence past it is a stall. */
     declare duration: number
+    declare consumed: number
+    declare reported: number
 
     constructor() {
       super()
@@ -85,6 +89,8 @@ function processorModule(name: string): void {
       this.end = undefined
       this.duration = Infinity
       this.starved = false
+      this.consumed = 0
+      this.reported = 0
       this.restart()
       this.port.onmessage = (event: MessageEvent<ProcessorMessage>) => this.receive(event.data)
     }
@@ -104,11 +110,12 @@ function processorModule(name: string): void {
         this.restart()
         this.trim()
       } else {
-        this.chunks = []
+        while (this.chunks.length > 0) this.shift()
         this.position = 0
         this.end = undefined
         this.restart()
       }
+      this.reportConsumed()
     }
 
     process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
@@ -129,6 +136,7 @@ function processorModule(name: string): void {
         this.position += this.rate
       }
       for (let i = played; i < length; i++) for (const channel of output) channel[i] = 0
+      this.reportConsumed()
       this.report(played, length - played, skew)
       return true
     }
@@ -138,7 +146,7 @@ function processorModule(name: string): void {
       let chunk = this.chunks[0]
       while (chunk && this.position >= chunk.planes[0]!.length) {
         this.position -= chunk.planes[0]!.length
-        this.chunks.shift()
+        this.shift()
         chunk = this.chunks[0]
       }
       if (chunk && chunk.gap !== 0) {
@@ -186,12 +194,22 @@ function processorModule(name: string): void {
     trim(): void {
       let chunk = this.chunks[0]
       while (chunk && chunk.timestamp + chunk.duration <= this.dropBefore) {
-        this.chunks.shift()
+        this.shift()
         this.position = 0
         chunk = this.chunks[0]
       }
       if (chunk && chunk.timestamp < this.dropBefore)
         this.position = Math.max(this.position, (this.dropBefore - chunk.timestamp) * sampleRate)
+    }
+
+    shift(): void {
+      this.consumed += this.chunks.shift()!.duration
+    }
+
+    reportConsumed(): void {
+      if (this.consumed === this.reported) return
+      this.reported = this.consumed
+      this.port.postMessage({ type: 'consumed', seconds: this.consumed })
     }
 
     /** The next sample played starts the clock again. */
@@ -211,11 +229,19 @@ if (import.meta.vitest) {
   const RATE = 4
   let processor: AudioWorkletProcessorBase
   let reports: ProcessorReport[]
+  let consumed: number[]
   let scope: Record<string, unknown>
 
   beforeEach(() => {
     reports = []
-    const port = { onmessage: null, postMessage: (report: ProcessorReport) => reports.push(report) }
+    consumed = []
+    const port = {
+      onmessage: null,
+      postMessage: (report: ProcessorReport) => {
+        if (report.type === 'consumed') consumed.push(report.seconds)
+        else reports.push(report)
+      },
+    }
     scope = {
       sampleRate: RATE,
       currentTime: 10,
@@ -278,6 +304,19 @@ if (import.meta.vitest) {
     post(samples(100, 0, 2, 4))
     post(samples(100.75, 6, 8, 10))
     expect(quantum()).toEqual([0, 3, 6, 9])
+  })
+
+  test('reports the seconds it played out or dropped, once per change', () => {
+    post(samples(100, 1, 2))
+    post(samples(100.5, 3, 4))
+    post(samples(101, 5, 6))
+    quantum(2)
+    expect(consumed).toEqual([])
+    quantum(1)
+    expect(consumed).toEqual([0.5])
+    post({ type: 'seek', time: 101 })
+    post({ type: 'flush' })
+    expect(consumed).toEqual([0.5, 1, 1.5])
   })
 
   test('a seek drops what is before the target, inside a chunk too, and starts the clock at it', () => {

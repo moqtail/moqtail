@@ -40,6 +40,39 @@ impl std::fmt::Display for TransportKind {
   }
 }
 
+/// A connection's transport-level statistics. A field the transport cannot
+/// measure is `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransportStats {
+  /// Smoothed round-trip time.
+  pub rtt: Option<std::time::Duration>,
+  /// Congestion window, in bytes.
+  pub cwnd: Option<u64>,
+  pub congestion_events: Option<u64>,
+  pub lost_packets: Option<u64>,
+  pub lost_bytes: Option<u64>,
+  pub sent_bytes: u64,
+  pub received_bytes: u64,
+  /// Packets on the wire: UDP datagrams for QUIC.
+  pub sent_packets: u64,
+  pub received_packets: u64,
+}
+
+/// Why a connection closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloseReason {
+  /// The peer closed it, with an application or transport error code.
+  ByPeer { code: u64, reason: String },
+  /// This endpoint closed it.
+  Local,
+  /// Nothing arrived within the idle timeout.
+  IdleTimeout,
+  /// The peer reset the connection.
+  Reset,
+  /// Any other failure.
+  Other(String),
+}
+
 #[derive(Debug, Error)]
 pub enum TransportConnectionError {
   #[error("application closed")]
@@ -328,14 +361,39 @@ impl TransportConnection {
     }
   }
 
-  /// The QUIC connection's statistics: RTT, congestion window, losses and bytes.
-  pub fn quic_stats(&self) -> quinn::ConnectionStats {
-    self.quic().stats()
+  /// The connection's statistics: RTT, congestion window, losses and bytes.
+  pub fn transport_stats(&self) -> TransportStats {
+    let stats = self.quic().stats();
+    TransportStats {
+      rtt: Some(stats.path.rtt),
+      cwnd: Some(stats.path.cwnd),
+      congestion_events: Some(stats.path.congestion_events),
+      lost_packets: Some(stats.path.lost_packets),
+      lost_bytes: Some(stats.path.lost_bytes),
+      sent_bytes: stats.udp_tx.bytes,
+      received_bytes: stats.udp_rx.bytes,
+      sent_packets: stats.udp_tx.datagrams,
+      received_packets: stats.udp_rx.datagrams,
+    }
   }
 
   /// Why the connection closed; `None` while it is open.
-  pub fn close_reason(&self) -> Option<quinn::ConnectionError> {
-    self.quic().close_reason()
+  pub fn close_reason(&self) -> Option<CloseReason> {
+    use quinn::ConnectionError as E;
+    Some(match self.quic().close_reason()? {
+      E::ApplicationClosed(close) => CloseReason::ByPeer {
+        code: close.error_code.into_inner(),
+        reason: String::from_utf8_lossy(&close.reason).into_owned(),
+      },
+      E::ConnectionClosed(close) => CloseReason::ByPeer {
+        code: u64::from(close.error_code),
+        reason: String::from_utf8_lossy(&close.reason).into_owned(),
+      },
+      E::LocallyClosed => CloseReason::Local,
+      E::TimedOut => CloseReason::IdleTimeout,
+      E::Reset => CloseReason::Reset,
+      other => CloseReason::Other(other.to_string()),
+    })
   }
 
   pub fn stable_id(&self) -> usize {
@@ -622,5 +680,25 @@ mod tests {
   async fn webtransport_reset_code_round_trips() {
     let (client, server) = webtransport_pair().await.expect("webtransport_pair");
     reset_roundtrip(client, server).await;
+  }
+
+  #[tokio::test]
+  async fn close_reason_and_stats_are_transport_neutral() {
+    let (client, server) = quic_pair().await.expect("quic_pair");
+    roundtrip_bi(client.clone(), server.clone()).await;
+    assert!(client.transport_stats().rtt.is_some());
+    assert!(client.transport_stats().sent_bytes > 0);
+    assert_eq!(server.close_reason(), None);
+
+    client.close(0x10, b"bye");
+    server.closed().await;
+    assert_eq!(client.close_reason(), Some(CloseReason::Local));
+    assert_eq!(
+      server.close_reason(),
+      Some(CloseReason::ByPeer {
+        code: 0x10,
+        reason: "bye".to_string()
+      })
+    );
   }
 }

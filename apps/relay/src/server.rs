@@ -248,21 +248,23 @@ impl Server {
       let _ = quic_server_config;
       None
     };
-    let mut connecting = match own_config {
+    let connecting = match own_config {
       Some(config) => incoming.accept_with(config)?,
       None => incoming.accept()?,
     };
 
-    let handshake_data = connecting.handshake_data().await?;
-    let protocol = handshake_data
-      .downcast::<quinn::crypto::rustls::HandshakeData>()
-      .ok()
+    // quinn reports handshake data on the first ClientHello, before a HelloRetryRequest's
+    // ALPN is chosen, so the ALPN is read only once the handshake completes.
+    let connection = connecting.await?;
+    let protocol = connection
+      .handshake_data()
+      .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
       .and_then(|data| data.protocol);
 
     match protocol.as_deref() {
       Some(b"h3") => {
         trace!(remote = %remote_addr, "demuxed incoming QUIC connection as WebTransport (h3)");
-        let session_request = IncomingSessionFuture::with_quic_connecting(connecting).await?;
+        let session_request = IncomingSessionFuture::with_quic_connection(connection).await?;
         Session::accept_webtransport(session_request, server)
           .await
           .map(|_| ())
@@ -273,7 +275,6 @@ impl Server {
           alpn = %String::from_utf8_lossy(other),
           "demuxed incoming QUIC connection as raw QUIC"
         );
-        let connection = connecting.await?;
         Session::accept_quic(connection, server).await.map(|_| ())
       }
       None => {
@@ -359,5 +360,120 @@ fn init_logging(config: &AppConfig) {
       }
       Err(e) => error!("Cannot write qlog traces to {dir}: {e}"),
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use moqtail::model::control::constant::SUPPORTED_VERSIONS;
+  use wtransport::tls::rustls;
+  use wtransport::tls::rustls::crypto::{ActiveKeyExchange, SharedSecret, SupportedKxGroup};
+  use wtransport::tls::rustls::{NamedGroup, crypto::ring::kx_group::X25519};
+
+  /// A key exchange that claims to be X25519MLKEM768, which the relay's ring provider
+  /// does not support. Offered first, its key share forces a HelloRetryRequest, as
+  /// a picoquic client does.
+  #[derive(Debug)]
+  struct UnsupportedGroup;
+
+  struct UnsupportedShare(Box<dyn ActiveKeyExchange>);
+
+  impl SupportedKxGroup for UnsupportedGroup {
+    fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, rustls::Error> {
+      Ok(Box::new(UnsupportedShare(X25519.start()?)))
+    }
+    fn name(&self) -> NamedGroup {
+      NamedGroup::X25519MLKEM768
+    }
+  }
+
+  impl ActiveKeyExchange for UnsupportedShare {
+    fn complete(self: Box<Self>, peer: &[u8]) -> Result<SharedSecret, rustls::Error> {
+      self.0.complete(peer)
+    }
+    fn pub_key(&self) -> &[u8] {
+      self.0.pub_key()
+    }
+    fn group(&self) -> NamedGroup {
+      NamedGroup::X25519MLKEM768
+    }
+  }
+
+  fn test_server() -> Server {
+    Server {
+      client_manager: ClientManager::new(),
+      track_manager: TrackManager::new(),
+      upstream_requests: UpstreamRequests::default(),
+      app_config: Box::leak(Box::default()),
+      relay_next_request_id: Arc::new(AtomicU64::new(0)),
+      active_request_streams: Arc::new(AtomicU64::new(0)),
+      draining: Arc::new(AtomicBool::new(false)),
+      accepting: Arc::new(AtomicBool::new(false)),
+      started_at: std::time::SystemTime::now(),
+      cluster: Arc::default(),
+      redirect_uri: Arc::new(RwLock::new(None)),
+    }
+  }
+
+  /// A raw-QUIC client whose first key share the relay rejects with a
+  /// HelloRetryRequest is still demuxed by its ALPN, not closed mid-handshake.
+  #[tokio::test]
+  async fn raw_quic_connection_after_hello_retry_is_accepted() {
+    let identity = wtransport::Identity::self_signed(["localhost"]).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+      .add(
+        identity.certificate_chain().as_slice()[0]
+          .der()
+          .to_vec()
+          .into(),
+      )
+      .unwrap();
+
+    let mut server_tls = wtransport::tls::server::build_default_tls_config(identity);
+    server_tls
+      .alpn_protocols
+      .push(SUPPORTED_VERSIONS.as_bytes().to_vec());
+    let server_config = quinn::ServerConfig::with_crypto(Arc::new(
+      quinn::crypto::rustls::QuicServerConfig::try_from(server_tls).unwrap(),
+    ));
+    let endpoint =
+      quinn::Endpoint::server(server_config.clone(), "127.0.0.1:0".parse().unwrap()).unwrap();
+    let relay_addr = endpoint.local_addr().unwrap();
+
+    let relay = tokio::spawn(async move {
+      let incoming = endpoint.accept().await.unwrap();
+      let result = Server::accept_incoming(incoming, test_server(), &server_config).await;
+      (result, endpoint)
+    });
+
+    let mut provider = rustls::crypto::ring::default_provider();
+    provider.kx_groups = vec![&UnsupportedGroup, X25519];
+    let mut client_tls = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+      .with_protocol_versions(&[&rustls::version::TLS13])
+      .unwrap()
+      .with_root_certificates(roots)
+      .with_no_client_auth();
+    client_tls.alpn_protocols = vec![SUPPORTED_VERSIONS.as_bytes().to_vec()];
+    let mut client = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+    client.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+      quinn::crypto::rustls::QuicClientConfig::try_from(client_tls).unwrap(),
+    )));
+
+    let connection = tokio::time::timeout(
+      Duration::from_secs(5),
+      client.connect(relay_addr, "localhost").unwrap(),
+    )
+    .await
+    .expect("handshake timed out")
+    .expect("relay closed the connection during the handshake");
+
+    let (result, _endpoint) = tokio::time::timeout(Duration::from_secs(5), relay)
+      .await
+      .expect("relay accept timed out")
+      .unwrap();
+    result.expect("relay rejected the raw-QUIC connection");
+    assert!(connection.close_reason().is_none());
   }
 }

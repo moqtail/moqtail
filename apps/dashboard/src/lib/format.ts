@@ -18,7 +18,8 @@
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
 
-export function bytes(n: number): string {
+export function bytes(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '–';
   let value = n;
   let unit = 0;
   while (value >= 1000 && unit < BYTE_UNITS.length - 1) {
@@ -28,7 +29,8 @@ export function bytes(n: number): string {
   return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${BYTE_UNITS[unit]}`;
 }
 
-export function count(n: number): string {
+export function count(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '–';
   return n.toLocaleString('en-US');
 }
 

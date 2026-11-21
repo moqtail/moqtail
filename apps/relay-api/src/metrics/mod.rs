@@ -179,8 +179,8 @@ async fn render(state: &ApiState, out: &mut Exposition) {
     *by_kind
       .entry((c.transport.clone(), role, conn_state))
       .or_default() += 1;
-    rtts.push(c.quic.rtt_ms / 1000.0);
-    lost += c.quic.lost_packets;
+    rtts.extend(c.stats.rtt_ms.map(|ms| ms / 1000.0));
+    lost += c.stats.lost_packets.unwrap_or(0);
   }
   out.family(
     "moqtail_connections",

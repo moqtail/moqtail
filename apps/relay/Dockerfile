@@ -12,6 +12,7 @@ COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY apps ./apps
 COPY libs ./libs
+COPY vendor ./vendor
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -19,6 +20,8 @@ FROM chef AS builder
 
 # Downloads and compiles dependencies only; this layer stays cached until a manifest or Cargo.lock changes.
 COPY --from=planner /workspace/recipe.json ./
+# The [patch.crates-io] wtransport is a path dependency cook must compile.
+COPY vendor ./vendor
 RUN cargo chef cook -p relay --release --recipe-path recipe.json
 
 COPY Cargo.toml ./

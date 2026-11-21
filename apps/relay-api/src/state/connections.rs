@@ -23,7 +23,7 @@ use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use relay_hooks::{CloseInfo, ConnectionInfo, ConnectionState, QuicStats, Role};
+use relay_hooks::{CloseInfo, ConnectionInfo, ConnectionState, Role, TransportStats};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -63,7 +63,7 @@ pub struct ConnectionSummary {
   announced_namespaces: usize,
   published_tracks: usize,
   subscriptions: usize,
-  quic: QuicStats,
+  stats: TransportStats,
   close: Option<CloseInfo>,
   control_messages: MessageCounts,
   requests: RequestCounts,
@@ -83,7 +83,7 @@ impl From<&Connection> for ConnectionSummary {
       announced_namespaces: c.announced_namespaces.len(),
       published_tracks: c.published_tracks.len(),
       subscriptions: c.subscriptions.len(),
-      quic: c.quic.clone(),
+      stats: c.stats.clone(),
       close: c.close.clone(),
       control_messages: connection.counts.control_messages.clone(),
       requests: connection.counts.requests.clone(),
@@ -119,10 +119,11 @@ pub async fn list(
     Some(match key {
       "conn_id" => SortValue::Number(c.conn_id as f64),
       "connected_at" => SortValue::Number(c.connected_at_ms as f64),
-      "rtt" => SortValue::Number(c.quic.rtt_ms),
-      "bytes_out" => SortValue::Number(c.quic.sent_bytes as f64),
-      "bytes_in" => SortValue::Number(c.quic.received_bytes as f64),
-      "lost_packets" => SortValue::Number(c.quic.lost_packets as f64),
+      // A connection without an RTT sorts after every measured one.
+      "rtt" => SortValue::Number(c.stats.rtt_ms.unwrap_or(f64::INFINITY)),
+      "bytes_out" => SortValue::Number(c.stats.sent_bytes as f64),
+      "bytes_in" => SortValue::Number(c.stats.received_bytes as f64),
+      "lost_packets" => SortValue::Number(c.stats.lost_packets.unwrap_or(0) as f64),
       "subscriptions" => SortValue::Number(c.subscriptions.len() as f64),
       _ => return None,
     })

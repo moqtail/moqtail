@@ -22,6 +22,7 @@ use crate::server::track::{
   Track, TrackOrigin, TrackStatus, UpstreamRequestCancellation, UpstreamRequestKind,
   await_publisher_streams,
 };
+use crate::server::utils::CloseSession;
 use anyhow::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::request_error::RequestError;
@@ -229,7 +230,7 @@ async fn upstream_subscribe_exchange(
               .await;
               publisher
                 .connection
-                .close(code.to_u32(), b"Unacceptable SUBSCRIBE_OK");
+                .close_session(code.to_u32(), b"Unacceptable SUBSCRIBE_OK");
               return;
             }
           }

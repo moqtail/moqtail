@@ -25,8 +25,8 @@ pub use http_body_util::BodyExt;
 pub use relay_api::config::{ApiConfig, ApiSettings, RelaySettings};
 pub use relay_hooks::{
   Actions, BoxFuture, CloseInfo, ConnectionInfo, ConnectionState, Inspect,
-  NamespaceSubscriptionInfo, PublishedTrackInfo, QuicStats, RelayStatus, Reporter, Role,
-  TrackDetail, TrackInfo,
+  NamespaceSubscriptionInfo, PublishedTrackInfo, RelayStatus, Reporter, Role, TrackDetail,
+  TrackInfo, TransportStats,
 };
 pub use serde_json::{Value, json};
 pub use std::net::SocketAddr;
@@ -191,8 +191,8 @@ pub fn connection(conn_id: u64, namespace: &str, rtt_ms: f64, sent: u64) -> Conn
     announced_namespaces: vec![namespace.into()],
     published_tracks: vec![],
     subscriptions: vec![],
-    quic: QuicStats {
-      rtt_ms,
+    stats: TransportStats {
+      rtt_ms: Some(rtt_ms),
       sent_bytes: sent,
       ..Default::default()
     },

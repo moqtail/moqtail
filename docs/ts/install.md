@@ -22,6 +22,8 @@ npm install custom-media-element media-tracks
 
 Only `moqtail/player/component` imports them. The client and `MOQtailPlayer` work without them.
 
+The player loads the code of the `<video>` and `<canvas>` sinks, the WebCodecs decoder and the LOCMAF source when a stream first needs it, from chunks your bundler emits next to your app. [Bundle size](/ts/reference/bundle-size) lists what each import costs.
+
 ## Let your bundler emit the worker
 
 The player runs part of its work in a worker. It starts the worker from `player/worker-default.mjs`, a file inside the package, at `new URL('./player/worker-default.mjs', import.meta.url)`. Your bundler has to emit that file and keep the URL pointing at it. If the worker does not start, the player runs everything on the main thread.
@@ -97,3 +99,4 @@ It does not need cross-origin isolation, so the page needs no `Cross-Origin-Open
 - [Run the player in a worker](/ts/player/worker)
 - [`MOQtailPlayerOptions`](/ts/api/player/interfaces/MOQtailPlayerOptions), with `worker` and `preferWorker`
 - [`serveWorker`](/ts/api/player/worker/functions/serveWorker)
+- [Bundle size](/ts/reference/bundle-size)

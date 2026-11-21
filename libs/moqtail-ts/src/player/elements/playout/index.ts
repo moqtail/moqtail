@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import { CapabilityCode, defineElement, type Capabilities } from '@/player/element/define'
-import { MEDIA_SINK } from '@/player/element/interfaces'
+import { defineElement } from '@/player/element/define'
 import { PlayerError } from '@/player/error'
+import { PLAYOUT_META } from './meta'
 import { PlayoutSink, type PlayoutOptions } from './sink'
 import { PREROLL } from './worklet'
 
@@ -25,16 +25,11 @@ import { PREROLL } from './worklet'
  * Plays live `raw` video and audio pads: video on a canvas, in sync with the audio when the
  * tracks share the epoch clock, audio through an AudioWorklet. It refuses non-live streams and
  * seeks forward only. `player.sink(canvas, options)` adds it with `{ ...options, canvas }`.
+ * Importing it from `moqtail/player/elements/playout` puts its code in your bundle; the `Playout`
+ * of `moqtail/player` loads it on first use.
  */
 export const Playout = defineElement({
-  type: 'sink',
-  name: 'playout',
-  capabilities: [rawCapabilities('in', 'video'), rawCapabilities('in', 'audio')],
-  provides: [MEDIA_SINK],
-  threads: ({ worker }) =>
-    ['element:playout', 'OffscreenCanvas', 'requestAnimationFrame'].every((name) => worker?.has(name))
-      ? 'both'
-      : 'main',
+  ...PLAYOUT_META,
   init: async (context, options: PlayoutOptions) => {
     // Options come from the app, so a bad canvas is a programming error
     if (typeof HTMLCanvasElement === 'undefined' || !(options.canvas instanceof HTMLCanvasElement))
@@ -57,13 +52,6 @@ export const Playout = defineElement({
     return new PlayoutSink(context, options.canvas, preroll)
   },
 })
-
-function rawCapabilities(direction: 'in' | 'out', role: string): Capabilities {
-  return [
-    { direction, code: CapabilityCode.PACKAGING, value: 'raw' },
-    { direction, code: CapabilityCode.ROLE, value: role },
-  ]
-}
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest

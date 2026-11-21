@@ -152,6 +152,8 @@ export function defineElement<E extends TransformElement & Provided<P>, const P 
 export function defineElement<E extends SinkElement & Provided<P>, const P extends readonly InterfaceKey[] = []>(
   definition: SinkElementDefinition<E, P>,
 ): SinkElementDefinition<E, P>
+// Pure, so bundlers drop the elements an app doesn't import
+/*#__NO_SIDE_EFFECTS__*/
 export function defineElement(definition: ElementDefinition & { probe?: unknown }): ElementDefinition {
   validate(definition)
 
@@ -165,6 +167,24 @@ export function defineElement(definition: ElementDefinition & { probe?: unknown 
     },
   }
   return defined
+}
+
+/**
+ * @public
+ * A definition with `meta`'s fields whose `init` calls `load()` first, so a bundler splits the
+ * element's code into a chunk fetched only when a stream needs it. `load` resolves to the full
+ * definition, which the instance's `definition` property points at.
+ */
+// Pure, so bundlers drop the elements an app doesn't import
+/*#__NO_SIDE_EFFECTS__*/
+export function lazyElement<D extends ElementDefinition>(meta: Omit<D, 'init'>, load: () => Promise<D>): D {
+  const definition = {
+    ...meta,
+    init: async (context: ElementContext, options?: Record<string, any>) => (await load()).init(context, options),
+  } as unknown as D
+
+  validate(definition)
+  return definition
 }
 
 function validate(definition: ElementDefinition & { probe?: unknown }): void {
@@ -290,5 +310,28 @@ if (import.meta.vitest) {
         init: async (context) => new CollectingSink(context),
       })
     })
+  })
+
+  test('lazyElement loads the definition on init, and the instance points at it', async () => {
+    const full = defineElement({
+      type: 'source',
+      name: 'lazy',
+      capabilities: [],
+      probe: () => true,
+      init: async (context) => new TestSource(context),
+    })
+    const { init: _, ...meta } = full
+    let loads = 0
+    const lazy = lazyElement(meta, async () => {
+      loads++
+      return full
+    })
+
+    expect([lazy.name, lazy.probe, loads]).toEqual(['lazy', full.probe, 0])
+
+    const element = await lazy.init(detachedContext())
+    expectTypeOf(element).toEqualTypeOf<InstanceType<typeof TestSource>>()
+    expect([element.definition, loads]).toEqual([full, 1])
+    expect(() => lazyElement({ ...meta, name: '' }, async () => full)).toThrow(TypeError)
   })
 }

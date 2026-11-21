@@ -25,6 +25,9 @@ export function load(app) {
       for (const child of [...(module.children ?? [])]) {
         if (!isPublic(child)) context.project.removeReflection(child)
       }
+
+      // An entry point globbed in without public exports, such as an element the player loads itself
+      if (!module.children?.length) context.project.removeReflection(module)
     }
   })
   app.converter.on(Converter.EVENT_RESOLVE_END, (context) => warnHiddenReferences(context.project, app.logger))

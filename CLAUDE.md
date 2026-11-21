@@ -41,7 +41,7 @@ Write plain, explicit code with the smallest structure that keeps each step easy
 ### Layout
 
 - File order: license header, module doc (only for a concept or invariant the code can't show), imports, exported types, constants, main class/functions, module helpers, `if (import.meta.vitest) { … }` (test-only imports via `await import(...)`).
-- An element folder holds `index.ts` (`defineElement` + element tests), one class file, and self-testing helper modules.
+- An element folder holds `index.ts` (`defineElement` + element tests), one class file, and self-testing helper modules. An element the player loads on first use also has `meta.ts`: every field but `init`, which the lazy built-in in `@/player/elements` and `index.ts` both spread. Its `index.ts` is then a package entry point (`moqtail/player/elements/<name>`), so nothing else may import it statically: the build fails if one does.
 
 ### Imports
 
@@ -76,7 +76,7 @@ Grep before writing one. A helper moves to a shared home only when two modules n
 | `@/player/util/json`           | `canonicalJson`, `deepEqual`, `parseJsonArray`                                                                                                                            |
 | `@/player/element/source`      | switching set base: `SwitchingSetSource`, `Packaging`, `planSource`, `Delivery`, `Recovery`, `Switcher`; init data: `acceptedInitData`, `objectInitData`, `initOnObjects` |
 | `@/player/element/sink`        | media sink base: `MediaSink`, `roleOf`                                                                                                                                    |
-| `@/player/element/define`      | `definitionOf` (unset during `init`), `checkName`, `hasInterface`                                                                                                         |
+| `@/player/element/define`      | `definitionOf` (unset during `init`), `checkName`, `hasInterface`, `lazyElement`                                                                                          |
 | `@/player/elements/loc/track`  | `locCapabilities`, `timestampMicros`, `decoderConfigOf`                                                                                                                   |
 | `@/player/elements/cmaf/track` | `cmafCapabilities`, `mimeTypeOf`                                                                                                                                          |
 | `@/player/constants`           | player defaults, subscriber priorities                                                                                                                                    |

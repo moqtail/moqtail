@@ -132,6 +132,17 @@ export const textTracks = definePlugin({
 | `threads(environment)`   | Where the element's engines run: `main`, the default, `both` or `worker`. See [Run the player in a worker](/ts/player/worker#run-your-own-engine-in-the-worker).                           |
 | `init(context, options)` | Creates the instance. Reject with a `PlayerError` to set the code, for example when a browser API is missing. Any other rejection of an element you declared becomes `UNSUPPORTED_SOURCE`. |
 
+To fetch an element's code only when a stream needs it, keep every field but `init` in a module of its own, and register `lazyElement(meta, load)`. `load` returns the full definition, from a module the player imports on the first `init`:
+
+```ts
+import { lazyElement } from 'moqtail/player'
+import { TEXT_META } from './text-meta'
+
+const TextSource = lazyElement(TEXT_META, () => import('./text-source').then((m) => m.TextSource))
+```
+
+Here `./text-source` exports `defineElement({ ...TEXT_META, init })`. Your bundler splits it into a chunk of its own, as long as nothing else imports it statically.
+
 The instance extends one of three classes:
 
 - `SourceElement` creates its pads with `createPad('src', capabilities)`, writes media to them, and emits `nomorepads` once every pad it will make exists.

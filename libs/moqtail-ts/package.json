@@ -53,6 +53,10 @@
       "types": "./dist/player/component.d.mts",
       "default": "./dist/player/component.mjs"
     },
+    "./player/elements/*": {
+      "types": "./dist/player/elements/*.d.mts",
+      "default": "./dist/player/elements/*.mjs"
+    },
     "./player/worker": {
       "types": "./dist/player/worker.d.mts",
       "default": "./dist/player/worker.mjs"

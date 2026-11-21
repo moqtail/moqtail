@@ -14,60 +14,22 @@
  * limitations under the License.
  */
 
-import { defineElement, type Identifiers } from '@/player/element/define'
-import { MEDIA_SOURCE, type MediaSourceOptions } from '@/player/element/interfaces'
+import { defineElement } from '@/player/element/define'
+import type { MediaSourceOptions } from '@/player/element/interfaces'
 import { planSource } from '@/player/element/source/switching_set'
-import { cmafCapabilities } from '@/player/elements/cmaf/track'
+import { LOCMAF_META } from './meta'
 import { LocmafSource } from './source'
 
-/** The LOCMAF packaging version this element decodes (draft-einarsson-moq-locmaf-01 §5). */
-const LOCMAF_VERSION = '0.3'
-
 /**
- * The built-in media source for a LOCMAF switching set. It rebuilds CMAF chunks, so its pad
- * carries CMAF. The player registers it, and elements reach it through `context.probe()`. Its
- * lower priority prefers it over a CMAF set of the same media, since LOCMAF has less overhead.
+ * @public
+ * The media source for a LOCMAF switching set. It rebuilds CMAF chunks, so its pad carries CMAF.
+ * The player loads it on first use; importing it from `moqtail/player/elements/locmaf` and passing
+ * it to `registerElement()` puts its code in your bundle.
  */
 export const Locmaf = defineElement({
-  type: 'source',
-  name: 'locmaf',
-  priority: 90,
-  capabilities: [cmafCapabilities('out', 'video'), cmafCapabilities('out', 'audio')],
-  provides: [MEDIA_SOURCE],
-  probe: probeLocmaf,
+  ...LOCMAF_META,
   init: async (context, options: MediaSourceOptions = {}) => {
     const plan = await planSource(context, options, 'locmaf')
     return new LocmafSource(context, options, plan)
   },
 })
-
-/**
- * Accepts an unencrypted LOCMAF `video` or `audio` track of a version it decodes: a receiver
- * must not subscribe to another (§5). Encryption is out of scope, as for CMAF.
- */
-export function probeLocmaf(identifiers: Identifiers): boolean {
-  const { packaging, role } = identifiers
-  if (packaging !== 'locmaf' || (role !== 'video' && role !== 'audio')) return false
-  if (identifiers['locmafVersion'] !== LOCMAF_VERSION) return false
-
-  return identifiers['encryptionScheme'] === undefined && identifiers['contentProtectionRefIDs'] === undefined
-}
-
-if (import.meta.vitest) {
-  const { test, expect } = import.meta.vitest
-
-  test('probeLocmaf: unencrypted LOCMAF 0.3 video or audio', () => {
-    const video = { packaging: 'locmaf', locmafVersion: '0.3', role: 'video', codec: 'avc1.64001f' }
-    expect([probeLocmaf(video), probeLocmaf({ ...video, role: 'audio', codec: 'mp4a.40.2' })]).toEqual([true, true])
-
-    for (const other of [
-      { ...video, packaging: 'cmaf' },
-      { ...video, locmafVersion: '0.2' },
-      { ...video, locmafVersion: undefined },
-      { ...video, role: 'subtitle' },
-      { ...video, contentProtectionRefIDs: ['drm'] },
-    ]) {
-      expect(probeLocmaf(other)).toBe(false)
-    }
-  })
-}

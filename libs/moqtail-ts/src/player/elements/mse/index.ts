@@ -15,28 +15,19 @@
  */
 
 import { defineElement } from '@/player/element/define'
-import { MEDIA_SINK } from '@/player/element/interfaces'
-import { cmafCapabilities, mimeTypeOf } from '@/player/elements/cmaf/track'
 import { PlayerError } from '@/player/error'
+import { checkOptions, MSE_META, type MediaSources } from './meta'
 import { MSESink, type MSEOptions } from './sink'
-
-/** Where the browser has them. */
-type MediaSources = { ManagedMediaSource?: typeof globalThis.MediaSource; MediaSource?: typeof globalThis.MediaSource }
 
 /**
  * @public
  * Plays CMAF video and audio pads on an `HTMLVideoElement`, through `ManagedMediaSource`
  * where it exists and `MediaSource` otherwise. `player.sink(video)` adds it with `{ video }`.
+ * Importing it from `moqtail/player/elements/mse` puts its code in your bundle; the `MSE` of
+ * `moqtail/player` loads it on first use.
  */
 export const MSE = defineElement({
-  type: 'sink',
-  name: 'mse',
-  capabilities: [cmafCapabilities('in', 'video'), cmafCapabilities('in', 'audio')],
-  provides: [MEDIA_SINK],
-  supports: (track) => {
-    const { ManagedMediaSource, MediaSource } = globalThis as MediaSources
-    return (ManagedMediaSource ?? MediaSource)?.isTypeSupported(mimeTypeOf(track)) ?? false
-  },
+  ...MSE_META,
   init: async (context, options: MSEOptions) => {
     checkOptions(options)
 
@@ -51,30 +42,3 @@ export const MSE = defineElement({
     return new MSESink(context, options, Backend, Backend === ManagedMediaSource)
   },
 })
-
-/** Options come from the app, so bad values are programming errors. */
-export function checkOptions(options: MSEOptions): void {
-  for (const key of ['backBuffer', 'forwardCap', 'liveEdgeDelay'] as const) {
-    const value = options[key]
-    const valid = value === undefined || (Number.isFinite(value) && (key === 'forwardCap' ? value > 0 : value >= 0))
-    if (!valid)
-      throw new TypeError(`MSE option ${key} must be a finite number ${key === 'forwardCap' ? '> 0' : '>= 0'}`)
-  }
-}
-
-if (import.meta.vitest) {
-  const { test, expect } = import.meta.vitest
-  const video = {} as HTMLVideoElement
-
-  test('checkOptions rejects values the sink cannot work with', () => {
-    expect(() => checkOptions({ video, backBuffer: 0, forwardCap: 1, liveEdgeDelay: 0 })).not.toThrow()
-    for (const bad of [
-      { forwardCap: 0 },
-      { backBuffer: -1 },
-      { liveEdgeDelay: Number.NaN },
-      { backBuffer: Infinity },
-    ]) {
-      expect(() => checkOptions({ video, ...bad })).toThrow(TypeError)
-    }
-  })
-}

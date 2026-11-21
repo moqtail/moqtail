@@ -109,6 +109,8 @@ export interface Features {
  * Checks a plugin definition and returns a factory: calling it with the config gives an entry
  * for `opts.plugins`. A plugin whose config is all optional can be called with no arguments.
  */
+// Pure, so bundlers drop the plugins an app doesn't import
+/*#__NO_SIDE_EFFECTS__*/
 export function definePlugin<Config = void, Ctx = undefined>(
   definition: PluginDefinition<Config, Ctx>,
 ): (...config: [Config] extends [void] ? [] : {} extends Config ? [config?: Config] : [config: Config]) => Plugin {

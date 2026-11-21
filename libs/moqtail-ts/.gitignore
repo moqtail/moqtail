@@ -33,3 +33,6 @@ Thumbs.db
 
 # Vitest browser mode failure screenshots
 .vitest/
+
+# Bundle sizes, written by the build for the docs
+/build-info.json

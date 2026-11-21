@@ -43,7 +43,7 @@ The constructor throws a `TypeError` for a plugin listed twice or a plugin confi
 
 Call the builder methods in this order, all before `init()`:
 
-1. `registerElement()`, for an element of your own, see [Write plugins and elements](/ts/player/plugins).
+1. `registerElement()`, for an element of your own, see [Write plugins and elements](/ts/player/plugins), or a built-in one to [bundle with your app](#bundle-the-sinks-and-decoder).
 2. `source()`, once or more.
 3. `transform()`, for a transform of your own.
 4. `sink()`, once or more.
@@ -119,6 +119,23 @@ The canvas sink has limits the `<video>` one doesn't:
 - Audio starts only after a user gesture on the page, such as a click that calls `play()`. Video plays meanwhile.
 - With the worker, as by default, the canvas is handed to the worker for good. Give each player a new `<canvas>`: a later player on the same one fails with `UNSUPPORTED_SOURCE`. [Run the player in a worker](/ts/player/worker#give-each-player-a-new-canvas) shows how.
 
+### Bundle the sinks and decoder
+
+The `<video>` and `<canvas>` sinks, the WebCodecs decoder and the LOCMAF source load when a stream first needs them, so an app fetches only the code of the path it plays. To put one in your bundle instead, which saves that fetch when the cache is cold, import it from its entry point:
+
+```ts
+import { MOQtailPlayer } from 'moqtail/player'
+import { MSE } from 'moqtail/player/elements/mse'
+import { Locmaf } from 'moqtail/player/elements/locmaf'
+
+const player = new MOQtailPlayer()
+  .registerElement(Locmaf)
+  .source('moqt://relay.moqtail.dev#msf:moqtail-ch07--catalog')
+  .sink(MSE, { video })
+```
+
+`sink(MSE, options)` takes the same options as `sink(video, options)`, with the `<video>` as `video`. For a canvas, import `Playout` from `moqtail/player/elements/playout` and `WebCodecs` from `moqtail/player/elements/webcodecs`, register `WebCodecs`, and call `sink(Playout, { canvas })`. A registered element wins over the built-in one it matches. [Bundle size](/ts/reference/bundle-size) lists what each one adds.
+
 ## Start playback
 
 `start()` connects, builds the chain, and plays. It is `init()` followed by `play()`:
@@ -179,6 +196,7 @@ await player.destroy()
 
 - [`MOQtailPlayer`](/ts/api/player/classes/MOQtailPlayer) and [`MOQtailPlayerOptions`](/ts/api/player/interfaces/MOQtailPlayerOptions)
 - [`MSEOptions`](/ts/api/player/interfaces/MSEOptions) and [`PlayoutOptions`](/ts/api/player/interfaces/PlayoutOptions)
+- [Bundle size](/ts/reference/bundle-size)
 - [`PlayerEvents`](/ts/api/player/interfaces/PlayerEvents) and [`PlayerState`](/ts/api/player/type-aliases/PlayerState)
 - [Tune live latency](/ts/player/latency), [Handle states and errors](/ts/player/errors) and [Run the player in a worker](/ts/player/worker)
 - [How the player works](/guide/concepts/player)

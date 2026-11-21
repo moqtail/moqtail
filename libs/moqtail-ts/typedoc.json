@@ -7,6 +7,7 @@
     "src/model/index.ts",
     "src/player/index.ts",
     "src/player/component/index.ts",
+    "src/player/elements/*/index.ts",
     "src/player/worker/index.ts",
     "src/util/index.ts"
   ],
@@ -27,6 +28,8 @@
     "src/player/element/source/preroll.ts:Preroll",
     "src/player/elements/mse/sink.ts:MSESink",
     "src/player/elements/playout/sink.ts:PlayoutSink",
-    "src/player/plugins/abr/policy.ts:Policy"
+    "src/player/plugins/abr/policy.ts:Policy",
+    "src/player/elements/locmaf/source.ts:LocmafSource",
+    "src/player/elements/webcodecs/transform.ts:WebCodecsTransform"
   ]
 }

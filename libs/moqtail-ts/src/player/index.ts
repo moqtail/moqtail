@@ -29,8 +29,7 @@ export {
   type BufferController,
   type AbrController,
 } from './plugin'
-export { MSE } from '@/player/elements/mse'
-export { Playout } from '@/player/elements/playout'
+export { MSE, Playout } from '@/player/elements'
 export { rangeAt } from '@/player/elements/mse/gaps'
 export { eachClient, followData } from '@/player/follow'
 export { liveBuffer, type LiveBufferConfig } from '@/player/plugins/buffer'
@@ -48,6 +47,7 @@ export type { MSEOptions } from '@/player/elements/mse/sink'
 export type { PlayoutOptions } from '@/player/elements/playout/sink'
 export {
   defineElement,
+  lazyElement,
   hasInterface,
   CapabilityCode,
   DEFAULT_PRIORITY,

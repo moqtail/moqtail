@@ -169,6 +169,7 @@ export default defineConfig({
           text: 'Reference',
           items: [
             { text: 'MSF URLs', link: '/ts/reference/msf-url' },
+            { text: 'Bundle size', link: '/ts/reference/bundle-size' },
             { text: 'API', link: '/ts/api/', collapsed: true, items: apiSidebar },
           ],
         },

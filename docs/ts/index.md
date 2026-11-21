@@ -22,15 +22,16 @@ The `moqtail` package is MOQtail's browser side. It has three layers, each built
 
 Import from the subpath that holds what you need. The package is ES modules only.
 
-| Entry                      | What it holds                                                                                                         |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `moqtail`                  | Everything in `moqtail/client`, `moqtail/model` and `moqtail/util`, but not the player                                |
-| `moqtail/client`           | `MOQtailClient`, its options, events and request results                                                              |
-| `moqtail/model`            | The MOQT wire model: control messages, objects, parameters, properties, and names such as `FullTrackName` and `Tuple` |
-| `moqtail/util`             | Log levels (`setLogLevel()`, `LogLevel`) and `Emitter`                                                                |
-| `moqtail/player`           | `MOQtailPlayer`, its built-in elements and plugins (`liveBuffer()`, `abr()`, `ssts()`), and the API to write your own |
-| `moqtail/player/component` | `<moqtail-video>`: `defineMOQtailVideo()` and `MOQtailVideoElement`                                                   |
-| `moqtail/player/worker`    | `serveWorker()`, for a worker script of your own that runs your elements' engines                                     |
+| Entry                       | What it holds                                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `moqtail`                   | Everything in `moqtail/client`, `moqtail/model` and `moqtail/util`, but not the player                                |
+| `moqtail/client`            | `MOQtailClient`, its options, events and request results                                                              |
+| `moqtail/model`             | The MOQT wire model: control messages, objects, parameters, properties, and names such as `FullTrackName` and `Tuple` |
+| `moqtail/util`              | Log levels (`setLogLevel()`, `LogLevel`) and `Emitter`                                                                |
+| `moqtail/player`            | `MOQtailPlayer`, its built-in elements and plugins (`liveBuffer()`, `abr()`, `ssts()`), and the API to write your own |
+| `moqtail/player/component`  | `<moqtail-video>`: `defineMOQtailVideo()` and `MOQtailVideoElement`                                                   |
+| `moqtail/player/elements/*` | `MSE`, `Playout`, `WebCodecs` and `Locmaf`, one per entry, bundled with your app instead of loaded on first use       |
+| `moqtail/player/worker`     | `serveWorker()`, for a worker script of your own that runs your elements' engines                                     |
 
 Only `moqtail/player/component` needs the optional peer dependencies `custom-media-element` and `media-tracks`.
 

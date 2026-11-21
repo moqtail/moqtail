@@ -191,12 +191,12 @@ if (import.meta.vitest) {
   const { collectingSink, testSource, testTransform } = await import('@/player/testing/elements')
   const { routeOf, sourceCapabilities } = await import('@/player/element/negotiation')
   const { probeCmaf } = await import('@/player/elements/cmaf')
-  const { Locmaf, probeLocmaf } = await import('@/player/elements/locmaf')
+  const { LOCMAF_META, probeLocmaf } = await import('@/player/elements/locmaf/meta')
   type ElementDefinition = import('@/player/element/define').ElementDefinition
   type TransformElementDefinition = import('@/player/element/define').TransformElementDefinition
 
   const cmaf = testSource({ name: 'cmaf', packaging: 'cmaf', probe: probeCmaf })
-  const locmaf = testSource({ name: 'locmaf', packaging: 'cmaf', probe: probeLocmaf, priority: Locmaf.priority! })
+  const locmaf = testSource({ name: 'locmaf', packaging: 'cmaf', probe: probeLocmaf, priority: LOCMAF_META.priority })
   const loc = testSource({ name: 'loc', packaging: 'loc', probe: (t) => t.packaging === 'loc' })
   const timeline = testSource({ name: 'sap', probe: (t) => t.eventType === 'org.ietf.moq.cmsf.sap' })
   const probe = (track: CatalogTrack) => [cmaf, locmaf, loc, timeline].find((d) => d.probe(track))

@@ -91,10 +91,12 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
     super(context)
     this.#tracks = plan.tracks
     this.#selected = new Set(plan.tracks.map((t) => this.#id(t)))
+
     const start = this.#start()
     this.pad = this.createPad('src', this.padCapabilities(start.role ?? 'video'))
     this.#delivery = new Delivery(this.pad, context, options.requests, this)
     this.#delivery.duration = plan.duration
+
     this.#recovery = new Recovery(
       context,
       this.#delivery,
@@ -106,6 +108,7 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
       start,
       plan,
     )
+
     this.#switcher = new Switcher({
       context,
       options,
@@ -114,13 +117,16 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
       tracks: () => this.#tracks,
       element: () => this.definition.name,
     })
+
     this.#shown = trackKey(this.#head(start))
     this.#delivery.onTrackStart = (track, changed) => this.#trackStarted(track, changed)
+
     this.pad.onSignal((signal) => {
       if (signal.type !== 'seek') return false
       this.#recovery.seek(signal.mediaTime)
       return true
     })
+
     this.emit('nomorepads')
     void this.#recovery.run()
   }
@@ -142,10 +148,12 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
     const track = this.#tracks.find((t) => this.#id(t) === renditionId)
     if (!track)
       throw new PlayerError('UNSUPPORTED_SOURCE', `Unknown rendition ${renditionId}`, { element: this.definition.name })
+
     const active = this.#recovery.active
     // Within the active rendition's ladder the climb already moves to its longest GoP
     const sameLadder = this.#head(track) === this.#head(active) && this.#tracks.includes(active)
     if (track !== active && sameLadder) return
+
     return this.#switcher.switch(track)
   }
 
@@ -156,11 +164,13 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
   async selectRenditions(renditionIds: string[]): Promise<void> {
     this.#selected = new Set(renditionIds)
     this.context.player.emit('selectionchange', this)
+
     const selected = this.#tracks.filter((t) => this.#isSelected(t))
     if (selected.length === 0) {
       this.#recovery.pause()
       return
     }
+
     this.#recovery.resume()
     const active = this.#recovery.active
     if (!this.#isSelected(active)) await this.switch(this.#id(closestBitrate(selected, bitrateOf(active))!))
@@ -176,12 +186,14 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
     if (!keepSelection) {
       for (const track of tracks) if (!known.has(this.#id(track))) this.#selected.add(this.#id(track))
     }
+
     this.#tracks = tracks
     if (tracks.length === 0) {
       this.#recovery.pause()
       if (this.pads.includes(this.pad)) this.removePad(this.pad)
       return
     }
+
     const key = trackKey(this.#recovery.active)
     // The same track may come back with changes made in place, such as isLive turning false
     const active = tracks.find((t) => trackKey(t) === key)
@@ -189,21 +201,27 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
       this.#recovery.active = active
       return
     }
+
     const selected = tracks.filter((t) => this.#isSelected(t))
     const next = closestBitrate(selected.length > 0 ? selected : tracks, bitrateOf(this.#recovery.active))!
+
     void this.switch(this.#id(next)).catch(() => {})
   }
 
   #trackStarted(track: CatalogTrack, changed: boolean): void {
     // Only another track replaces it: handovers and seeks compare the active track by identity
     if (trackKey(track) !== trackKey(this.#recovery.active)) this.#recovery.active = track
+
     this.#recovery.dropHandover(track)
     this.#switcher.started(track)
+
     const head = this.#head(track)
     const shown = trackKey(head)
+
     // A climb up the ladder is no change of rendition
     if (changed && shown !== this.#shown) this.context.player.emit('renditionchange', this, this.#rendition(head))
     this.#shown = shown
+
     this.#switcher.upgrade()
   }
 
@@ -214,9 +232,11 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
   #start(): CatalogTrack {
     const first = this.#tracks[0]!
     if (!first.isLive) return first
+
     const heads = this.#tracks.filter((t) => this.#head(t) === t).sort((a, b) => bitrateOf(a) - bitrateOf(b))
     if (!heads.every((t) => bitrateOf(t) > 0)) return first // no middle without bitrates
     const middle = heads[(heads.length - 1) >> 1]!
+
     // Join its ladder on the shortest GoP, as the catalog's first track does
     return ladderOf(middle, this.#tracks).reduce(
       (a, b) => ((b.keyframeSpacing ?? Infinity) < (a.keyframeSpacing ?? Infinity) ? b : a),
@@ -270,10 +290,12 @@ export async function planSource(
 ): Promise<SourcePlan> {
   const first = tracks[0]
   if (!first) throw new PlayerError('UNSUPPORTED_SOURCE', 'The source needs at least one track', { element })
+
   const timeline = await context.catalog?.timeline(first)
   const spans = toSpans(options.ranges, first, timeline)
   const end = spans.at(-1)?.end
   const endMs = end && timeline?.locationToTime(new Location(end.group + 1n, 0n))
+
   const readAhead = options.preroll?.handOff()
   return { tracks, spans, ...(endMs !== undefined && { duration: endMs / 1000 }), ...(readAhead && { readAhead }) }
 }
@@ -312,8 +334,10 @@ if (import.meta.vitest) {
         ladder: ['v2'],
       },
     ])
+
     await c.source.selectRenditions(['v1'])
     c.source.setTracks([cmafTrack('v1', { bitrate: 900 }), cmafTrack('v3')])
+
     expect(c.source.getRenditions().map((r) => [r.id, r.bitrate, r.active, r.selected])).toEqual([
       ['v1', 900, true, true],
       // Exactly one rendition was selected: a new one doesn't join the selection
@@ -335,8 +359,10 @@ if (import.meta.vitest) {
       ['a60', 540, true],
       ['b60', 1080, false],
     ])
+
     void c.source.selectRenditions(['b60'])
     await flush()
+
     // The active rendition was deselected: into the other ladder, at its earliest switch point
     expect(c.requests().at(-2)).toMatch(/^subscribe b15 /)
   })
@@ -351,6 +377,7 @@ if (import.meta.vitest) {
     await flush()
     expect(live.requests()[0]).toMatch(/^subscribe mid /)
     expect(live.source.getRenditions().find((r) => r.active)?.id).toBe('mid')
+
     const vod = await cmafChain(tracks(false))
     await flush()
     expect(vod.requests()[0]).toMatch(/ hi /)

@@ -174,11 +174,13 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   readonly #member: SlotMember = {
     reconnecting: (attempt) => {
       this.#sessionLost = true
+
       // `ended` only moves to reconnecting when a seek back needs the session
       if (this.#state !== 'ended' && canTransition(this.#state, 'reconnecting')) {
         this.#resume = this.#state
         this.#setState('reconnecting')
       }
+
       this.emit('reconnecting', attempt)
     },
     reconnected: () => {
@@ -225,6 +227,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     const setupOptions = mergeSetupOptions(options.client?.setupOptions, this.#plugins)
     this.#clientOptions = { ...options.client, ...(setupOptions && { setupOptions }) }
     this.#clientKey = clientKey(this.#clientOptions)
+
     this.#chain = new Chain({
       player: this,
       client: currentClient,
@@ -237,10 +240,12 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       },
       fail: (error) => this.#fail(error),
     })
+
     this.on('streamtypechange', (type) => {
       this.#streamType = type
       this.#control()
     })
+
     // A catalog update may add a source that provides ABR; a selection may pick a rendition manually
     this.on('catalog', () => this.#control())
     this.on('selectionchange', () => this.#control())
@@ -298,6 +303,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   registerElement(definition: ElementDefinition): this {
     this.#order('source', 'registerElement')
     if (this.#origin !== undefined) throw new TypeError('registerElement() must be called before source()')
+
     this.#definitions.push(definition)
     return this
   }
@@ -313,9 +319,11 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     const source = parseMsfUrl(uri)
     if (source.connection === 'q')
       throw new PlayerError('UNSUPPORTED_SOURCE', 'connection=q is not available in browsers')
+
     if (this.#origin !== undefined && this.#origin !== source.url) {
       throw new PlayerError('UNSUPPORTED_ORIGIN', `This player already uses ${this.#origin}`)
     }
+
     check(source.url, this.#clientKey)
     this.#declaredSources.push({ source, options })
     this.#origin = source.url
@@ -328,6 +336,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     if (!('init' in definition) || definition.type !== 'transform') {
       throw new TypeError('transform() takes a transform element definition')
     }
+
     this.#chain.addTransform(definition, options)
     this.#stage = 'transform'
     return this
@@ -342,6 +351,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     options: Record<string, unknown> = {},
   ): this {
     this.#order('sink', 'sink')
+
     if (typeof HTMLVideoElement !== 'undefined' && target instanceof HTMLVideoElement) {
       const sinkOptions = { ...options, video: target }
       checkOptions(sinkOptions)
@@ -350,6 +360,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       this.#chain.addSink(Playout, { ...options, canvas: target })
     } else if ('init' in target && target.type === 'sink') this.#chain.addSink(target, options)
     else throw new TypeError('sink() takes an HTMLVideoElement, an HTMLCanvasElement or a sink element definition')
+
     this.#stage = 'sink'
     return this
   }
@@ -363,6 +374,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     if (this.#abort.signal.aborted) return Promise.reject(this.#abort.signal.reason)
     const origin = this.#origin
     if (origin === undefined) return Promise.reject(new TypeError('source() must be called before init()'))
+
     return (this.#initializing ??= this.#init(origin))
   }
 
@@ -393,6 +405,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   /** Seconds. Resolves or rejects as the media sink's `seek()` does. */
   async seek(mediaTime: number): Promise<void> {
     const sink = this.#sink()
+
     if (this.#state === 'ended' && this.#sessionLost && rangeAt(mediaTime, sink.buffered) === -1) {
       this.#resume = 'ended'
       this.#setState('reconnecting')
@@ -401,6 +414,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
         throw this.#lostError
       }
     }
+
     await sink.seek(mediaTime)
   }
 
@@ -416,17 +430,21 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   async #init(origin: string): Promise<void> {
     this.#setState('connecting')
     const prerolls: Preroll[] = []
+
     try {
       const worker = this.options.preferWorker === false ? undefined : spawnWorker(this.options.worker)
       this.#worker = worker
+
       const [client, started] = await Promise.all([
         acquire(this.#member, origin, this.#clientOptions),
         worker?.start(this.#abort.signal),
       ])
       if (!started) this.#worker = undefined
       this.#abort.signal.throwIfAborted()
+
       this.#useClient(client)
       this.#features = resolveFeatures(activePlugins(this.#plugins, client.serverSetup))
+
       const results = await Promise.allSettled(this.#declaredSources.map((d) => this.#select(d, client, prerolls)))
       for (const result of results) {
         if (result.status === 'rejected') throw result.reason
@@ -436,9 +454,11 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
         const type = identifiers.isLive === undefined ? undefined : identifiers.isLive ? 'live' : 'on-demand'
         if (type && type !== this.#streamType) this.emit('streamtypechange', type)
       }
+
       const outcome = await this.#chain.init(this.#abort.signal)
       if (this.#worker && !this.#worker.used) this.#terminateWorker()
       if (this.#error) throw this.#error // failed while negotiating, e.g. the session couldn't be recovered
+
       this.#watchSink()
       this.#setState(outcome)
       this.#negotiated = true
@@ -470,15 +490,18 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     const identifiers: Identifiers = { ...source }
     const definition = selectSource(definitions, identifiers)
     if (definition) return { definition, identifiers, options }
+
     const preroll = new Preroll(client, source, this.options.objectOrdering)
     prerolls.push(preroll)
     const timeoutMs = this.options.catalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS
     const timedOut = () =>
       new PlayerError('CATALOG_TIMEOUT', `Track "${source.track}" sent nothing within ${timeoutMs} ms`)
     const wait = <T>(promise: Promise<T>) => within(promise, timeoutMs, this.#abort.signal, timedOut)
+
     const trackProperties = await wait(preroll.trackProperties())
     let probed: Identifiers = { ...identifiers, isLive: preroll.isLive, trackProperties }
     let accepted = selectSource(definitions, probed)
+
     // The first group at most: each starts at a key frame (LOC 4.2), so a later one tells a probe nothing new
     while (!accepted) {
       const object = await wait(preroll.read())
@@ -486,7 +509,9 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       probed = { ...probed, objects: [...preroll.objects] }
       accepted = selectSource(definitions, probed)
     }
+
     if (!accepted) throw new PlayerError('UNSUPPORTED_SOURCE', `No element accepts track "${source.track}"`)
+
     const { locationRanges, mediaTimeRanges, wallclockRanges } = source
     const ranges = { locationRanges, mediaTimeRanges, wallclockRanges }
     return { definition: accepted, identifiers: probed, options: { ...options, ranges, preroll } }
@@ -496,8 +521,10 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     this.#abort.abort(new PlayerError('ABORTED', 'The player was destroyed'))
     this.#client = undefined
     this.#control()
+
     const teardown = this.#chain.destroy()
     const released = release(this.#member, teardown)
+
     try {
       await teardown
     } finally {
@@ -537,6 +564,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
 
   #sink(): SinkElement & MediaSinkElement {
     if (this.#abort.signal.aborted) throw this.#abort.signal.reason
+
     const sink = this.mediaSink
     if (!sink) throw new PlayerError('NO_MEDIA_SINK', 'The player has no media sink')
     return sink
@@ -545,6 +573,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   #watchSink(): void {
     const sink = this.mediaSink
     if (!sink) return
+
     for (const [event, state] of SINK_EVENTS) {
       sink.addEventListener(
         event,
@@ -566,13 +595,16 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   #control(): void {
     const sink = this.mediaSink
     if (!sink) return
+
     const buffer = this.#features.bufferController
     const live = this.#live()
+
     if (buffer && live !== this.#bufferAttached) {
       this.#bufferAttached = live
       if (live) buffer.attach(this, sink)
       else buffer.detach()
     }
+
     const abr = this.#features.abrController
     const drive = this.#abrDrivable() && !this.mediaSources.some(isPinned)
     if (abr && drive !== this.#abrAttached) {
@@ -610,6 +642,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       logger.warn('MOQtailPlayer', `error while ${this.#state}`, error)
       return
     }
+
     this.#error = error
     this.emit('error', error)
     this.#setState('error')
@@ -624,8 +657,10 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       logger.error('MOQtailPlayer', message)
       return
     }
+
     this.#state = next
     this.emit('statechange', next, previous)
+
     const event = STATE_EVENTS[next]
     if (event) this.emit(event)
   }
@@ -681,6 +716,7 @@ if (import.meta.vitest) {
       const player = new MOQtailPlayer()
       expect(() => player.source('https://example.com')).toThrow(code('UNSUPPORTED_SOURCE'))
       expect(() => player.source(`${URL}&connection=q`)).toThrow(code('UNSUPPORTED_SOURCE'))
+
       player.registerElement(media).source(URL)
       expect(() => player.source('moqt://other.example.com/app#msf:ns--catalog')).toThrow(code('UNSUPPORTED_ORIGIN'))
       expect(player.state).toBe('idle')
@@ -693,6 +729,7 @@ if (import.meta.vitest) {
       expect(() => new MOQtailPlayer().source(URL).transform(media as never)).toThrow(TypeError)
       expect(() => player.registerElement(media)).toThrow(TypeError)
       expect(() => player.sink({} as HTMLVideoElement)).toThrow(TypeError)
+
       void player.init()
       expect(() => player.sink(fakeMediaSink)).toThrow(TypeError)
     })
@@ -700,26 +737,33 @@ if (import.meta.vitest) {
     test('init and start are idempotent, and the state follows the sink and the session', async () => {
       const player = make()
       const log = record(player)
+
       expect(player.init()).toBe(player.init())
       expect(player.start()).toBe(player.start())
       await player.start()
+
       const sink = player.mediaSink as Sink
       expect([sink.calls, fakes.clients.length]).toEqual([['play'], 1])
+
       sink.dispatch('waiting') // waiting before the first `playing` isn't a stall
       sink.dispatch('playing')
       sink.seeking = true
       sink.dispatch('waiting') // nor is waiting for a seek
       sink.seeking = false
       for (const event of ['pause', 'waiting', 'playing']) sink.dispatch(event)
+
       fakes.clients[0]!.drop()
       sink.dispatch('waiting') // ran dry while reconnecting: that's where it returns to
       await flush()
+
       sink.ended = true
       sink.dispatch('pause') // the element pauses right before `ended`
       sink.dispatch('ended')
+
       await player.seek(0)
       sink.dispatch('playing')
       await player.destroy()
+
       expect(log).toEqual([
         ...['connecting', 'ready', 'playing', 'paused', 'stalled', 'playing', 'reconnecting', 'stalled'],
         ...['ended', 'playing', 'destroyed'],
@@ -738,9 +782,11 @@ if (import.meta.vitest) {
           }
         },
       )
+
       try {
         await make({ preferWorker: false }).init()
         expect(spawned).toEqual([])
+
         const terminated: string[] = []
         const worker = () => {
           spawned.push('option')
@@ -750,6 +796,7 @@ if (import.meta.vitest) {
         const player = make({ worker })
         await player.init()
         expect([spawned, terminated]).toEqual([['option'], ['option']])
+
         // A default spawn that fails leaves the player on the main thread
         await make().init()
         expect(spawned).toEqual(['option', 'default'])
@@ -798,6 +845,7 @@ if (import.meta.vitest) {
       const late = Promise.withResolvers<void>()
       const slow = testSource({ script: (s) => void (s.addPad(), late.promise.then(() => s.emit('nomorepads'))) })
       const player = new MOQtailPlayer({ client: { reconnectAttempts: 1 } }).registerElement(slow).source(URL)
+
       const init = player.sink(fakeMediaSink).init()
       await flush()
       fakes.clients[0]!.drop()
@@ -812,15 +860,18 @@ if (import.meta.vitest) {
       const idle = make()
       const connecting = make()
       const pending = connecting.init()
+
       await idle.destroy()
       await connecting.destroy()
       await expect(pending).rejects.toMatchObject({ code: 'ABORTED' })
+
       for (const player of [idle, connecting]) {
         expect(player.state).toBe('destroyed')
         expect(() => player.source(URL)).toThrow(code('ABORTED'))
         await expect(player.play()).rejects.toMatchObject({ code: 'ABORTED' })
         await expect(player.init()).rejects.toMatchObject({ code: 'ABORTED' })
       }
+
       const reconnecting = make()
       await reconnecting.init()
       fakes.clients.at(-1)!.drop()
@@ -840,8 +891,10 @@ if (import.meta.vitest) {
       await player.init()
       const sink = player.mediaSink as Sink
       sink.playResult = () => Promise.reject(new DOMException('gesture needed', 'NotAllowedError'))
+
       await expect(player.start()).rejects.toMatchObject({ name: 'NotAllowedError' })
       expect([player.state, blocked]).toEqual(['paused', 1])
+
       player.setPlaybackRate(1.5)
       await player.pause()
       expect(sink.calls).toEqual(['play', 'rate 1.5', 'pause'])
@@ -856,11 +909,14 @@ if (import.meta.vitest) {
       player.emit('streamtypechange', 'live')
       plain.emit('streamtypechange', 'live')
       expect(player.bufferController).toBeUndefined()
+
       await Promise.all([player.init(), plain.init()])
       expect([player.bufferController, plain.bufferController]).toEqual([buffer, undefined])
+
       player.emit('streamtypechange', 'on-demand')
       expect(player.bufferController).toBeUndefined()
       player.emit('streamtypechange', 'live')
+
       await Promise.all([player.destroy(), plain.destroy()])
       expect(calls).toEqual(['attach', 'detach', 'attach', 'detach'])
     })
@@ -874,17 +930,22 @@ if (import.meta.vitest) {
         .registerElement(switching)
         .source(URL)
         .sink(fakeMediaSink)
+
       for (const p of [player, withAbr]) p.emit('streamtypechange', 'live')
+
       await Promise.all([player.init(), withAbr.init()])
       expect([player.abrController, withAbr.abrController]).toEqual([controller, undefined])
+
       // It drives no source of its own, but stays available to the one that switches itself
       expect([player.isAbrAvailable(player.sources[0]!), withAbr.isAbrAvailable(withAbr.sources[0]!)]).toEqual([
         true,
         true,
       ])
+
       player.emit('streamtypechange', 'on-demand')
       expect([player.abrController, player.isAbrAvailable(player.sources[0]!)]).toEqual([undefined, false])
       player.emit('streamtypechange', 'live')
+
       await Promise.all([player.destroy(), withAbr.destroy()])
       expect(calls).toEqual(['attach', 'detach', 'attach', 'detach'])
     })
@@ -893,10 +954,12 @@ if (import.meta.vitest) {
       const [a, b] = [make(), make()]
       const other = make({ client: { reconnectAttempts: 2 } }) // checked on connect, nothing is live yet
       await Promise.all([a.init(), b.init()])
+
       await expect(other.init()).rejects.toMatchObject({ code: 'UNSUPPORTED_ORIGIN' })
       expect(() => new MOQtailPlayer().registerElement(media).source('moqt://x.example.com/a#msf:ns--catalog')).toThrow(
         code('UNSUPPORTED_ORIGIN'),
       )
+
       const events: string[] = []
       for (const [name, player] of [
         ['a', a],
@@ -906,6 +969,7 @@ if (import.meta.vitest) {
         player.on('reconnected', () => events.push(`${name} reconnected`))
         player.on('client', () => events.push(`${name} client`))
       }
+
       expect(a.client).toBe(fakes.clients[0])
       fakes.clients[0]!.drop()
       await flush()
@@ -914,6 +978,7 @@ if (import.meta.vitest) {
         ...['a client', 'a reconnected', 'b client', 'b reconnected'],
       ])
       expect(a.client).toBe(fakes.clients[1])
+
       await a.destroy()
       expect(fakes.clients[1]!.disconnected).toBe(false)
       await b.destroy()
@@ -932,6 +997,7 @@ if (import.meta.vitest) {
           negotiated: (_, serverSetup) => serverSetup.setupOptions.length > 0,
           features,
         })()
+
       expect(() => new MOQtailPlayer({ plugins: [offering('one', 1), offering('two', 2)] })).toThrow(
         code('UNSUPPORTED_ORIGIN'),
       )
@@ -945,6 +1011,7 @@ if (import.meta.vitest) {
           script: async (s) => {
             const picked = s.ctx.probe({ track: 'video' })
             if (picked) await s.ctx.load(picked)
+
             s.addPad()
             s.emit('nomorepads')
           },
@@ -957,6 +1024,7 @@ if (import.meta.vitest) {
           { type: 'element', item: video },
         ]),
       ]
+
       // The fake relay sends no setup parameters: the plugin is inactive, even for the top-level track
       const inactive = new MOQtailPlayer({ plugins: plugins() }).registerElement(top).source(URL).sink(fakeMediaSink)
       await inactive.init()
@@ -995,8 +1063,10 @@ if (import.meta.vitest) {
       async function play(sink: SinkElementDefinition, ...registered: ElementDefinition[]) {
         const player = new MOQtailPlayer()
         for (const definition of [packaged('cmaf'), packaged('loc'), ...registered]) player.registerElement(definition)
+
         const init = player.source(URL).sink(sink).init()
         await settle()
+
         const json = JSON.stringify({ version: 'draft-01', tracks })
         fakes.clients[0]!.last.push(testObject('catalog', 0, 0, new TextEncoder().encode(json)))
         await init
@@ -1021,6 +1091,7 @@ if (import.meta.vitest) {
         let sink: CollectingSink | undefined
         const raw = collectingSink({ packaging: 'raw', setup: (k) => (sink = k) })
         const player = await play(raw, testTransform({ name: 'decoder', takes: 'loc', makes: 'raw' }))
+
         const upstream = (element: BaseElement) => element.pads.find((p) => p.direction === 'sink')!.peers[0]!.element
         expect(sink!.pads.map((p) => definitionOf(p.peers[0]!.element)!.name)).toEqual(['decoder', 'decoder'])
         expect(sink!.pads.map((p) => definitionOf(upstream(p.peers[0]!.element))!.name)).toEqual(['loc', 'loc'])
@@ -1039,14 +1110,17 @@ if (import.meta.vitest) {
         fakes.restore()
         const opened = Promise.withResolvers<void>()
         fakes = fakeClients(() => opened.promise)
+
         let sink: CollectingSink | undefined
         const player = new MOQtailPlayer()
           .source(url)
           .sink(collectingSink({ packaging: 'loc', setup: (k) => (sink = k) }))
         const types: StreamType[] = []
         player.on('streamtypechange', (type) => types.push(type))
+
         const init = player.init()
         await flush()
+
         const client = fakes.clients[0]!
         client.respond = respond
         opened.resolve()
@@ -1058,6 +1132,7 @@ if (import.meta.vitest) {
         await c.init
         c.client.last.push(mediaObject(1, 0, null, 'video'))
         await flush()
+
         expect([
           c.player.sources.map((s) => definitionOf(s)!.name),
           c.client.sent('subscribe').length,
@@ -1069,6 +1144,7 @@ if (import.meta.vitest) {
             .items()
             .map((i) => i.type),
         ).toEqual(['properties', 'packet'])
+
         expect(c.player.mediaSources[0]!.getRenditions()[0]!.src).toBe(TRACK)
         await c.player.destroy()
       })
@@ -1076,6 +1152,7 @@ if (import.meta.vitest) {
       test('with a location range, is fetched on demand', async () => {
         const c = await prerolled(`${TRACK}&location-range=2-4`, () => ({ trackProperties: videoProperties }))
         await c.init
+
         const [fetch] = c.client.sent<import('@/client/types').FetchOptions>('fetch')
         expect([c.client.sent('subscribe'), fetch?.locationFilter?.startGroup, c.types]).toEqual([
           [],
@@ -1088,6 +1165,7 @@ if (import.meta.vitest) {
       test('is accepted by the objects of its first group, which reach the pad before the rest', async () => {
         const c = await prerolled(TRACK, () => ({}))
         await flush()
+
         // The config on the first object, the codec on the second
         const config = [new VideoConfig(new Uint8Array([1])).toKeyValuePair()]
         const codec = [new CodecString('avc1.42C01F').toKeyValuePair()]
@@ -1095,6 +1173,7 @@ if (import.meta.vitest) {
         await c.init
         c.client.last.push(mediaObject(1, 2, null, 'video'))
         await flush()
+
         const packets = c
           .sink()
           .items()

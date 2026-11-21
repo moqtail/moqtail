@@ -31,6 +31,7 @@ export const CatalogSource = defineElement({
     const source = options?.source
     if (!source)
       throw new PlayerError('UNSUPPORTED_SOURCE', 'The catalog source needs the catalog URL', { element: 'catalog' })
+
     const catalog = new CatalogElement(context, { ...options, source })
     await catalog.start()
     return catalog
@@ -84,8 +85,10 @@ if (import.meta.vitest) {
   async function setup(options: Options = {}, respond?: Respond, params = '') {
     const client = new FakeClient()
     if (respond) client.respond = respond
+
     const log: string[] = []
     const warnings: string[] = []
+
     /** Loaded as `name`, it logs its load and every `setTracks`. */
     const stub = (name: string) =>
       defineElement({
@@ -101,7 +104,9 @@ if (import.meta.vitest) {
           const where = ranges
             ? ` ${[...ranges.locationRanges.map((r) => `L${r.start.group}-${r.end?.group ?? ''}`), ...ranges.mediaTimeRanges.map((r) => `T${r.start}-${r.end ?? ''}`)]}`
             : ''
+
           log.push(`${name === 'media' ? 'load' : name} ${names(context.tracks)}${child}${where}`)
+
           return Object.assign(new TestSource(context), {
             getRenditions: () => [],
             switch: async () => {},
@@ -110,6 +115,7 @@ if (import.meta.vitest) {
           })
         },
       })
+
     const media = stub('media')
     const switchSources: Definition[] = []
     const { chain } = testChain(
@@ -117,23 +123,28 @@ if (import.meta.vitest) {
       () => client,
       () => switchSources,
     )
+
     Object.assign(chain.host.player.options, options)
     let element: CatalogElement | undefined
     chain.host.player.on('catalog', (c) => (element = c as CatalogElement))
     chain.host.player.on('warning', (w) => warnings.push(w.code))
     const streamTypes: string[] = []
     chain.host.player.on('streamtypechange', (type) => void streamTypes.push(type))
+
     chain.addSource(CatalogSource, { ...parseMsfUrl(`moqt://relay.test/app#msf:ns--catalog${params}`) })
     let settled: string | undefined
     const init = chain.init(new AbortController().signal).then(
       () => (settled = 'resolved'),
       (e: PlayerError) => (settled = e.code),
     )
+
     await flush()
+
     const push = async (...objects: MoqtObject[]) => {
       client.last.push(...objects)
       await settle()
     }
+
     return {
       client,
       media,
@@ -155,12 +166,14 @@ if (import.meta.vitest) {
       expect(c.client.sent<{ priority: number }>('subscribe')[0]!.priority).toBe(0)
       await c.push(object(1, 0, bytes(catalog([]))))
       expect(c.settled()).toBeUndefined()
+
       const timeline = { name: 'sap', packaging: 'eventtimeline', eventType: 'x', isLive: true }
       const tracks = [
         track('v1', 'video'),
         track('v2', 'video'),
         { ...track('a1', 'audio'), role: undefined, samplerate: 1 },
       ]
+
       await c.push(object(1, 1, bytes(delta('add', ...tracks, timeline))))
       await c.init
       expect([c.settled(), c.log, c.warnings]).toEqual(['resolved', ['load v1,v2', 'load a1'], ['TRACK_SKIPPED']])
@@ -221,6 +234,7 @@ if (import.meta.vitest) {
       )
       await c.init
       expect([c.log, names(c.catalog().tracks)]).toEqual([['load v1', 'v1 ← v1,v2', 'v1 ← v1,v2,v3'], 'v1,v2,v3'])
+
       // An unknown track: rejected, the catalog goes stale and later deltas of the group are ignored
       await c.push(object(5, 3, bytes(delta('remove', { name: 'nope' }))), object(5, 4, bytes(delta('add', v('v9')))))
       expect([c.warnings, c.catalog().stale, names(c.catalog().tracks)]).toEqual([
@@ -228,10 +242,12 @@ if (import.meta.vitest) {
         true,
         'v1,v2,v3',
       ])
+
       await c.push(
         object(6, 0, bytes(catalog([v('v1'), v('v2')]))),
         object(6, 1, bytes(delta('update', { parentName: 'v2', bitrate: 5 }))),
       )
+
       expect([c.catalog().stale, names(c.catalog().tracks), c.catalog().find('v2')?.bitrate]).toEqual([
         false,
         'v1,v2',
@@ -255,12 +271,15 @@ if (import.meta.vitest) {
         object(1, 4, bytes(delta('remove', { name: 'a1' }))),
         object(1, 5, bytes(delta('add', track('a2', 'audio')))), // fits no set, but audio has none left
       )
+
       const vod = { isLive: false, trackDuration: 4000 }
       const tracks = [{}, { codec: 'hvc1' }, {}, { altGroup: 2 }].map((extra, i) =>
         track(`v${i + 1}`, 'video', { ...vod, ...extra }),
       )
+
       await c.push(object(2, 0, bytes(catalog([...tracks, track('a2', 'audio', vod)]))))
       expect([c.catalog().streamType, c.catalog().duration]).toEqual(['on-demand', 4])
+
       await c.push(object(3, 0, bytes(catalog([], { isComplete: true }))))
       expect(c.log).toEqual([
         ...['load v1,v2', 'load a1', 'v1 ← v1,v2', 'v1 ← v1,v2', 'v1 ← v1,v2,v3', 'a1 ← '],
@@ -278,6 +297,7 @@ if (import.meta.vitest) {
       const c = await setup()
       await c.push(object(1, 0, bytes(catalog([track('v1', 'video'), track('v2', 'video')]))))
       await c.init
+
       const tracks = [track('v1', 'video'), track('v2', 'video', { codec: 'hvc1' })]
       await c.push(object(2, 0, bytes(catalog(tracks, { isComplete: true }))))
       expect(c.log).toEqual(['load v1,v2', 'v1 ← v1,v2'])
@@ -288,17 +308,22 @@ if (import.meta.vitest) {
       const history = { name: 'history', packaging: 'mediatimeline', isLive: true, depends: [1] }
       const template = [0, 2000, [1, 0], [1, 0], 0, 0]
       const tracks = [track('v1', 'video', { renderGroup: 1 }), track('a1', 'audio', { renderGroup: 1, template })]
+
       await c.push(object(1, 0, bytes(catalog([...tracks, history]))))
       await c.init
+
       const [v1, a1] = c.catalog().tracks as [Track, Track]
       expect((await c.catalog().timeline(a1))?.timeToLocation(4000)).toEqual(new Location(3n, 0n))
+
       const first = c.catalog().timeline(v1)
       const second = c.catalog().timeline(v1)
       await flush()
+
       const entries = (json: unknown[], id = 0) => testObject('history', 1, id, bytes(json))
       c.client.last.push(entries([[0, [1, 0], 0]]))
       const [reader] = await Promise.all([first, second])
       expect(c.client.sent('subscribe')).toHaveLength(2) // the catalog, and one media timeline
+
       await c.push(entries([[2000, [2, 0], 0]], 1))
       expect([reader?.timeToLocation(2500), reader?.range]).toEqual([new Location(2n, 0n), { start: 0, end: 2000 }])
     })
@@ -307,6 +332,7 @@ if (import.meta.vitest) {
       const params = '&location-range=2-4&mediatime-range=50000'
       const c = await setup({}, undefined, params)
       const template = (ms: number) => ({ template: [0, ms, [0, 0], [1, 0], 0, 0] })
+
       await c.push(
         object(1, 0, bytes(catalog([track('v1', 'video', template(2000)), track('a1', 'audio', template(700))]))),
       )
@@ -324,6 +350,7 @@ if (import.meta.vitest) {
       const history = { name: 'history', packaging: 'mediatimeline', isLive: true, depends: ['v1'] }
       await c.push(object(1, 0, bytes(catalog([track('v1', 'video'), history]))))
       await c.init
+
       const v1 = c.catalog().tracks[0]!
       expect(await c.catalog().timeline(v1)).toBeUndefined()
       expect(await c.catalog().timeline(v1)).toBeUndefined()
@@ -342,6 +369,7 @@ if (import.meta.vitest) {
           [accepting ? 'wrap v1 around media' : 'later v1 around media'],
         ])
       }
+
       const none = await setup()
       none.switchSources.push({ ...none.stub('wrap'), probe: () => false })
       await none.push(object(1, 0, bytes(catalog([track('v1', 'video')]))))

@@ -157,13 +157,16 @@ export class InstanceContext implements ElementContext {
     const worker = this.#chain.host.worker?.()
     const threads = definition.threads?.(worker?.environment() ?? {}) ?? 'main'
     if (threads !== 'main') this.#worker = worker?.context(this)
+
     if (threads === 'worker' && !this.#worker) {
       throw new PlayerError('UNSUPPORTED_SOURCE', `Element "${definition.name}" needs a worker`, {
         element: definition.name,
       })
     }
+
     const element = await definition.init(this, options)
     this.#chain.register(element)
+
     // Destroyed while init was running: nothing will release it later
     if (this.signal.aborted) await this.destroy()
     return element
@@ -175,15 +178,19 @@ export class InstanceContext implements ElementContext {
     const table = request.shared === false ? undefined : this.#chain.sharingTable(definition)
     const key = sharingKey(tracks)
     let loaded = table?.get(key)
+
     if (loaded && !deepEqual(loaded.options, options)) {
       throw new PlayerError('UNSUPPORTED_SOURCE', `Element "${definition.name}" is already loaded with other options`, {
         element: definition.name,
       })
     }
+
     if (!loaded) {
       const context = new InstanceContext(this.#chain, tracks, request.catalog ?? this.catalog)
+
       // Before init runs, so pads it creates already know their holder
       context.holders.add(this)
+
       const created: Loaded = {
         context,
         element: context.create(definition, options),
@@ -192,12 +199,15 @@ export class InstanceContext implements ElementContext {
           if (table?.get(key) === created) table.delete(key)
         },
       }
+
       created.element.catch(created.unshare) // a failed init isn't shared
       table?.set(key, created)
       loaded = created
     }
+
     loaded.context.holders.add(this)
     this.#holding.add(loaded)
+
     return loaded.element as Promise<E>
   }
 
@@ -205,6 +215,7 @@ export class InstanceContext implements ElementContext {
   destroy(): Promise<void> {
     // Called during init, before the constructor ran: `create` destroys the element once init returns
     if (!this.#element) return this.#destroy()
+
     this.#destroying ??= this.#destroy()
     return this.#destroying
   }
@@ -217,6 +228,7 @@ export class InstanceContext implements ElementContext {
   async #destroy(): Promise<void> {
     this.#abort.abort()
     const element = this.#element
+
     try {
       await element?.destroy()
     } finally {
@@ -230,6 +242,7 @@ export class InstanceContext implements ElementContext {
     this.#holding.delete(loaded)
     loaded.context.holders.delete(this)
     if (loaded.context.holders.size > 0) return
+
     loaded.unshare()
     await loaded.context.destroy()
   }
@@ -249,9 +262,11 @@ if (import.meta.vitest) {
   async function parents(count: number) {
     const { chain } = testChain()
     const sources: Source[] = []
+
     for (let i = 0; i < count; i++) {
       chain.addSource(testSource({ script: (s) => (sources.push(s), s.emit('nomorepads')) }), {})
     }
+
     await chain.init(new AbortController().signal)
     return { chain, sources }
   }
@@ -262,15 +277,18 @@ if (import.meta.vitest) {
     test('one instance for the same definition and tracks, destroyed after its last holder', async () => {
       const { chain, sources } = await parents(2)
       const [a, b] = sources as [Source, Source]
+
       const first = await a.ctx.load(child, { tracks: [track('v1'), track('a1')] })
       const second = await b.ctx.load(child, { tracks: [track('a1'), track('v1')] })
       const other = await b.ctx.load(child, { tracks: [track('v2')] })
+
       expect(second).toBe(first)
       expect(other).not.toBe(first)
       expect(chain.sources).toEqual([a, b, first, other])
 
       await teardown(a)
       expect(first.signal.aborted).toBe(false)
+
       await teardown(b)
       expect([first.signal.aborted, other.signal.aborted]).toEqual([true, true])
       expect(chain.sources).toEqual([])
@@ -279,9 +297,11 @@ if (import.meta.vitest) {
     test('a later load with different options is a PlayerError', async () => {
       const { sources } = await parents(2)
       await sources[0]!.ctx.load(child, { tracks: [track('v1')], options: { switchFrom: true } })
+
       await expect(
         sources[1]!.ctx.load(child, { tracks: [track('v1')], options: { switchFrom: true } }),
       ).resolves.toBeDefined()
+
       await expect(sources[1]!.ctx.load(child, { tracks: [track('v1')] })).rejects.toMatchObject({
         name: 'PlayerError',
         code: 'UNSUPPORTED_SOURCE',
@@ -292,6 +312,7 @@ if (import.meta.vitest) {
     test('release drops one child, unless another holder keeps it', async () => {
       const { sources } = await parents(2)
       const [a, b] = sources as [Source, Source]
+
       const v1 = await a.ctx.load(child, { tracks: [track('v1')] })
       const v2 = await a.ctx.load(child, { tracks: [track('v2')] })
       expect(await b.ctx.load(child, { tracks: [track('v2')] })).toBe(v2)
@@ -299,6 +320,7 @@ if (import.meta.vitest) {
       await a.ctx.release(v1)
       await a.ctx.release(v2)
       expect([v1.signal.aborted, v2.signal.aborted]).toEqual([true, false])
+
       await b.ctx.release(v2)
       expect(v2.signal.aborted).toBe(true)
     })
@@ -308,10 +330,12 @@ if (import.meta.vitest) {
       const source = sources[0]!
       const destroy = source.destroy.bind(source)
       let calls = 0
+
       source.destroy = () => {
         calls++
         return destroy()
       }
+
       await Promise.all([teardown(source), teardown(source)])
       expect(calls).toBe(1)
     })
@@ -319,11 +343,14 @@ if (import.meta.vitest) {
     test('unshared loads of one track coexist, with their own options', async () => {
       const { sources } = await parents(1)
       const parent = sources[0]!
+
       const shared = await parent.ctx.load(child, { tracks: [track('v1')] })
       const first = await parent.ctx.load(child, { tracks: [track('v1')], shared: false })
       const second = await parent.ctx.load(child, { tracks: [track('v1')], options: { other: 1 }, shared: false })
+
       expect(new Set([shared, first, second]).size).toBe(3)
       expect(await parent.ctx.load(child, { tracks: [track('v1')] })).toBe(shared)
+
       await parent.ctx.release(first)
       expect([first.signal.aborted, second.signal.aborted]).toEqual([true, false])
     })
@@ -331,12 +358,14 @@ if (import.meta.vitest) {
     test('releasing a parent releases its children recursively, except what another holder keeps', async () => {
       const { sources } = await parents(2)
       const [a, b] = sources as [Source, Source]
+
       const middle = await a.ctx.load(child, { tracks: [track('v1')] })
       const shared = await middle.ctx.load(child, { tracks: [track('timeline')] })
       expect(await b.ctx.load(child, { tracks: [track('timeline')] })).toBe(shared)
 
       await teardown(a)
       expect([middle.signal.aborted, shared.signal.aborted]).toEqual([true, false])
+
       await teardown(b)
       expect(shared.signal.aborted).toBe(true)
     })

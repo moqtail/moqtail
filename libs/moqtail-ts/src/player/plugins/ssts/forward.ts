@@ -81,24 +81,30 @@ export class Forwarder {
     const { pad } = this.#host
     const seekChild = this.#seekChild
     if (seekChild && from === seekChild.element) return this.#forwardSeekChild(seekChild, item)
+
     const child = this.#host.childOf(from)
     if (!child) return
+
     if (item.type === 'properties') {
       child.properties = { ...child.properties, ...item.properties }
       if (child === this.arriving && !seekChild) await pad.write(item)
       return
     }
+
     if (item.type !== 'packet') return
     if (seekChild) return // the set waits behind the seek child's history
+
     if (child !== this.arriving) {
       // The relay switched tracks: the pad carries the new one from here
       this.arriving = child
       await pad.write({ type: 'properties', properties: child.properties })
     }
+
     // The first arrival too: until then no rendition is active
     const changed = this.#emitted !== child.track
     this.#emitted = child.track
     await this.#writePacket(item.packet)
+
     if (changed) this.#host.renditionChanged(child.track)
   }
 
@@ -110,17 +116,21 @@ export class Forwarder {
   async seek(mediaTime: number): Promise<void> {
     const call = ++this.#seeks
     this.#dropSeekChild('superseded')
+
     const child = this.arriving ?? this.#host.selected()[0]
     if (!child) {
       this.#owed++
       return
     }
+
     const last = this.#last
     const timeline = child.track.isLive && last ? await this.#host.context.catalog?.timeline(child.track) : undefined
+
     if (call !== this.#seeks) {
       this.#owed++ // superseded: answered with the next answer
       return
     }
+
     const target = timeline?.timeToLocation(mediaTime * 1000)
     if (target && last && target.group <= last.group) {
       await this.#loadSeekChild(child, target, last)
@@ -138,8 +148,10 @@ export class Forwarder {
       else if (event.type === 'discontinuity' && event.reason === 'gap') void this.#writeEvent(event)
       return true
     }
+
     const child = this.#host.childOf(from)
     if (!child) return true
+
     if (event.type === 'eos') {
       child.eos = true
       this.endIfDone()
@@ -149,14 +161,17 @@ export class Forwarder {
     } else if (event.type === 'discontinuity' && child === this.arriving) {
       void this.#writeEvent(event)
     }
+
     return true
   }
 
   /** True if `from` was the seek child, whose removal ends it. */
   seekChildRemoved(from: BaseElement | undefined): boolean {
     if (!this.#seekChild || from !== this.#seekChild.element) return false
+
     const started = this.#seekChild.started
     this.#dropSeekChild('ended')
+
     if (!started) void this.#answer('failed')
     return true
   }
@@ -175,7 +190,9 @@ export class Forwarder {
     this.#owed++
     const seekChild: SeekChild = { properties: {}, started: false }
     this.#seekChild = seekChild
+
     const locationRanges = [{ start: new Location(target.group, 0n), end: { group: last.group } }]
+
     try {
       // No request hooks: the history is fetched outside the set
       const element = await context.load(this.#host.child, {
@@ -200,23 +217,28 @@ export class Forwarder {
       this.#gap = false
       await this.#writeEvent({ type: 'discontinuity', reason: 'gap' })
     }
+
     await this.#host.pad.write({ type: 'packet', packet })
     this.#last = packet.location
   }
 
   async #forwardSeekChild(seekChild: SeekChild, item: PadItem): Promise<void> {
     const { pad } = this.#host
+
     if (item.type === 'properties') {
       seekChild.properties = { ...seekChild.properties, ...item.properties }
       if (seekChild.started) await pad.write(item)
       return
     }
+
     if (item.type !== 'packet') return
+
     if (!seekChild.started) {
       seekChild.started = true
       await pad.write({ type: 'properties', properties: seekChild.properties })
       await this.#answer('ok')
     }
+
     await this.#writePacket(item.packet)
   }
 
@@ -224,8 +246,10 @@ export class Forwarder {
   #dropSeekChild(reason: 'superseded' | 'ended'): void {
     const seekChild = this.#seekChild
     if (!seekChild) return
+
     this.#seekChild = undefined
     if (seekChild.element) void this.#host.context.release(seekChild.element)
+
     if (reason === 'ended' && seekChild.started) {
       this.#gap = true
       this.arriving = undefined
@@ -237,6 +261,7 @@ export class Forwarder {
     while (this.#owed > 0) {
       const last = --this.#owed === 0
       const failed = outcome === 'failed' && last
+
       const event: PadEvent = { type: 'discontinuity', reason: 'seek', ...(failed && { failed }) }
       await this.#writeEvent(event)
     }

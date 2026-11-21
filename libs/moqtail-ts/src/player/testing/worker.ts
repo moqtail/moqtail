@@ -70,11 +70,14 @@ export const TEST_ENGINES = { 'worker-pass': PassEngine, 'worker-record': Record
  */
 export function inProcessWorker(engines: Record<string, EngineClass> = TEST_ENGINES): Worker {
   const { port1, port2 } = new MessageChannel()
+
   vi.stubGlobal('addEventListener', port2.addEventListener.bind(port2))
   vi.stubGlobal('removeEventListener', port2.removeEventListener.bind(port2))
   vi.stubGlobal('postMessage', port2.postMessage.bind(port2))
+
   serveWorker(engines)
   port2.start()
+
   return Object.assign(port1, { terminate: () => port1.close() }) as unknown as Worker
 }
 
@@ -85,9 +88,11 @@ class WorkerTransform extends TransformElement {
     super(context)
     this.on('padadded', (pad) => {
       if (pad.direction !== 'sink') return
+
       const thread = { direction: 'out' as const, code: CapabilityCode.THREAD, value: 'worker' }
       const output = this.createPad('src', [...pad.capabilities, thread])
       this.#engines.set(pad, this.context.worker!.create<PassEngine>('worker-pass', { outputs: [output] }))
+
       pad.onEvent((event) => {
         void this.#engines.get(pad)?.event(event)
         return true
@@ -130,6 +135,7 @@ export class WorkerSink extends SinkElement {
     const worker = this.context.worker!
     const engine = worker.create<RecordEngine>('worker-record')
     this.#engine = engine
+
     for (const pad of this.pads) if (worker.inWorker(pad)) worker.link(pad, engine)
   }
 

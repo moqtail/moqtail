@@ -57,11 +57,13 @@ export function convertedCapabilities(
   capabilities: Capabilities,
 ): Capabilities | undefined {
   if (!bundles.some((bundle) => accepts(bundle, capabilities))) return undefined
+
   for (const bundle of bundles) {
     if (bundle[0]?.direction !== 'out') continue
     const converted = convert(bundle, capabilities)
     if (converted) return converted
   }
+
   return undefined
 }
 
@@ -75,10 +77,12 @@ export function selectSource(
   identifiers: Identifiers,
 ): SourceElementDefinition | undefined {
   let best: SourceElementDefinition | undefined
+
   for (const definition of definitions) {
     if (!definition.probe(identifiers)) continue
     if (!best || (definition.priority ?? DEFAULT_PRIORITY) < (best.priority ?? DEFAULT_PRIORITY)) best = definition
   }
+
   return best
 }
 
@@ -109,16 +113,20 @@ export function planTransforms(
 ): TransformElementDefinition[] | undefined {
   const queue = [{ capabilities, plan: [] as TransformElementDefinition[] }]
   const visited = new Set([capabilitiesKey(capabilities)])
+
   for (let i = 0; i < queue.length; i++) {
     const { capabilities: current, plan } = queue[i]!
     if (accepts(current)) return plan
+
     for (const definition of definitions) {
       const next = convertedCapabilities(definition.capabilities, current)
       if (!next || visited.has(capabilitiesKey(next))) continue
+
       visited.add(capabilitiesKey(next))
       queue.push({ capabilities: next, plan: [...plan, definition] })
     }
   }
+
   return undefined
 }
 
@@ -135,28 +143,34 @@ export function routeOf(
   const route: Route = { path: [], loaded: 0 }
   let current = capabilities
   let position = -1
+
   for (;;) {
     const next = declared.transforms.findIndex((t, i) => i > position && takes(t, current))
     if (next !== -1) {
       const transform = declared.transforms[next]!
       route.path.push({ definition: transform, capabilities: current })
+
       // Without an out bundle that converts it, the output keeps the input's capabilities
       current = convertedCapabilities(transform.capabilities, current) ?? current
       position = next
       continue
     }
+
     const sinks = declared.sinks.filter((s) => takes(s, current))
     if (sinks.length > 0) {
       route.path.push(...sinks.map((definition) => ({ definition, capabilities: current })))
       return route
     }
+
     const targets = [...declared.transforms.slice(position + 1), ...declared.sinks]
     const plan = planTransforms(current, loadable, (c) => targets.some((t) => takes(t, c)))
     if (!plan) return undefined
+
     for (const transform of plan) {
       route.path.push({ definition: transform, capabilities: current })
       current = convertedCapabilities(transform.capabilities, current)!
     }
+
     route.loaded += plan.length
   }
 }
@@ -180,18 +194,22 @@ function accepts(bundle: Capabilities, capabilities: Capabilities): boolean {
 
 function convert(bundle: Capabilities, capabilities: Capabilities): Capabilities | undefined {
   const output: Capabilities = []
+
   for (const capability of capabilities) {
     const values = bundle.filter((b) => b.code === capability.code)
     if (values.length === 0 || listed(bundle, capability)) output.push(capability)
     else if (values.length === 1) output.push(values[0]!)
     else return undefined
   }
+
   for (const code of new Set(bundle.map((b) => b.code))) {
     if (output.some((c) => c.code === code)) continue
+
     const values = bundle.filter((b) => b.code === code)
     if (values.length !== 1) return undefined
     output.push(values[0]!)
   }
+
   return output
 }
 
@@ -226,6 +244,7 @@ if (import.meta.vitest) {
     test('values of one code are alternatives, every code must hold, and out bundles never match', () => {
       const matches = (capabilities: Capabilities, bundles = transform) =>
         matchesCapabilities(bundles, { capabilities } as Pad)
+
       expect(matches(pad('loc', 'video'))).toBe(true)
       expect(matches(pad('loc', 'audio'))).toBe(true)
       expect(matches(pad('loc', 'subtitle'))).toBe(false)
@@ -241,6 +260,7 @@ if (import.meta.vitest) {
         ...pad('raw', 'video'),
         ...codec,
       ])
+
       // The first out bundle that converts the pad
       const bundles = [transform[0]!, of('out', PACKAGING, 'raw', 'cmaf'), transform[1]!]
       expect(convertedCapabilities(bundles, pad('loc', 'audio'))).toEqual(pad('raw', 'audio'))
@@ -248,6 +268,7 @@ if (import.meta.vitest) {
 
     test('undefined without an accepting in bundle or a converting out bundle', () => {
       expect(convertedCapabilities(transform, pad('cmaf', 'video'))).toBeUndefined()
+
       const ambiguous: CapabilityBundles = [of('in', PACKAGING, 'loc'), of('out', PACKAGING, 'raw', 'cmaf')]
       expect(convertedCapabilities(ambiguous, pad('loc', 'video'))).toBeUndefined()
     })
@@ -268,6 +289,7 @@ if (import.meta.vitest) {
 
     test('a cycle ends, nothing reachable is undefined, and an accepted pad needs nothing', () => {
       const cycle = [step('a', 'loc', 'x'), step('b', 'x', 'loc')]
+
       expect(plan(cycle)).toBeUndefined()
       expect(plan([])).toBeUndefined()
       expect(plan(cycle, 'raw')).toEqual([])
@@ -282,6 +304,7 @@ if (import.meta.vitest) {
       const raw = sink('raw')
       const filter = testTransform({ name: 'filter', takes: 'raw' })
       const route = routeOf(pad('loc', 'video'), { transforms: [filter], sinks: [raw] }, [decoder])
+
       expect(route).toEqual({
         path: [
           { definition: decoder, capabilities: pad('loc', 'video') },
@@ -290,10 +313,12 @@ if (import.meta.vitest) {
         ],
         loaded: 1,
       })
+
       expect(routeOf(pad('cmaf', 'video'), { transforms: [], sinks: [sink('cmaf')] }, [decoder])).toEqual({
         path: [{ definition: sink('cmaf'), capabilities: pad('cmaf', 'video') }],
         loaded: 0,
       })
+
       expect(routeOf(pad('loc', 'video'), { transforms: [], sinks: [sink('cmaf')] }, [decoder])).toBeUndefined()
     })
   })
@@ -304,6 +329,7 @@ if (import.meta.vitest) {
 
     test('among the probes that accept, lower priority, then earlier in the list; none is undefined', () => {
       const pick = (...defs: ReturnType<typeof probed>[]) => selectSource(defs, {})?.name
+
       expect(pick(probed('a', false, 1), probed('b', true))).toBe('b')
       expect(pick(probed('a', true), probed('b', true, 50))).toBe('b')
       expect(pick(probed('a', true, 50), probed('b', true, 100))).toBe('a')

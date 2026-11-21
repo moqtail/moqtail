@@ -86,20 +86,26 @@ export async function cmafChain(
   const client = () => {
     const created = new FakeClient()
     created.ordered = options.ordered ?? false
+
     if (options.respond) created.respond = options.respond
     return created
   }
+
   const clients = [client()]
   const element = options.element ?? Cmaf
   const packaging = element.capabilities[0]!.find((c) => c.code === CapabilityCode.PACKAGING)!.value
+
   const { chain, failures } = testChain(
     () => [],
     () => clients.at(-1),
   )
+
   if (options.reconnectAttempts)
     Object.assign(chain.host.player.options, { client: { reconnectAttempts: options.reconnectAttempts } })
+
   let source!: SwitchingSetSource
   let sink!: CollectingSink
+
   chain.addSource(
     testSource({
       script: async (parent) => {
@@ -110,8 +116,11 @@ export async function cmafChain(
     }),
     {},
   )
+
   chain.addSink(collectingSink({ packaging, setup: (k) => (sink = k) }))
+
   await chain.init(new AbortController().signal)
+
   const player = chain.host.player
   return {
     chain,
@@ -155,19 +164,23 @@ export async function cmafChain(
 /** A request in short: `subscribe v1 next`, `fetch v1 2.0-4`, `update 0 3.0-4.14`, `switch 0 v2 5.0- fill`. */
 function describeCall({ method, args }: { method: string; args: unknown }): string {
   if (method === 'unsubscribe' || method === 'fetchCancel') return `${method} ${args}`
+
   if (method === 'subscribeUpdate') {
     const update = args as SubscribeUpdateOptions
     return `update ${update.subscriptionRequestId} ${describeFilter(update.locationFilter)}`
   }
+
   const options = (method === 'switch' ? (args as SwitchOptions).newSubscribeOptions : args) as SubscribeOptions
   const fill = options.parameters?.find((p): p is FillParameters => p instanceof FillParameters)
   const filled = fill && ` fill${fill.parameters.map((f) => ` ${describeFilter(f as LocationFilter)}`).join('')}`
   const from = method === 'switch' ? ` ${(args as SwitchOptions).switchFromRequestId}` : ''
+
   return `${method}${from} ${requested(options)} ${describeFilter(options.locationFilter)}${filled ?? ''}`
 }
 
 function describeFilter(filter: LocationFilter | undefined): string {
   if (!filter) return 'all'
+
   const { filterType, startGroup: g, startObject: o, endGroup, endObject } = filter
   if (filterType === LocationFilterType.RelativeStart) return g ? `next-${g}` : 'next'
   if (filterType === LocationFilterType.NextObject) return 'nextobject'

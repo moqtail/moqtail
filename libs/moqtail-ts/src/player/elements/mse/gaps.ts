@@ -37,8 +37,10 @@ export function gapJumpTarget(
 ): number | undefined {
   const index = rangeAt(currentTime, buffered)
   if (index === -1) return rangeAhead(currentTime, buffered, live, liveEdgeDelay)
+
   const end = buffered.end(index)
   if (end - currentTime > STALL_THRESHOLD) return undefined
+
   for (let next = index + 1; next < buffered.length; next++) {
     const start = buffered.start(next)
     // Past ranges too short to play from, not only the next one
@@ -46,6 +48,7 @@ export function gapJumpTarget(
     const length = buffered.end(next) - start
     if (length >= STALL_THRESHOLD && length >= liveEdgeDelay) return start
   }
+
   return undefined
 }
 
@@ -68,8 +71,10 @@ export function nudgeTarget(
 ): number | undefined {
   const index = rangeAt(currentTime, buffered)
   if (index === -1 || stuckFor < NUDGE_AFTER) return undefined
+
   const ahead = buffered.end(index) - currentTime
   if (ahead < STALL_THRESHOLD) return undefined
+
   return currentTime + Math.min(NUDGE * 2 ** attempts, ahead - STALL_THRESHOLD)
 }
 
@@ -96,6 +101,7 @@ function rangeAhead(
 ): number | undefined {
   if (buffered.length === 0) return undefined
   if (live) return liveEdge(buffered, liveEdgeDelay)
+
   for (let i = 0; i < buffered.length; i++) if (buffered.start(i) > currentTime) return buffered.start(i)
   return undefined
 }

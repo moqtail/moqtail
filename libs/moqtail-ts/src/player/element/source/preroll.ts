@@ -53,9 +53,11 @@ export class Preroll {
   constructor(client: MOQtailClient, source: MsfSource, ordering: ObjectOrdering | undefined) {
     this.#client = client
     this.#track = source.track
+
     // The first span `toSpans` gives a VOD track without a timeline
     const range = merge(source.locationRanges)[0]
     this.isLive = !range
+
     const common = mediaRequest(source.namespace, source.trackBytes, ordering)
     this.#request = range
       ? client.fetch({ ...common, locationFilter: fetchFilter(range.start, range.end) })
@@ -78,9 +80,11 @@ export class Preroll {
    */
   async read(): Promise<MoqtObject | undefined> {
     const accepted = await this.#accept()
+
     this.#reader ??= accepted.stream.getReader()
     const { done, value } = await this.#reader.read()
     if (done) return undefined
+
     this.#objects.push(value)
     return value
   }
@@ -92,16 +96,20 @@ export class Preroll {
   handOff(): ReadAhead | undefined {
     const accepted = this.#accepted
     if (!accepted) return undefined
+
     this.#released = true
     this.#reader?.releaseLock()
+
     return { accepted, objects: this.#objects }
   }
 
   /** Ends the request, unless a source took it. */
   cancel(): void {
     if (this.#released) return
+
     this.#released = true
     void this.#reader?.cancel().catch(() => {}) // the session may be gone already
+
     void this.#request.then(
       (result) => cancel(this.#client, result),
       () => {}, // a request that failed is no request to end
@@ -110,11 +118,13 @@ export class Preroll {
 
   async #accept(): Promise<Accepted> {
     const result = await this.#request
+
     if (result instanceof RequestError) {
       throw new PlayerError('UNSUPPORTED_SOURCE', `The request for track "${this.#track}" was rejected`, {
         cause: result,
       })
     }
+
     this.#accepted = result
     return result
   }
@@ -132,12 +142,15 @@ if (import.meta.vitest) {
     const preroll = new Preroll(client, parseMsfUrl('moqt://relay.test/app#msf:ns--v1'), undefined)
     expect([preroll.isLive, preroll.handOff()]).toEqual([true, undefined])
     await flush()
+
     fake.last.push(mediaObject(1, 0), mediaObject(1, 1), mediaObject(1, 2))
     await preroll.read()
     await preroll.read()
+
     const { accepted, objects } = preroll.handOff()!
     preroll.cancel()
     expect(objects.map((o) => o.location.object)).toEqual([0n, 1n])
+
     const { value } = await accepted.stream.getReader().read()
     expect(value?.location.object).toBe(2n)
     expect(fake.sent('unsubscribe')).toEqual([])

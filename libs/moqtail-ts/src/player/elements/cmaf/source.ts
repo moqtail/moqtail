@@ -74,7 +74,9 @@ if (import.meta.vitest) {
     const c = await cmafChain([cmafTrack('v1', { init: property }), cmafTrack('v2', { init: property })], {
       respond: (_, options) => (requested(options) === 'v2' ? { trackProperties } : {}),
     })
+
     await flush()
+
     // v1 had nothing, so the set moved on to v2 and unsubscribed v1
     expect(c.client.sent('unsubscribe')).toEqual([0n])
     expect(c.sink.items()).toMatchObject([{ properties: { track: 'v2', initData: new Uint8Array([5]) } }])
@@ -83,9 +85,11 @@ if (import.meta.vitest) {
   test('object-property init data: packets before it are dropped, a change writes properties again', async () => {
     const c = await cmafChain([cmafTrack('v1', { init: { type: 'object-property', property: VideoConfig.TYPE } })])
     await flush()
+
     const [a, b] = [init(1).toKeyValuePair(), init(2).toKeyValuePair()]
     c.client.last.push(mediaObject(1, 0), mediaObject(1, 1, [a]), mediaObject(1, 2, [a]), mediaObject(2, 0, [b]))
     await flush()
+
     expect(c.trace()).toEqual(['props live,mimeType,track', 'props initData', '1.1', '1.2', 'props initData', '2.0'])
     expect(c.sink.items()[4]).toMatchObject({ properties: { initData: new Uint8Array([2]) } })
   })

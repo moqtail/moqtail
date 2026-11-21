@@ -121,7 +121,9 @@ export class PlayerWorker {
       const error = new PlayerError('MEDIA_FAILURE', 'The player worker failed', { cause: event })
       ;[...this.#owners][0]?.fail(error)
     }
+
     this.#worker.addEventListener('error', onError, { signal })
+
     try {
       const report = within(
         Promise.race([this.#host.environment(), failed.promise]),
@@ -130,6 +132,7 @@ export class PlayerWorker {
         () => new Error('The worker did not report'),
       )
       this.#names = new Set(await report)
+
       await this.#host.connect(
         Comlink.proxy<MainSide>({
           bridge: (key, item) => this.#bridged(key, item),
@@ -149,8 +152,10 @@ export class PlayerWorker {
 
   context(owner: Owner): ElementWorker | undefined {
     if (this.#terminated) return undefined
+
     this.#owners.add(owner)
     const created: number[] = []
+
     return {
       has: (name) => this.#has(name),
       create: <E extends Engine>(name: string, request: EngineRequest = {}) => {
@@ -198,12 +203,14 @@ export class PlayerWorker {
   #create(owner: Owner, name: string, request: EngineRequest): number {
     this.#used = true
     const id = this.#nextId++
+
     const outputs = (request.outputs ?? []).map((pad) => {
       const key = this.#nextId++
       this.#mirrors.set(key, pad)
       this.#outputs.set(pad, { key, engine: id, routed: false })
       return key
     })
+
     const { port1, port2 } = new MessageChannel()
     const engine = Comlink.wrap<Engine>(port1)
     this.#ids.set(engine, id)
@@ -213,7 +220,9 @@ export class PlayerWorker {
     this.#host
       .create(id, name, Comlink.transfer(port2, [port2]), outputs, options, report)
       .catch((error: unknown) => owner.fail(failure(error, name)))
+
     for (const pad of request.outputs ?? []) this.#route(pad)
+
     return id
   }
 
@@ -228,12 +237,15 @@ export class PlayerWorker {
     queueMicrotask(() => {
       const output = this.#outputs.get(mirror)
       if (!output || output.routed || mirror.peers.length === 0 || this.#terminated) return
+
       const choices = mirror.peers.map(
         (sink) => this.#choices.get(sink) ?? (this.#hasContext(sink.element) ? undefined : 'bridge'),
       )
       if (choices.includes(undefined)) return
+
       output.routed = true
       const links = choices.filter((choice) => choice !== 'bridge' && choice !== undefined)
+
       void this.#host.route(output.key, links.length === choices.length ? links : 'bridge')
     })
   }
@@ -246,6 +258,7 @@ export class PlayerWorker {
   #bridged(key: number, item: PadOutput): Promise<void> {
     const mirror = this.#mirrors.get(key)
     if (mirror) return mirror.write(item)
+
     closeFrame(item)
     return Promise.resolve()
   }
@@ -258,13 +271,17 @@ export class PlayerWorker {
   #release(id: number): void {
     const created = this.#created.get(id)
     if (!created) return
+
     this.#created.delete(id)
     created.engine[Comlink.releaseProxy]()
+
     for (const [pad, output] of this.#outputs) {
       if (output.engine !== id) continue
+
       this.#outputs.delete(pad)
       this.#mirrors.delete(output.key)
     }
+
     if (!this.#terminated) void this.#host.release(id)
   }
 }
@@ -273,6 +290,7 @@ export class PlayerWorker {
 export function spawnWorker(worker?: () => Worker): PlayerWorker | undefined {
   if (worker) return new PlayerWorker(worker())
   if (typeof Worker === 'undefined') return undefined
+
   try {
     return new PlayerWorker(new Worker(new URL('./player/worker-default.mjs', import.meta.url), { type: 'module' }))
   } catch {
@@ -311,18 +329,24 @@ if (import.meta.vitest) {
   async function workerChain(...sinks: ('main' | 'worker')[]) {
     const worker = new PlayerWorker(inProcessWorker())
     expect(await worker.start(new AbortController().signal)).toBe(true)
+
     const { chain, failures } = testChain(undefined, undefined, undefined, undefined, worker)
     let source: TestSource | undefined
     const consumers: (CollectingSink | WorkerSink)[] = []
+
     chain.addSource(testSource({ script: (s) => ((source = s), s.addPad(), s.emit('nomorepads')) }), {})
     chain.addTransform(workerTransform)
+
     for (const sink of sinks) {
       if (sink === 'main') chain.addSink(collectingSink({ setup: (k) => consumers.push(k) }))
       else chain.addSink({ ...workerSink, init: (c) => workerSink.init(c).then((k) => (consumers.push(k), k)) })
     }
+
     await chain.init(new AbortController().signal)
+
     const pad = source!.pads[0]!
     let written = 0
+
     /** Writes `count` packets one after the other, as a source does. */
     const write = async (count: number) => {
       for (let n = 0; n < count; n++) {
@@ -330,6 +354,7 @@ if (import.meta.vitest) {
         written++
       }
     }
+
     return { chain, failures, consumers, write, written: () => written }
   }
 
@@ -337,15 +362,20 @@ if (import.meta.vitest) {
     test('a worker pad holds what its engine writes until its consumer links, then items reach the engine in the worker, in order', async () => {
       const w = await workerChain('worker')
       const sink = w.consumers[0] as WorkerSink
+
       const writes = w.write(3 * CONNECTION_CAPACITY)
       await settle()
+
       // Held in the worker, and back up through the transform's input to the source
       expect(w.written()).toBeLessThan(3 * CONNECTION_CAPACITY)
+
       sink.link()
       await writes
       await vi.waitUntil(() => RecordEngine.created[0]?.items.length === 3 * CONNECTION_CAPACITY)
+
       expect(objects(RecordEngine.created[0]!.items)).toEqual([...Array(3 * CONNECTION_CAPACITY).keys()])
       expect([sink.received, w.failures]).toEqual([[], []])
+
       await w.chain.destroy()
     })
 
@@ -354,28 +384,36 @@ if (import.meta.vitest) {
       const sink = w.consumers[0] as CollectingSink
       const gate = Promise.withResolvers<void>()
       sink.slow = () => gate.promise
+
       const writes = w.write(5 * CONNECTION_CAPACITY)
       await settle()
+
       expect(w.written()).toBeLessThan(5 * CONNECTION_CAPACITY)
+
       gate.resolve()
       await writes
       await vi.waitUntil(() => sink.items().length === 5 * CONNECTION_CAPACITY)
+
       expect(objects(sink.items())).toEqual([...Array(5 * CONNECTION_CAPACITY).keys()])
       expect(sink.items()[0]).toMatchObject({ packet: { location: expect.any(Location) } })
+
       await w.chain.destroy()
     })
 
     test('a consumer that links next to one that does not bridges both, and the linked one forwards from the main thread', async () => {
       const w = await workerChain('worker', 'main')
       const [linked, bridged] = w.consumers as [WorkerSink, CollectingSink]
+
       linked.link()
       await w.write(4)
       await vi.waitUntil(() => RecordEngine.created[0]?.items.length === 4)
+
       expect([objects(linked.received), objects(bridged.items())]).toEqual([
         [0, 1, 2, 3],
         [0, 1, 2, 3],
       ])
       expect(objects(RecordEngine.created[0]!.items)).toEqual([0, 1, 2, 3])
+
       await flush()
       await w.chain.destroy()
     })
@@ -386,13 +424,16 @@ if (import.meta.vitest) {
           throw new Error('no engine')
         }
       } as unknown as EngineClass
+
       const worker = new PlayerWorker(inProcessWorker({ 'worker-throw': Throws }))
       await worker.start(new AbortController().signal)
       const failures: PlayerError[] = []
       const context = worker.context({ element: undefined, fail: (error) => failures.push(error) })!
+
       const engine = context.create<Engine & { close(): void }>('worker-throw')
       await vi.waitUntil(() => failures.length > 0)
       await engine.close()
+
       expect(failures).toMatchObject([{ code: 'MEDIA_FAILURE', element: 'worker-throw' }])
     })
 
@@ -402,7 +443,9 @@ if (import.meta.vitest) {
       await worker.start(new AbortController().signal)
       const failures: PlayerError[] = []
       worker.context({ element: undefined, fail: (error) => failures.push(error) })
+
       port.dispatchEvent(new Event('error'))
+
       expect(failures).toMatchObject([{ code: 'MEDIA_FAILURE', message: 'The player worker failed' }])
     })
 
@@ -410,6 +453,7 @@ if (import.meta.vitest) {
       const { chain } = testChain()
       chain.addSource(testSource({ script: (s) => (s.addPad(), s.emit('nomorepads')) }), {})
       chain.addSink(workerSink)
+
       await expect(chain.init(new AbortController().signal)).rejects.toMatchObject({
         code: 'UNSUPPORTED_SOURCE',
         element: 'worker-sink',

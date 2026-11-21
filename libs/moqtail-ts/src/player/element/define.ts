@@ -154,6 +154,7 @@ export function defineElement<E extends SinkElement & Provided<P>, const P exten
 ): SinkElementDefinition<E, P>
 export function defineElement(definition: ElementDefinition & { probe?: unknown }): ElementDefinition {
   validate(definition)
+
   const init = definition.init
   const defined: ElementDefinition = {
     ...definition,
@@ -169,21 +170,27 @@ export function defineElement(definition: ElementDefinition & { probe?: unknown 
 function validate(definition: ElementDefinition & { probe?: unknown }): void {
   const label = `Element "${String(definition.name)}"`
   checkName(label, definition.name)
+
   if (!['source', 'transform', 'sink'].includes(definition.type)) {
     throw new TypeError(`${label}: type must be "source", "transform", or "sink"`)
   }
+
   if ((definition.type === 'source') !== (typeof definition.probe === 'function')) {
     throw new TypeError(`${label}: probe is required for sources and not allowed otherwise`)
   }
+
   if (!Array.isArray(definition.capabilities) || !definition.capabilities.every(Array.isArray)) {
     throw new TypeError(`${label}: capabilities must be an array of capability bundles`)
   }
+
   for (const bundle of definition.capabilities) {
     if (bundle.length === 0 || bundle.some((c) => c.direction !== bundle[0]!.direction)) {
       throw new TypeError(`${label}: each capability bundle needs capabilities, all in one direction`)
     }
   }
+
   if (typeof definition.init !== 'function') throw new TypeError(`${label}: init must be a function`)
+
   for (const key of ['supports', 'threads'] as const) {
     if (definition[key] !== undefined && typeof definition[key] !== 'function') {
       throw new TypeError(`${label}: ${key} must be a function`)
@@ -255,6 +262,7 @@ if (import.meta.vitest) {
         probe: () => true,
         init: async (context) => new TestSource(context),
       })
+
       const element = await definition.init(detachedContext())
       expectTypeOf(element).toEqualTypeOf<InstanceType<typeof TestSource>>()
       expect(element.definition).toBe(definition)
@@ -270,7 +278,9 @@ if (import.meta.vitest) {
         provides: [MEDIA_SINK],
         init: async (context) => new FakeMediaSink(context),
       })
+
       expectTypeOf(definition).toEqualTypeOf<SinkElementDefinition<FakeMediaSink, readonly [typeof MEDIA_SINK]>>()
+
       defineElement({
         type: 'sink',
         name: 'media',

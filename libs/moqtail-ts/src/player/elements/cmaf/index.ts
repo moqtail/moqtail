@@ -53,6 +53,7 @@ if (import.meta.vitest) {
 
   test('probeCmaf: unencrypted CMAF video or audio, whatever the codec', () => {
     const video = { packaging: 'cmaf', role: 'video', codec: 'avc1.64001f' }
+
     for (const track of [
       video,
       { ...video, role: 'audio', codec: 'mp4a.40.2' },
@@ -60,6 +61,7 @@ if (import.meta.vitest) {
     ]) {
       expect(probeCmaf(track)).toBe(true)
     }
+
     for (const other of [
       { ...video, packaging: 'loc' },
       { ...video, role: 'subtitle' },

@@ -24,6 +24,7 @@ type Properties = Partial<PadProperties>
 export function vodDuration(pads: readonly Properties[]): number | undefined {
   const durations = pads.flatMap((p) => p.duration ?? [])
   if (durations.length > 0) return Math.max(...durations)
+
   const ends = pads.flatMap((p) => p.seekable?.end ?? [])
   return ends.length > 0 ? Math.max(...ends) : undefined
 }
@@ -40,13 +41,16 @@ export function liveSeekable(
   const ranges = pads.flatMap((p) => p.seekable ?? [])
   const last = buffered.length - 1
   if (ranges.length === 0 && last < 0) return undefined
+
   const edge = Math.max(...ranges.map((r) => r.end), last >= 0 ? buffered.end(last) : -Infinity)
   const windows = pads.flatMap((p) => p.accessibleWindow ?? [])
+
   // Without a timeline the window still bounds the start, counted back from the edge
   const start = Math.max(
     ranges.length > 0 ? Math.max(...ranges.map((r) => r.start)) : buffered.start(0),
     windows.length > 0 ? edge - Math.max(...windows) : -Infinity,
   )
+
   return { start, end: Math.max(start, edge - targetLatency(pads)) }
 }
 
@@ -87,6 +91,7 @@ if (import.meta.vitest) {
       start: 0,
       end: 16,
     })
+
     // The accessible window counts back from the edge, unless the timeline starts later
     expect(liveSeekable(buffered, [{ accessibleWindow: 4 }])).toEqual({ start: 16, end: 20 })
     expect(liveSeekable(timeRanges([[0, 60]]), [{ accessibleWindow: 30, targetLatency: 2 }])).toEqual({
@@ -97,6 +102,7 @@ if (import.meta.vitest) {
       start: 12,
       end: 20,
     })
+
     // Too little to subtract: the range shrinks to its start
     expect(liveSeekable(timeRanges([[10, 11]]), [{ targetLatency: 5 }])).toEqual({ start: 10, end: 10 })
   })

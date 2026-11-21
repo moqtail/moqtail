@@ -38,18 +38,22 @@ export class FakeSourceBuffer extends EventTarget {
 
   appendBuffer(data: Uint8Array): void {
     this.#start(`append ${data.length}`)
+
     if (this.fail === 'quota') {
       this.fail = undefined
       this.updating = false
       throw new DOMException('full', 'QuotaExceededError')
     }
+
     const failed = this.fail === 'error'
     this.fail = undefined
+
     this.#finish(() => {
       if (failed) {
         this.dispatchEvent(new Event('error'))
         return
       }
+
       const end = this.ranges.at(-1)?.[1] ?? 0
       if (this.ranges.length) this.ranges.at(-1)![1] = end + 1
       else this.ranges.push([0, 1])

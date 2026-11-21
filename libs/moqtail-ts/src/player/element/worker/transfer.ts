@@ -43,6 +43,7 @@ const ERROR_HANDLER = 'moqtail.error'
 /** Each thread registers them before any call crosses. */
 export function registerTransferHandlers(): void {
   if (Comlink.transferHandlers.has(MEDIA_HANDLER)) return
+
   Comlink.transferHandlers.set(MEDIA_HANDLER, {
     canHandle: (value): value is Media => isMedia(value),
     serialize: (item: Media) => serializedMedia(item),
@@ -53,6 +54,7 @@ export function registerTransferHandlers(): void {
     serialize: (error: PlayerError) => [wired(error), []],
     deserialize: (wire: WirePlayerError) => unwired(wire),
   })
+
   // Comlink's own keeps only `name`, `message` and `stack` of what an exposed method throws
   const thrown = Comlink.transferHandlers.get('throw')!
   Comlink.transferHandlers.set('throw', {
@@ -80,9 +82,11 @@ function isMedia(value: unknown): value is Media {
 /** A payload that's a view into a larger buffer, as a parsed object's usually is, is copied, not transferred. */
 function serializedMedia(item: Media): [Media, Transferable[]] {
   if (item.type === 'frame') return [item, [item.frame.payload]]
+
   const { payload } = item.packet
   const owned = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
   const sent = owned && payload.buffer instanceof ArrayBuffer ? payload : payload.slice()
+
   return [{ type: 'packet', packet: { ...item.packet, payload: sent } }, [sent.buffer as ArrayBuffer]]
 }
 
@@ -92,6 +96,7 @@ function revived(item: Media): Media {
   const properties = base.properties.map(({ typeValue, value }) =>
     typeof value === 'bigint' ? KeyValuePair.newVarInt(typeValue, value) : KeyValuePair.newBytes(typeValue, value),
   )
+
   if (item.type === 'packet') return { type: 'packet', packet: { ...item.packet, location, properties } }
   return { type: 'frame', frame: { ...item.frame, location, properties } }
 }
@@ -130,6 +135,7 @@ if (import.meta.vitest) {
     const { port1, port2 } = new MessageChannel()
     Comlink.expose({ echo: (received: T) => received }, port1)
     const remote = Comlink.wrap<{ echo(value: T): T }>(port2)
+
     try {
       return (await remote.echo(value as Parameters<typeof remote.echo>[0])) as T
     } finally {
@@ -150,6 +156,7 @@ if (import.meta.vitest) {
   test('a packet crosses with its classes, its own buffer transferred and a view into a larger one copied', async () => {
     const owned = new Uint8Array([1, 2, 3])
     const received = (await roundTrip(packet(owned))) as Extract<PadItem, { type: 'packet' }>
+
     expect(owned.byteLength).toBe(0)
     expect([...received.packet.payload]).toEqual([1, 2, 3])
     expect(received.packet.location).toBeInstanceOf(Location)
@@ -158,6 +165,7 @@ if (import.meta.vitest) {
 
     const stream = new Uint8Array([9, 1, 2, 9])
     const view = (await roundTrip(packet(stream.subarray(1, 3)))) as Extract<PadItem, { type: 'packet' }>
+
     expect([[...stream], [...view.packet.payload]]).toEqual([
       [9, 1, 2, 9],
       [1, 2],
@@ -171,6 +179,7 @@ if (import.meta.vitest) {
       frame: { track: 'v1', location: new Location(1n, 0n), properties: [], payload },
     }
     const [sent, transfer] = serializedMedia(frame)
+
     expect([sent, transfer]).toEqual([frame, [payload]])
   })
 
@@ -178,6 +187,7 @@ if (import.meta.vitest) {
     const sinkPad = (connections: number) => ({ peers: [{ peers: Array(connections) }] }) as unknown as Pad
     const item = packet(new Uint8Array([1]))
     expect(forTransfer(item, sinkPad(1))).toBe(item)
+
     const copied = forTransfer(item, sinkPad(2)) as Extract<PadItem, { type: 'packet' }>
     expect(copied.packet.payload).not.toBe((item as typeof copied).packet.payload)
     expect([...copied.packet.payload]).toEqual([1])
@@ -186,6 +196,7 @@ if (import.meta.vitest) {
   test('a PlayerError crosses as an argument and as a throw, with its code, category, element and cause', async () => {
     const inner = new PlayerError('MEDIA_FAILURE', 'decoder', { element: 'webcodecs', cause: new Error('corrupt') })
     const error = new PlayerError('MEDIA_FAILURE', 'Playout failed', { element: 'playout', cause: inner })
+
     const expected = {
       name: 'PlayerError',
       code: 'MEDIA_FAILURE',
@@ -193,7 +204,9 @@ if (import.meta.vitest) {
       element: 'playout',
       cause: expect.objectContaining({ code: 'MEDIA_FAILURE', element: 'webcodecs' }),
     }
+
     const received = await roundTrip(error)
+
     expect(received).toBeInstanceOf(PlayerError)
     expect(received).toMatchObject(expected)
     expect((received.cause as PlayerError).cause).toMatchObject({ message: 'corrupt' })
@@ -208,8 +221,10 @@ if (import.meta.vitest) {
       port1,
     )
     const remote = Comlink.wrap<{ fail(): void }>(port2)
+
     await expect(remote.fail()).rejects.toSatisfy((e) => e instanceof PlayerError && e.element === 'playout')
     await expect(remote.fail()).rejects.toMatchObject(expected)
+
     port1.close()
     port2.close()
   })

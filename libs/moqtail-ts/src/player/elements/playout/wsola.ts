@@ -27,8 +27,10 @@ export function createStretch(sampleRate: number) {
   const overlap = Math.round(sampleRate * 0.008)
   const seek = Math.round(sampleRate * 0.015)
   const span = segment + overlap + seek
+
   // Coarse then fine, as SoundTouch's quick seek: about a seventh of a full search's correlations
   const coarse = 8
+
   // Reused across segments: this runs on the audio thread
   let output: Float32Array[] = []
   let tail: Float32Array[] = []
@@ -40,11 +42,13 @@ export function createStretch(sampleRate: number) {
   function score(from: Float32Array, plane: Float32Array, offset: number): number {
     let product = 0
     let energy = 1e-9
+
     for (let i = 0; i < overlap; i++) {
       const sample = plane[offset + i]!
       product += from[i]! * sample
       energy += sample * sample
     }
+
     return product / Math.sqrt(energy)
   }
 
@@ -52,6 +56,7 @@ export function createStretch(sampleRate: number) {
   function scan(from: Float32Array, plane: Float32Array, start: number, end: number, step: number): number {
     let best = start
     let bestScore = -Infinity
+
     for (let offset = Math.max(0, start); offset <= Math.min(seek, end); offset += step) {
       const value = score(from, plane, offset)
       if (value > bestScore) {
@@ -59,6 +64,7 @@ export function createStretch(sampleRate: number) {
         bestScore = value
       }
     }
+
     return best
   }
 
@@ -95,7 +101,9 @@ export function createStretch(sampleRate: number) {
         tail = input.map(() => new Float32Array(overlap))
         aligned = false
       }
+
       const offset = aligned ? bestOffset(tail[0]!, input[0]!) : 0
+
       for (const [channel, plane] of input.entries()) {
         const out = output[channel]!
         out.set(plane.subarray(offset, offset + segment))
@@ -103,15 +111,19 @@ export function createStretch(sampleRate: number) {
         if (aligned) for (let i = 0; i < overlap; i++) out[i] = from[i]! + (out[i]! - from[i]!) * (i / overlap)
         from.set(plane.subarray(offset + segment, offset + segment + overlap))
       }
+
       aligned = rate !== 1
       left = segment
+
       return rate === 1 ? offset : 0
     },
 
     write(target: Float32Array[], at: number): void {
       const index = segment - left
+
       for (let channel = 0; channel < target.length; channel++)
         target[channel]![at] = (output[channel] ?? output[0]!)[index]!
+
       left--
     },
 
@@ -129,14 +141,17 @@ if (import.meta.vitest) {
   test('a sine keeps its pitch at 0.8, 1.25 and 2', () => {
     const tone = 440
     const input = Float32Array.from({ length: RATE * 2 }, (_, i) => Math.sin((2 * Math.PI * tone * i) / RATE))
+
     for (const rate of [0.8, 1.25, 2]) {
       const stretch = createStretch(RATE)
       const out = [new Float32Array(RATE)]
       let position = 0
+
       for (let at = 0; at < out[0]!.length; at++, position += rate) {
         if (stretch.due()) stretch.fill([input.subarray(Math.floor(position))], rate)
         stretch.write(out, at)
       }
+
       let crossings = 0
       for (let i = 1; i < out[0]!.length; i++) if (out[0]![i - 1]! < 0 && out[0]![i]! >= 0) crossings++
       expect(Math.abs(crossings - tone)).toBeLessThan(tone * 0.02)

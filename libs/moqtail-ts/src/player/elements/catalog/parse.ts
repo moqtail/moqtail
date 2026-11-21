@@ -55,12 +55,14 @@ export function parseCatalog(bytes: Uint8Array, ctx: ParseContext): ParseResult 
 /** Bytes to JSON with variables substituted. */
 export function readJson(bytes: Uint8Array, ctx: ParseContext, warnings: PlayerError[]): unknown {
   if (hasBom(bytes)) throw invalidCatalog('it starts with a byte order mark (MSF 11.2.1)')
+
   let json: unknown
   try {
     json = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
   } catch (cause) {
     throw invalidCatalog('not UTF-8 encoded JSON', cause)
   }
+
   return substituteVariables(json, ctx.variables, warnings)
 }
 
@@ -68,11 +70,14 @@ export function readJson(bytes: Uint8Array, ctx: ParseContext, warnings: PlayerE
 export function buildCatalog(json: unknown, ctx: ParseContext): Catalog {
   const result = v.safeParse(catalogSchema(ctx.namespace), json)
   if (!result.success) throw invalidCatalog(v.summarize(result.issues))
+
   const { output } = result
+
   for (const track of output.tracks) {
     const entry = output.initDataList?.find((e) => e.id === track.initRef)
     if (entry) track.init = entry.init
   }
+
   checkNames(output.tracks)
   return { ...output, json: json as CatalogDocument }
 }
@@ -81,6 +86,7 @@ export function buildCatalog(json: unknown, ctx: ParseContext): Catalog {
 function checkNames(tracks: CatalogTrack[]): void {
   const keys = new Set(tracks.map(trackKey))
   if (keys.size !== tracks.length) throw invalidCatalog('two tracks have the same full track name (MSF 5.2.3)')
+
   for (const track of tracks) {
     for (const dependency of track.depends ?? []) {
       const resolves =

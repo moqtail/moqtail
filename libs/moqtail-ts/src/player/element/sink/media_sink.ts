@@ -101,16 +101,20 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
       closeFrame(item)
       return
     }
+
     const state = this.#states.get(pad)
     if (!state) {
       // The pad went away while this was in flight; only the receiver closes a frame
       if (item.type === 'frame') item.frame.payload.close()
       return
     }
+
     if (item.type !== 'properties') return this.receiveMedia(pad, state, item)
+
     const previous = state.properties
     state.properties = { ...previous, ...item.properties }
     if (item.properties.live !== undefined) this.#live = item.properties.live
+
     await this.propertiesChanged(pad, state, item.properties, previous)
   }
 
@@ -146,7 +150,9 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
 
   #padAdded(pad: Pad): void {
     if (pad.direction !== 'sink') return
+
     this.#states.set(pad, this.newPadState())
+
     pad.onEvent((event) => {
       const state = this.#states.get(pad)
       if (!state) return true
@@ -154,6 +160,7 @@ export abstract class MediaSink<S extends SinkPadState> extends SinkElement impl
       this.padEvent(pad, state, event)
       return true
     })
+
     pad.onSignal((signal) => {
       const state = this.#states.get(pad)
       if (state) this.padSignal(pad, state, signal)
@@ -227,15 +234,19 @@ if (import.meta.vitest) {
       capabilities: [cmafCapabilities('in', 'video'), cmafCapabilities('in', 'audio')],
       init: async (context) => (sink = new TestSink(context)),
     })
+
     const pads: Pad[] = []
     const script = (s: import('@/player/testing/elements').TestSource) => {
       for (const role of ['video', 'video', 'audio']) pads.push(s.addPad(cmafCapabilities('out', role)))
       s.emit('nomorepads')
     }
+
     const { chain } = testChain()
     chain.addSource(testSource({ script }), {})
     chain.addSink(definition, {})
+
     await chain.init(new AbortController().signal)
+
     const [video, , audio] = pads
     expect(sink!.pads.map((p) => roleOf(p))).toEqual(['video', 'audio'])
 

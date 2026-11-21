@@ -44,11 +44,13 @@ export class TemplateTimeline implements TimelineReader {
   locationToTime(location: Location): number | undefined {
     const [startGroup, startObject] = this.template.startLocation
     const [deltaGroup, deltaObject] = this.template.deltaLocation
+
     let n =
       deltaGroup > 0
         ? index(Number(location.group), startGroup, deltaGroup)
         : index(Number(location.object), startObject, deltaObject)
     if (n !== undefined && this.#location(n)!.compare(location) > 0) n--
+
     return n === undefined || n < 0 ? undefined : this.#mediaTime(n)
   }
 
@@ -62,18 +64,23 @@ export class TemplateTimeline implements TimelineReader {
   get range(): { start: number; end: number } | undefined {
     const { startWallclock, deltaWallclock } = this.template
     if (startWallclock <= 0) return undefined
+
     const edge = index(Date.now(), startWallclock, deltaWallclock)
     if (edge === undefined) return undefined
+
     const window = this.accessibleWindowTime
     const threshold = window === undefined ? startWallclock : Date.now() - window
     const oldest = deltaWallclock > 0 ? Math.ceil((threshold - startWallclock) / deltaWallclock) : 0
+
     return { start: this.#mediaTime(Math.min(Math.max(0, oldest), edge)), end: this.#mediaTime(edge) }
   }
 
   #location(n: number | undefined): Location | undefined {
     if (n === undefined) return undefined
+
     const [startGroup, startObject] = this.template.startLocation
     const [deltaGroup, deltaObject] = this.template.deltaLocation
+
     return new Location(startGroup + n * deltaGroup, startObject + n * deltaObject)
   }
 
@@ -110,12 +117,14 @@ if (import.meta.vitest) {
     expect(r.locationToTime(new Location(3n, 7n))).toBe(6006)
     expect(r.wallclockToLocation(1759924158381 + 2002 * 10 + 1)).toEqual(new Location(10n, 0n))
     expect(r.timeToWallclock(4005)).toBe(1759924158381 + 4005)
+
     // Objects advancing within one group
     const objects = new TemplateTimeline({ ...example, deltaLocation: [0, 30], startWallclock: 0 })
     expect([objects.locationToTime(new Location(0n, 61n)), objects.timeToLocation(4004)]).toEqual([
       4004,
       new Location(0n, 60n),
     ])
+
     expect([objects.wallclockToLocation(Date.now()), objects.timeToWallclock(0), objects.range]).toEqual([
       undefined,
       undefined,

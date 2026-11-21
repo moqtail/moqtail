@@ -129,6 +129,7 @@ export class PlayoutEngine implements Engine {
   async attachAudio(port: MessagePort): Promise<void> {
     this.#port = port
     port.onmessage = (event: MessageEvent<ProcessorReport>) => this.#processorReport(event.data)
+
     this.#post({ type: 'rate', rate: this.#rate })
     this.#attached.resolve()
   }
@@ -145,15 +146,20 @@ export class PlayoutEngine implements Engine {
       if (item.properties.live === false)
         throw new PlayerError('UNSUPPORTED_SOURCE', 'The playout sink plays live streams only', { element: 'playout' })
       if (!('timescale' in item.properties)) return
+
       if (item.properties.timescale === undefined) this.#timescaled.delete(role)
       else this.#timescaled.add(role)
+
       this.#updateTracks()
       return
     }
+
     if (item.type !== 'frame') return
+
     const { payload } = item.frame
     if (payload instanceof AudioData && !this.#port) await this.#audioAttached(payload)
     await this.#media(payload)
+
     if (this.#taken.has(role)) return
     this.#taken.add(role)
     this.#report({ type: 'first', role })
@@ -175,15 +181,19 @@ export class PlayoutEngine implements Engine {
   /** Resuming after a pause starts over at the live edge. */
   async play(): Promise<void> {
     if (this.#state === 'playing') return
+
     if (this.#state === 'paused') {
       this.#flush('video')
       this.#flush('audio')
+
       this.#wall = undefined
       this.#output = undefined
       this.#starving.clear()
     }
+
     this.#state = 'playing'
     this.#playingReported = false
+
     this.#loop = requestAnimationFrame(this.#tick)
   }
 
@@ -201,15 +211,19 @@ export class PlayoutEngine implements Engine {
   async seek(time: number): Promise<void> {
     this.#seekTarget = time
     let dropped = 0
+
     while (this.#frames[0] && seconds(this.#frames[0].timestamp) < time) {
       this.#frames.shift()!.close()
       dropped++
     }
+
     if (dropped > 0) this.#roomMade()
+
     this.#post({ type: 'seek', time })
     this.#audio = undefined
     this.#skews.length = 0
     this.#wall = undefined
+
     // Paused, nothing is presented until play(), which starts over at the live edge
     if (this.#state === 'paused') {
       this.#seekTarget = undefined
@@ -223,8 +237,10 @@ export class PlayoutEngine implements Engine {
     if (this.#audio && heard !== undefined) {
       this.#audio = { media: this.#audioTime(heard), reference: heard, skew: this.#skew }
     }
+
     const now = performance.now() / 1000
     if (this.#wall) this.#wall = { media: clockAt(this.#wall, this.#rate, now, 0), reference: now, skew: 0 }
+
     this.#rate = rate
     this.#post({ type: 'rate', rate })
   }
@@ -233,8 +249,10 @@ export class PlayoutEngine implements Engine {
     this.#stopLoop()
     this.#done = true
     this.#attached.resolve()
+
     for (const frame of this.#frames.splice(0)) frame.close()
     this.#roomMade()
+
     if (this.#port) this.#port.onmessage = null
   }
 
@@ -248,12 +266,15 @@ export class PlayoutEngine implements Engine {
   #flush(role: Role): void {
     if (role === 'audio') {
       this.#post({ type: 'flush' })
+
       this.#audio = undefined
       this.#skews.length = 0
       this.#audioEnd = undefined
       return
     }
+
     for (const frame of this.#frames.splice(0)) frame.close()
+
     this.#latest = undefined
     this.#interval = undefined
     this.#roomMade()
@@ -264,6 +285,7 @@ export class PlayoutEngine implements Engine {
       payload.close()
       return
     }
+
     if (payload instanceof AudioData) await this.#receiveAudio(payload)
     else await this.#receiveVideo(payload)
   }
@@ -274,6 +296,7 @@ export class PlayoutEngine implements Engine {
       this.#audioFormat = 'reported'
       this.#report({ type: 'audio', sampleRate: data.sampleRate, numberOfChannels: data.numberOfChannels })
     }
+
     await this.#attached.promise
   }
 
@@ -281,6 +304,7 @@ export class PlayoutEngine implements Engine {
     // shortcut: a Timescale's epoch is the application's (LOC 2.3.1.2), so such tracks play unsynced on the wall clock
     const shared = !this.#roles.some((role) => this.#timescaled.has(role))
     const audio = this.#roles.includes('audio')
+
     this.#tracks = { video: this.#roles.includes('video'), audio, clock: audio && shared ? 'audio' : 'wall' }
   }
 
@@ -290,16 +314,20 @@ export class PlayoutEngine implements Engine {
       frame.close()
       return
     }
+
     if (this.#latest !== undefined && time > this.#latest) this.#interval = time - this.#latest
     this.#latest = time
     this.#fed('video')
+
     if (this.#state === 'idle' && this.#onScreen === undefined) {
       // The first picture, so the sink is ready with one
       this.#draw(frame)
       this.#presentation()
       return
     }
+
     this.#frames.push(frame)
+
     while (this.#frames.length >= RENDER_QUEUE_LIMIT && !this.#done) await this.#room.promise
   }
 
@@ -310,16 +338,20 @@ export class PlayoutEngine implements Engine {
       data.copyTo(plane, { planeIndex, format: 'f32-planar' })
       return plane
     })
+
     const timestamp = seconds(data.timestamp)
     const duration = seconds(data.duration)
     data.close()
+
     this.#audioEnd = timestamp + duration
     this.#audioPosted += duration
+
     // shortcut: allocates per chunk on the audio thread; a SharedArrayBuffer ring when crossOriginIsolated avoids it, upgrade if glitches show up
     this.#post(
       { type: 'samples', planes, timestamp, duration },
       planes.map((p) => p.buffer),
     )
+
     while (this.#state !== 'paused' && !this.#done && this.#audioQueued() >= AUDIO_QUEUE_LIMIT) {
       await this.#room.promise
     }
@@ -327,6 +359,7 @@ export class PlayoutEngine implements Engine {
 
   readonly #tick = (): void => {
     this.#loop = requestAnimationFrame(this.#tick)
+
     try {
       const now = this.#now()
       this.#present(now)
@@ -353,6 +386,7 @@ export class PlayoutEngine implements Engine {
         this.#frames.length >= RENDER_QUEUE_LIMIT ||
         (first && last && seconds(last.timestamp - first.timestamp) >= this.#preroll)
       if (!prerolled) return
+
       due = this.#frames.shift()
       if (due) this.#wall = { media: seconds(due.timestamp), reference: performance.now() / 1000, skew: 0 }
     } else {
@@ -361,7 +395,9 @@ export class PlayoutEngine implements Engine {
         due = this.#frames.shift()
       }
     }
+
     if (!due) return
+
     this.#roomMade()
     this.#draw(due)
     this.#presented()
@@ -369,11 +405,14 @@ export class PlayoutEngine implements Engine {
 
   #draw(frame: VideoFrame): void {
     const canvas = this.#canvas.canvas
+
     if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
       canvas.width = frame.displayWidth
       canvas.height = frame.displayHeight
     }
+
     this.#onScreen = seconds(frame.timestamp)
+
     try {
       this.#canvas.drawImage(frame, 0, 0)
     } finally {
@@ -387,6 +426,7 @@ export class PlayoutEngine implements Engine {
       this.#seekTarget = undefined
       this.#report({ type: 'seeked' })
     }
+
     if (!this.#playingReported) {
       this.#playingReported = true
       this.#report({ type: 'playing' })
@@ -398,17 +438,21 @@ export class PlayoutEngine implements Engine {
     const latest = this.#latest
     const interval = this.#interval
     if (now === undefined || latest === undefined || interval === undefined || this.#frames.length > 0) return
+
     // shortcut: frame spacing misreads content whose frame rate drops on purpose, read the catalog's framerate once such content plays
     if (now - latest > 2 * interval) this.#starved('video')
   }
 
   #checkEnded(): void {
     if (!this.#tracks.video && !this.#tracks.audio) return
+
     const videoDone = !this.#tracks.video || (this.#ended.has('video') && this.#frames.length === 0)
+
     // A context that never ran, as one the page won't start, plays nothing more
     const audioDone =
       !this.#tracks.audio || (this.#ended.has('audio') && (this.#audioQueued() === 0 || this.#output === undefined))
     if (!videoDone || !audioDone) return
+
     this.#stopLoop()
     this.#done = true
     this.#report({ type: 'ended' })
@@ -417,11 +461,13 @@ export class PlayoutEngine implements Engine {
   #presentation(): void {
     const heard = this.#heard()
     const audioTime = heard === undefined ? undefined : this.#audioTime(heard)
+
     const ends = [
       this.#latest === undefined ? undefined : this.#latest + (this.#interval ?? 0) + this.#held.video,
       this.#audioEnd === undefined ? undefined : this.#audioEnd + this.#held.audio,
     ]
     const known = ends.filter((end) => end !== undefined)
+
     this.#report({
       type: 'presentation',
       currentTime: this.#seekTarget ?? audioTime ?? this.#onScreen,
@@ -546,6 +592,7 @@ if (import.meta.vitest) {
     frame = undefined
     reports = []
     posted = []
+
     vi.spyOn(performance, 'now').mockImplementation(() => now)
     vi.stubGlobal('requestAnimationFrame', (callback: () => void) => {
       frame = callback
@@ -566,18 +613,22 @@ if (import.meta.vitest) {
   async function playing(roles: readonly Role[] = ['video', 'audio']) {
     const context = { canvas: { width: 0, height: 0 }, drawImage: () => {} }
     const canvas = { getContext: () => context } as unknown as OffscreenCanvas
+
     const engine = new PlayoutEngine({
       outputs: [],
       options: { canvas, preroll: PREROLL },
       report: (report) => reports.push(report),
     })
+
     const port = {
       onmessage: null as ((event: { data: ProcessorReport }) => void) | null,
       postMessage: (message: ProcessorMessage) => posted.push(message),
     }
+
     await engine.attachAudio(port as unknown as MessagePort)
     await engine.setTracks(roles)
     await engine.play()
+
     const processor = (report: ProcessorReport) => port.onmessage!({ data: report })
     /** The context is heard at `contextTime` now, and runs with the wall clock. */
     const running = (contextTime: number) =>
@@ -601,11 +652,13 @@ if (import.meta.vitest) {
     processor({ type: 'start', contextTime: 5, mediaTime: 100 })
     await running(5)
     expect(presented()).toBeCloseTo(100, 5)
+
     processor({ type: 'drift', contextTime: 5.6, drift: 0.2, gap: 0 })
     now += 500
     expect(presented()).toBeCloseTo(100.5, 5)
     now += 200
     expect(presented()).toBeCloseTo(100.5, 5)
+
     await engine.setPlaybackRate(2)
     expect(presented()).toBeCloseTo(100.5, 5)
     now += 100
@@ -618,13 +671,16 @@ if (import.meta.vitest) {
     await running(5)
     now += 1000
     expect(presented()).toBeCloseTo(101, 5)
+
     await engine.seek(103)
     expect(posted.at(-1)).toEqual({ type: 'seek', time: 103 })
     expect(presented()).toBe(103)
     processor({ type: 'start', contextTime: 6, mediaTime: 103 })
     expect(reports.filter((report) => report.type === 'seeked')).toHaveLength(1)
+
     now += 100
     expect(presented()).toBeCloseTo(103.1, 5)
+
     await engine.pause()
     await engine.seek(104)
     expect(reports.at(-1)).toEqual({ type: 'seeked' })
@@ -633,14 +689,17 @@ if (import.meta.vitest) {
   test('audio past the queue limit holds receive() until the processor consumes some, or a pause', async () => {
     const { engine, processor } = await playing()
     for (const time of [0, 0.5, 1]) await engine.receive(audio(time), 'audio')
+
     let held = true
     const fourth = engine.receive(audio(1.5), 'audio').then(() => {
       held = false
     })
     await settle()
     expect(held).toBe(true)
+
     processor({ type: 'consumed', seconds: 0.5 })
     await fourth
+
     const fifth = engine.receive(audio(2), 'audio')
     await engine.pause()
     await fifth
@@ -648,8 +707,10 @@ if (import.meta.vitest) {
 
   test("a held signal extends its role's buffered end by what's held upstream", async () => {
     const { engine } = await playing(['audio'])
+
     await engine.receive(audio(0), 'audio')
     await engine.signal('audio', { type: 'held', seconds: 1.5 })
+
     frame!()
     expect(reports.filter((report) => report.type === 'presentation').at(-1)).toMatchObject({ bufferedEnd: 2 })
   })
@@ -658,16 +719,20 @@ if (import.meta.vitest) {
     const never = await playing()
     await never.engine.receive(audio(0), 'audio')
     for (const role of ['video', 'audio']) await never.engine.event({ type: 'eos' }, role)
+
     frame!()
     expect(ended()).toBe(true)
 
     reports = []
+
     const { engine, processor, running } = await playing()
     await engine.receive(audio(0), 'audio')
     await running(5)
+
     for (const role of ['video', 'audio']) await engine.event({ type: 'eos' }, role)
     frame!()
     expect(ended()).toBe(false)
+
     processor({ type: 'consumed', seconds: 0.5 })
     frame!()
     expect(ended()).toBe(true)

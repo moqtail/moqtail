@@ -42,6 +42,7 @@ export function aacDescription(codec: string, sampleRate: number, numberOfChanne
   // Object types from 31 on need an escape this doesn't write
   if (!(objectType > 0 && objectType < 31)) return undefined
   if (!(numberOfChannels > 0 && numberOfChannels < 16)) return undefined
+
   const index = AAC_SAMPLE_RATES.indexOf(sampleRate)
   const rate: [value: number, bits: number][] =
     index === -1
@@ -50,6 +51,7 @@ export function aacDescription(codec: string, sampleRate: number, numberOfChanne
           [sampleRate, 24],
         ]
       : [[index, 4]]
+
   const fields: [value: number, bits: number][] = [
     [objectType, 5],
     ...rate,
@@ -58,6 +60,7 @@ export function aacDescription(codec: string, sampleRate: number, numberOfChanne
     // GASpecificConfig: frameLengthFlag, dependsOnCoreCoder, extensionFlag
     [0, 3],
   ]
+
   const bits = fields.map(([value, size]) => value.toString(2).padStart(size, '0')).join('')
   return Uint8Array.from(bits.match(/.{8}/g)!, (byte) => parseInt(byte, 2))
 }
@@ -85,12 +88,14 @@ function withStartCodes(payload: Uint8Array): Uint8Array | undefined {
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
   const output = payload.slice()
   let offset = 0
+
   while (offset < payload.length) {
     if (offset + 4 > payload.length) return undefined
     const length = view.getUint32(offset)
     output.set(START_CODE, offset)
     offset += 4 + length
   }
+
   return offset === payload.length ? output : undefined
 }
 
@@ -103,11 +108,14 @@ if (import.meta.vitest) {
   describe('annexB', () => {
     test('4-byte lengths become start codes, Annex B passes through, and an overrun is undefined', () => {
       const nal = (length: number, byte: number) => [0, 0, length >> 8, length & 0xff, ...Array(length).fill(byte)]
+
       expect(annexB(new Uint8Array([...nal(2, 7), ...nal(1, 8)]))).toEqual(
         new Uint8Array([0, 0, 0, 1, 7, 7, 0, 0, 0, 1, 8]),
       )
+
       // A 300-byte NAL unit's length starts like a 3-byte start code
       expect(annexB(new Uint8Array(nal(300, 9)))?.subarray(0, 4)).toEqual(new Uint8Array(START_CODE))
+
       for (const annexBPayload of [
         [0, 0, 0, 1, 0x67, 1],
         [0, 0, 1, 0x67, 1],
@@ -115,6 +123,7 @@ if (import.meta.vitest) {
         const payload = new Uint8Array(annexBPayload)
         expect(annexB(payload)).toBe(payload)
       }
+
       expect(annexB(new Uint8Array([0, 0, 0, 5, 1, 2]))).toBeUndefined()
       expect(annexB(new Uint8Array([...nal(2, 8), 0, 0]))).toBeUndefined()
     })
@@ -125,6 +134,7 @@ if (import.meta.vitest) {
       expect(aacDescription('mp4a.40.2', 48_000, 2)).toEqual(new Uint8Array([0x11, 0x90]))
       // AAC-LC, escape 0xf, 24 bits of 50 kHz, mono
       expect(aacDescription('mp4a.40.2', 50_000, 1)).toEqual(new Uint8Array([0x17, 0x80, 0x61, 0xa8, 0x08]))
+
       expect(aacDescription('opus', 48_000, 2)).toBeUndefined()
       expect(aacDescription('mp4a.40.2', 48_000, 16)).toBeUndefined()
     })
@@ -139,6 +149,7 @@ if (import.meta.vitest) {
 
     test('key frames come from frame marking, else object 0, and every audio frame is one', () => {
       const marked = (value: number) => [new VideoFrameMarking(new Uint8Array([value])).toKeyValuePair()]
+
       expect(chunkType(base(3, marked(0x20)), 'video')).toBe('key')
       expect(chunkType(base(0, marked(0)), 'video')).toBe('delta')
       expect(chunkType(base(0), 'video')).toBe('key')
@@ -150,6 +161,7 @@ if (import.meta.vitest) {
       const stamped = [new Timestamp(90_000n).toKeyValuePair()]
       expect(chunkTimestamp(base(0, stamped), 90_000)).toBe(1_000_000)
       expect(chunkTimestamp(base(0, [...stamped, new Timescale(1000n).toKeyValuePair()]), 90_000)).toBe(90_000_000)
+
       const now = (performance.timeOrigin + performance.now()) * 1000
       expect(Math.abs(chunkTimestamp(base(0), undefined) - now)).toBeLessThan(1_000_000)
     })

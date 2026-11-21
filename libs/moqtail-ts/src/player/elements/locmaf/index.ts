@@ -49,6 +49,7 @@ export function probeLocmaf(identifiers: Identifiers): boolean {
   const { packaging, role } = identifiers
   if (packaging !== 'locmaf' || (role !== 'video' && role !== 'audio')) return false
   if (identifiers['locmafVersion'] !== LOCMAF_VERSION) return false
+
   return identifiers['encryptionScheme'] === undefined && identifiers['contentProtectionRefIDs'] === undefined
 }
 
@@ -58,6 +59,7 @@ if (import.meta.vitest) {
   test('probeLocmaf: unencrypted LOCMAF 0.3 video or audio', () => {
     const video = { packaging: 'locmaf', locmafVersion: '0.3', role: 'video', codec: 'avc1.64001f' }
     expect([probeLocmaf(video), probeLocmaf({ ...video, role: 'audio', codec: 'mp4a.40.2' })]).toEqual([true, true])
+
     for (const other of [
       { ...video, packaging: 'cmaf' },
       { ...video, locmafVersion: '0.2' },

@@ -70,6 +70,7 @@ export class FakeRequest {
     into?: FakeRequest,
   ) {
     let controller!: ReadableStreamDefaultController<MoqtObject>
+
     // highWaterMark 0: nothing is pulled ahead, so `unread` shows the reader's backpressure
     this.stream = into?.stream ?? new ReadableStream({ start: (c) => void (controller = c) }, { highWaterMark: 0 })
     this.#controller = into ? into.#controller : controller
@@ -106,16 +107,20 @@ export class FakeRequest {
    */
   end(status?: PublishDoneStatusCode): void {
     if (!this.#open) return
+
     this.#open = false
     this.#orderer?.flush()
+
     for (const target of this.#targets) for (const object of target.#parked.splice(0)) this.#controller.enqueue(object)
     if (!(this.#into && this.#into.#open) && !this.#targets.some((target) => target.#open)) this.#controller.close()
+
     this.#done.resolve(status === undefined ? undefined : new PublishDone(status, 0n, new ReasonPhrase('')))
   }
 
   /** Errors the stream, as a reset or a lost session does. */
   reset(reason: unknown = new Error('reset')): void {
     if (!this.#open) return
+
     this.#open = false
     this.#controller.error(reason)
     this.#done.resolve(undefined)
@@ -162,8 +167,10 @@ export class FakeClient extends Emitter<ClientEvents> {
   /** Ends the session, as a lost connection does: open requests error. */
   drop(reason?: unknown): void {
     if (this.#terminated) return
+
     this.#terminated = true
     for (const request of this.requests) request.reset(reason)
+
     this.emit('sessionterminated', reason)
   }
 
@@ -175,16 +182,20 @@ export class FakeClient extends Emitter<ClientEvents> {
   async subscribe(options: SubscribeOptions): Promise<RequestError | SubscribeResult> {
     const response = await this.#respond('subscribe', options)
     if (response instanceof RequestError) return response
+
     const request = this.#open('subscribe', options)
     const subscribeOk = SubscribeOk.create(request.requestId, [], response.trackProperties ?? [])
+
     return { requestId: request.requestId, subscribeOk, stream: request.stream, done: request.done }
   }
 
   async fetch(options: FetchOptions): Promise<RequestError | FetchResult> {
     const response = await this.#respond('fetch', options)
     if (response instanceof RequestError) return response
+
     const request = this.#open('fetch', options)
     const fetchOk = new FetchOk(response.endOfTrack ?? false, new Location(0n, 0n), [], response.trackProperties ?? [])
+
     return { requestId: request.requestId, fetchOk, stream: request.stream }
   }
 
@@ -193,8 +204,10 @@ export class FakeClient extends Emitter<ClientEvents> {
     const from = this.request(args.switchFromRequestId)
     const response = await this.#respond('switch', args, args.newSubscribeOptions)
     if (response instanceof RequestError) return response
+
     const request = this.#open('subscribe', args.newSubscribeOptions, from)
     const subscribeOk = SubscribeOk.create(request.requestId, [], response.trackProperties ?? [])
+
     return { requestId: request.requestId, subscribeOk, stream: request.stream, done: from?.done ?? request.done }
   }
 
@@ -238,8 +251,10 @@ export class FakeClient extends Emitter<ClientEvents> {
   #open(kind: 'subscribe' | 'fetch', options: SubscribeOptions | FetchOptions, into?: FakeRequest): FakeRequest {
     const request = new FakeRequest(kind, this.#nextId++, options, into)
     const ordering = options.ordering ?? this.options.ordering
+
     if (this.ordered && ordering && ordering !== 'none')
       request.order(ordering, (from, to) => this.emit('orderinggap', request.requestId, from, to))
+
     this.requests.push(request)
     return request
   }
@@ -284,11 +299,14 @@ export async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
 export function fakeClients(open: (index: number) => Promise<void> = () => Promise.resolve(), serverSetup?: Setup) {
   const clients: FakeClient[] = []
   const saved = factory.createClient
+
   factory.createClient = (options) => {
     const client = new FakeClient(options, open(clients.length))
     if (serverSetup) client.serverSetup = serverSetup
+
     clients.push(client)
     return client as unknown as MOQtailClient
   }
+
   return { clients, restore: () => (factory.createClient = saved) }
 }

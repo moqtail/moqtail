@@ -36,11 +36,14 @@ export function substituteVariables(
 ): unknown {
   if (typeof value === 'string') return substitute(value, variables, warnings)
   if (typeof value !== 'object' || value === null) return value
+
   const container = value as Record<string, unknown>
   for (const key of Object.keys(container)) {
     if (UNSAFE_KEYS.has(key)) throw invalidCatalog(`the key "${key}" isn't allowed`)
+
     container[key] = substituteVariables(container[key], variables, warnings)
   }
+
   return value
 }
 
@@ -52,10 +55,12 @@ function substitute(s: string, variables: Record<string, string>, warnings: Play
       warnings.push(new PlayerError('VARIABLE_SKIPPED', `Variable ${reference} isn't in the URL fragment`))
       return reference
     }
+
     if (!SAFE_VALUE.test(value)) {
       warnings.push(new PlayerError('VARIABLE_SKIPPED', `Variable ${reference} has unsafe characters (MSF 5.4.1)`))
       return reference
     }
+
     return value
   })
 }
@@ -73,6 +78,7 @@ if (import.meta.vitest) {
         id: 'bob',
         token: '12@34',
       })
+
       expect(value).toEqual({ '%id%': ['tracking-bob', { cat: '12@34' }, 1] })
       expect(warnings).toEqual([])
     })

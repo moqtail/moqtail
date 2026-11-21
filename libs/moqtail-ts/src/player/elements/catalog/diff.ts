@@ -64,28 +64,37 @@ export interface TrackDiff {
 export function diffTracks(before: readonly CatalogTrack[], after: readonly CatalogTrack[]): TrackDiff {
   const previous = new Map(before.map((t) => [trackKey(t), t]))
   const diff: TrackDiff = { removed: new Set(), added: [], updated: new Set(), tracks: new Map(), warnings: [] }
+
   for (let track of after) {
     const key = trackKey(track)
     const old = previous.get(key)
     previous.delete(key)
+
     if (old && !deepEqual(old.template, track.template)) {
       const message = `The template of track "${track.name}" changed; it's immutable (MSF 7.4.2), so the change is ignored`
       diff.warnings.push(new PlayerError('INVALID_CATALOG_UPDATE', message, { element: 'catalog' }))
+
       const { template: _template, ...rest } = track
       track = old.template ? { ...rest, template: old.template } : (rest as CatalogTrack)
     }
+
     diff.tracks.set(key, track)
+
     if (!old) {
       diff.added.push(track)
       continue
     }
+
     const changed = [...new Set([...Object.keys(old), ...Object.keys(track)])].filter(
       (field) => !IGNORED.has(field) && !deepEqual(old[field], track[field]),
     )
+
     const inPlace = (field: string) => {
       if (!KNOWN.has(field)) return true // extra fields apply in place
+
       return IN_PLACE.has(field) && (field !== 'isLive' || old.isLive)
     }
+
     if (changed.every(inPlace)) {
       if (changed.length > 0) diff.updated.add(key)
       continue
@@ -93,6 +102,7 @@ export function diffTracks(before: readonly CatalogTrack[], after: readonly Cata
     diff.removed.add(key)
     diff.added.push(track)
   }
+
   for (const key of previous.keys()) diff.removed.add(key)
   return diff
 }
@@ -118,6 +128,7 @@ if (import.meta.vitest) {
       cmafTrack('gone'),
       cmafTrack('tpl', { template }),
     ]
+
     const after = [
       cmafTrack('same'),
       cmafTrack('rate', { bitrate: 2, label: 'x' }),
@@ -128,12 +139,14 @@ if (import.meta.vitest) {
       cmafTrack('tpl'),
       cmafTrack('new'),
     ]
+
     const diff = diffTracks(before, after)
     expect(summary(diff)).toEqual({
       removed: ['live', 'codec', 'gone'],
       added: ['live', 'codec', 'new'],
       updated: ['rate', 'vod', 'extra'],
     })
+
     expect(diff.warnings).toMatchObject([{ code: 'INVALID_CATALOG_UPDATE' }])
     expect([...diff.tracks.values()].find((t) => t.name === 'tpl')?.template).toBe(template)
   })

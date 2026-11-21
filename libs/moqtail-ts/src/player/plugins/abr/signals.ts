@@ -77,27 +77,33 @@ export class Signals {
   received(event: DataEvent, track: string | undefined): void {
     if (event.kind === 'end') this.#openStreams.delete(event.streamId)
     if (event.kind !== 'object') return
+
     const arrival: Arrival = { at: event.at / 1000, bytes: event.payloadLength }
     const head = track === undefined ? undefined : this.#videoTracks.get(track)
     if (head === undefined) {
       this.#others.push(arrival)
       return
     }
+
     this.#video.push(arrival)
     this.#firstVideo ??= arrival.at
     this.#openStreams.set(event.streamId, head)
     this.#lastObject.set(head, arrival.at)
     const second = Math.floor(arrival.at)
     this.#perSecond.set(second, (this.#perSecond.get(second) ?? 0) + 1)
+
     // Probes are planned from the heads' groups, which the controller FETCHes by the head's name
     if (track !== head) return
+
     const receiving = this.#receiving.get(track)
+
     // Each group has its own stream, so on a busy link the next group starts before this one's tail
     // arrives: only a newer group starts one, and a late object completes the group it belongs to
     if (receiving && event.groupId < receiving.group) {
       this.#lateObject(track, event)
       return
     }
+
     if (receiving?.group !== event.groupId) this.#startGroup(track, event.groupId, arrival.at)
     this.#receiving.get(track)!.objects.set(event.objectId, event.payloadLength)
   }
@@ -108,9 +114,11 @@ export class Signals {
    */
   playerState(state: PlayerState, now: number): void {
     if (state === 'playing') this.#autoplayBlocked = false
+
     const waiting = state === 'stalled' || (state === 'ready' && !this.#autoplayBlocked)
     const current = this.#stalls.at(-1)
     const open = current?.end === Infinity
+
     if (waiting && !open) this.#stalls.push({ start: state === 'ready' ? now + STARTUP_GRACE : now, end: Infinity })
     if (!waiting && open) current!.end = Math.max(now, current!.start)
   }
@@ -126,7 +134,9 @@ export class Signals {
     const recent = ({ at }: { at: number }) => at > now - KEEP
     this.#video = this.#video.filter(recent)
     this.#others = this.#others.filter(recent)
+
     for (const second of this.#perSecond.keys()) if (second < now - RATE_HISTORY) this.#perSecond.delete(second)
+
     this.#stalls = this.#stalls.filter(({ end }) => end > now - KEEP)
   }
 
@@ -171,6 +181,7 @@ export class Signals {
     const { start, length } = this.#window(now, WINDOW)
     const expected = (frameRate ?? this.#usualRate(now)) * length
     const received = this.#video.filter(({ at }) => at > start && at <= now).length
+
     return expected > 0 ? received / expected : 1
   }
 
@@ -223,6 +234,7 @@ export class Signals {
       const objects: KnownObject[] = [...previous.objects].map(([id, bytes]) => ({ id, bytes })).sort(byId)
       this.#known = [...this.#known, { track, group: previous.group, objects }].slice(-KNOWN_GROUPS)
     }
+
     this.#receiving.set(track, { group, objects: new Map() })
     this.#groupStarts = [...this.#groupStarts, at].slice(-GROUP_STARTS)
   }
@@ -265,6 +277,7 @@ if (import.meta.vitest) {
     objectId: BigInt(objectId),
     payloadLength,
   })
+
   const tracking = () => {
     const signals = new Signals()
     signals.videoTracks = new Map([['v', 'v']])
@@ -277,6 +290,7 @@ if (import.meta.vitest) {
       signals.received(object(1, 0, 0.5), 'v')
       signals.received(object(1, 1, 1.5), 'v')
       signals.received(object(1, 0, 1.5), 'audio')
+
       expect(signals.receivedBytes(2.6)).toBe(1000) // 0.5 is out of the window
       expect(signals.arrivals()).toHaveLength(3)
       expect(signals.warmedUp(2.4)).toBe(false)
@@ -287,9 +301,12 @@ if (import.meta.vitest) {
       const signals = tracking()
       signals.received(object(1, 1, 0, 300), 'v')
       signals.received(object(1, 0, 0.1, 500), 'v')
+
       expect(signals.knownGroups()).toEqual([])
+
       signals.received(object(2, 0, 1), 'v')
       signals.received(object(3, 0, 2), 'v')
+
       expect(signals.knownGroups().map((g) => [g.group, g.objects.map((o) => [o.id, o.bytes])])).toEqual([
         [
           1n,
@@ -310,11 +327,13 @@ if (import.meta.vitest) {
       signals.received(object(1, 1, 1.1), 'v') // the tail of group 1, after group 2 started
       signals.received(object(2, 1, 1.2), 'v')
       signals.received(object(3, 0, 2), 'v')
+
       expect(signals.knownGroups().map((g) => [g.group, g.objects.map((o) => o.id)])).toEqual([
         [1n, [0n, 1n]],
         [2n, [0n, 1n]],
       ])
       expect(signals.groupInterval()).toBe(1)
+
       expect(signals.receivedBytes(2)).toBe(4000) // the late object still counts as delivered
     })
 
@@ -323,8 +342,10 @@ if (import.meta.vitest) {
       signals.playerState('ready', 0)
       expect(signals.stalledTime(2)).toBe(0)
       expect(signals.stalledTime(3)).toBe(1)
+
       signals.playerState('playing', 3)
       expect(signals.stalledTime(4)).toBe(1)
+
       const blocked = tracking()
       blocked.playerState('ready', 0)
       blocked.autoplayBlocked('ready', 0.1)
@@ -336,6 +357,7 @@ if (import.meta.vitest) {
       signals.received(object(1, 0, 1), 'v')
       expect(signals.streaming('v')).toBe(true)
       expect(signals.lastObjectAt('v')).toBe(1)
+
       signals.received({ kind: 'end', direction: 'in', streamId: 1, at: 1100, reason: 'fin' }, 'v')
       expect(signals.streaming('v')).toBe(false)
     })
@@ -346,11 +368,14 @@ if (import.meta.vitest) {
         ['v60', 'v60'],
         ['v15', 'v60'],
       ])
+
       signals.received(object(1, 0, 1), 'v15')
       signals.received(object(2, 0, 1.5), 'v15')
+
       expect(signals.receivedBytes(2)).toBe(2000)
       expect([signals.streaming('v60'), signals.lastObjectAt('v60')]).toEqual([true, 1.5])
       expect(signals.groupInterval()).toBeNull()
+
       signals.forgetStreams()
       expect(signals.streaming('v60')).toBe(false)
     })
@@ -358,23 +383,29 @@ if (import.meta.vitest) {
     test('reads throughput from the slower of the last second and its second half', () => {
       const signals = tracking()
       for (let t = 0; t < 1.5; t += 0.05) signals.received(object(1, 0, t, 1000), 'v') // 20 kB/s
+
       for (let t = 1.5; t < 2; t += 0.1) signals.received(object(1, 0, t, 1000), 'v') // then 10 kB/s
+
       expect(signals.throughput(1.99)).toBeCloseTo(10_000, -3)
     })
 
     test('measures from the last settle on, over the time since', () => {
       const signals = tracking()
       for (let t = 0; t < 3; t += 0.05) signals.received(object(1, 0, t, 100), 'v') // 20 a second
+
       signals.measureFrom(2)
+
       expect(signals.arrivalRate(2.99, 20)).toBeCloseTo(1, 1)
       expect(signals.receivedBytes(2.99)).toBeCloseTo(20 * 100 * 2, -2) // per second, scaled to the window
     })
 
     test('measures frames against the catalog frame rate, else against the usual rate', () => {
       const signals = tracking()
+
       // 20 objects a second for 10 s, then 8 a second
       for (let t = 0; t < 10; t += 0.05) signals.received(object(1, 0, t), 'v')
       for (let t = 10; t < 12; t += 0.125) signals.received(object(1, 0, t), 'v')
+
       expect(signals.arrivalRate(9.99, 20)).toBeCloseTo(1, 1)
       expect(signals.arrivalRate(11.99, 20)).toBeCloseTo(0.4, 1)
       expect(signals.arrivalRate(11.99, undefined)).toBeCloseTo(0.4, 1) // usual rate inferred: 20

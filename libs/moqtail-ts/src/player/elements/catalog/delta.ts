@@ -40,9 +40,12 @@ export function applyDelta(base: Catalog, bytes: Uint8Array, ctx: ParseContext):
     const warnings: PlayerError[] = []
     const delta = v.safeParse(DeltaSchema, readJson(bytes, ctx, warnings))
     if (!delta.success) throw rejected(v.summarize(delta.issues))
+
     const document = structuredClone(base.json)
     document['generatedAt'] = delta.output.generatedAt
+
     for (const operation of delta.output.deltaUpdate) apply(document.tracks, operation, ctx)
+
     return { catalog: buildCatalog(document, ctx), warnings }
   } catch (error) {
     // A bad delta only makes the catalog stale; it never is a fatal source error
@@ -65,25 +68,31 @@ function apply(tracks: Track[], { op, tracks: changes }: Operation, ctx: ParseCo
     const { name, namespace } = track as { name: string; namespace?: string }
     return keyOf(name, namespace, ctx)
   }
+
   const indexOf = (key: string) => tracks.findIndex((track) => trackKeyOf(track) === key)
+
   const add = (track: Track) => {
     if (indexOf(trackKeyOf(track)) >= 0) throw rejected(`track ${JSON.stringify(track['name'])} already exists`)
     tracks.push(track)
   }
+
   for (const change of changes) {
     if (op === 'add') {
       add(change)
       continue
     }
+
     if (op === 'remove') {
       tracks.splice(indexOrThrow(indexOf(trackKeyOf(change)), change['name']), 1)
       continue
     }
+
     const { parentName, parentNamespace, ...fields } = change as Track & {
       parentName: string
       parentNamespace?: string
     }
     const at = indexOrThrow(indexOf(keyOf(parentName, parentNamespace, ctx)), parentName)
+
     if (op === 'clone') {
       add({ ...tracks[at], ...fields })
     } else {
@@ -131,7 +140,9 @@ if (import.meta.vitest) {
         { op: 'add', tracks: [{ ...video, name: 'extra', namespace: 'other', initRef: undefined }] },
         { op: 'clone', tracks: [{ parentName: 'video', name: 'video-720', width: 1280 }] },
       )
+
       expect(names(catalog)).toEqual(['video', 'slides', 'extra', 'video-720'])
+
       const clone = catalog.tracks[3]!
       expect([clone.bitrate, clone.width, clone.init]).toEqual([4, 1280, catalog.tracks[0]!.init])
       expect(clone['parentName']).toBeUndefined()
@@ -145,8 +156,10 @@ if (import.meta.vitest) {
         } catch (error) {
           return (error as PlayerError).code
         }
+
         return 'no error'
       }
+
       const fails = (...ops: unknown[]) => expect(code(() => delta(...ops))).toBe('INVALID_CATALOG_UPDATE')
       fails({ op: 'add', tracks: [{ ...video }] })
       fails({ op: 'remove', tracks: [{ name: 'nope' }] })
@@ -157,6 +170,7 @@ if (import.meta.vitest) {
       fails({ op: 'update', tracks: [{ parentName: 'video', depends: ['nope'] }] })
       fails({ op: 'update', tracks: [{ parentName: 'video', targetLatency: 1, buffers: {} }] })
       fails({ op: 'rename', tracks: [] })
+
       expect(() => applyDelta(base, bytes({ generatedAt: 2, deltaUpdate: [] }), ctx)).toThrow(/deltaUpdate/)
       expect(code(() => applyDelta(base, bytes({ version: 'draft-01', tracks: [] }), ctx))).toBe(
         'INVALID_CATALOG_UPDATE',

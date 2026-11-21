@@ -38,10 +38,13 @@ export class LocmafSource extends CmafSource {
     const key = trackKey(track)
     const reference = this.#references.get(key) ?? new Reference()
     this.#references.set(key, reference)
+
     try {
       if (!initData) throw new LocmafError('No CMAF Header to rebuild the chunk with')
+
       const defaults = this.#defaultsOf(initData)
       const decoded = reference.decode(object.location, object.payload!, defaults)
+
       const payload = decoded instanceof Uint8Array ? decoded : canonicalChunk(decoded, defaults)
       return packetOf(renditionId(track, this.context.catalog), object, payload)
     } catch (error) {
@@ -61,7 +64,9 @@ export class LocmafSource extends CmafSource {
   #report(track: string, object: MoqtObject, cause: LocmafError): void {
     const group = `${track}|${object.location.group}`
     if (this.#reported === group) return
+
     this.#reported = group
+
     const message = `LOCMAF object ${object.location.group}.${object.location.object} dropped: ${cause.message}`
     this.context.player.emit('warning', new PlayerError('MEDIA_FAILURE', message, { element: 'locmaf', cause }))
   }
@@ -80,10 +85,12 @@ if (import.meta.vitest) {
     const [first, , third] = uniform.objects
     const init = { type: 'inline' as const, data: uniform.init }
     const track = cmafTrack('v1', { packaging: 'locmaf', locmafVersion: '0.3', init })
+
     const c = await cmafChain([track], { element: Locmaf })
     const warnings: unknown[] = []
     c.chain.host.player.on('warning', (warning) => warnings.push(warning))
     await flush()
+
     c.client.last.push(
       testObject('v1', 1, 0, first!.payload),
       testObject('v1', 1, 2, third!.payload),
@@ -91,9 +98,12 @@ if (import.meta.vitest) {
       testObject('v1', 1, 3, first!.payload),
       testObject('v1', 2, 0, first!.payload),
     )
+
     await flush()
+
     // The group duration comes from the rebuilt chunks' tfdt
     expect(c.trace()).toEqual(['props initData,live,mimeType,track', '1.0', 'gap', '2.0', 'props groupDuration'])
+
     const packets = c.sink.items().filter((item) => item.type === 'packet')
     expect(packets.map((p) => p.packet.payload)).toEqual([first!.canonical, first!.canonical])
     expect(warnings).toMatchObject([{ code: 'MEDIA_FAILURE', element: 'locmaf' }])

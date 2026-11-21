@@ -60,6 +60,7 @@ if (import.meta.vitest) {
       ...['ended>playing', 'ended>reconnecting', 'ended>error', 'ended>destroyed'],
       'error>destroyed',
     ])
+
     expect(canTransition('reconnecting', 'paused', 'paused')).toBe(true)
     expect(canTransition('reconnecting', 'paused', 'playing')).toBe(false)
   })

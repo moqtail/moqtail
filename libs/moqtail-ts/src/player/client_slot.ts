@@ -76,6 +76,7 @@ function slot(): Slot {
 export function check(origin: string, key: string): void {
   const s = slot()
   if (s.origin === undefined || (s.origin === origin && s.key === key)) return
+
   const reason = s.origin === origin ? 'with other client options' : `to ${s.origin}`
   throw new PlayerError('UNSUPPORTED_ORIGIN', `The shared client is already connected ${reason}`)
 }
@@ -96,10 +97,13 @@ export function acquire(member: SlotMember, origin: string, options: ClientOptio
   const key = clientKey(options)
   check(origin, key)
   s.players.add(member)
+
   if (s.connecting) return s.connecting
+
   s.origin = origin
   s.key = key
   s.abort = new AbortController()
+
   const disposing = s.disposing
   const connecting = (async () => {
     await disposing
@@ -123,10 +127,12 @@ export async function release(member: SlotMember, after: Promise<unknown>): Prom
     await after.catch(() => {})
     return
   }
+
   s.abort.abort(new PlayerError('ABORTED', 'Every player released the client'))
   const connecting = s.connecting
   s.origin = s.key = s.connecting = undefined
   s.players = new Set()
+
   const disposing = (async () => {
     await Promise.allSettled([after, connecting])
     await s.client?.disconnect().catch((error: unknown) => logger.warn('MOQtailPlayer', 'disconnect failed', error))
@@ -168,6 +174,7 @@ async function open(s: Slot, origin: string, options: ClientOptions): Promise<MO
       transportOptions: { ...transport, ...(transport.protocols && { protocols: [...transport.protocols] }) },
     }),
   })
+
   // On GOAWAY, leave before the peer's timeout; the lost-session path below reopens the
   // session at the new URI, or at this one when none is given.
   let next = origin
@@ -178,11 +185,14 @@ async function open(s: Slot, origin: string, options: ClientOptions): Promise<MO
     void client.disconnect('GOAWAY')
   })
   client.on('sessionterminated', () => reconnect(s, client, next, options))
+
   await client.init().catch((error: unknown) => {
     if (!left) throw error
   })
+
   // A GOAWAY before this point found no current client to reconnect, so the caller retries
   if (left) throw new Moved(next)
+
   s.client = client
   return client
 }
@@ -197,10 +207,13 @@ class Moved extends Error {
 /** Recreates a lost session for every player, or fails them all with `SESSION_LOST`. */
 function reconnect(s: Slot, client: MOQtailClient, origin: string, options: ClientOptions): void {
   if (s.disposing || s.client !== client) return
+
   // Captured, since `clear()` replaces the set before the failure is reported
   const players = s.players
   const each = (notify: (member: SlotMember) => void) => [...players].forEach(notify)
+
   const connecting = retry(s, origin, options, (attempt) => each((m) => m.reconnecting(attempt)))
+
   s.connecting = connecting
   connecting.then(
     () => each((m) => m.reconnected()),
@@ -225,14 +238,17 @@ async function retry(
   const signal = s.abort.signal
   const attempts = options.reconnectAttempts ?? DEFAULT_RECONNECT_ATTEMPTS
   let target = origin
+
   for (let failed = 0; ;) {
     onAttempt?.(failed + 1)
     await untilAvailable(signal)
+
     try {
       return await open(s, target, options)
     } catch (cause) {
       signal.throwIfAborted()
       if (cause instanceof Moved) target = cause.uri
+
       if (!available()) continue
       if (++failed >= attempts) throw new PlayerError('SESSION_LOST', `Could not connect to ${target}`, { cause })
       await sleep(backoffDelay(failed - 1), signal)
@@ -254,6 +270,7 @@ async function untilAvailable(signal: AbortSignal): Promise<void> {
         signal.removeEventListener('abort', done)
         resolve()
       }
+
       globalThis.document?.addEventListener('visibilitychange', done)
       globalThis.addEventListener?.('online', done)
       signal.addEventListener('abort', done)
@@ -296,6 +313,7 @@ if (import.meta.vitest) {
       const [first, second] = await Promise.all([acquire(a, ORIGIN, {}), acquire(b, ORIGIN, {})])
       expect(first).toBe(second)
       expect(fakes.clients).toHaveLength(1)
+
       await release(a, Promise.resolve())
       expect(fakes.clients[0]!.disconnected).toBe(false)
       await release(b, Promise.resolve())
@@ -309,6 +327,7 @@ if (import.meta.vitest) {
         expect.objectContaining({ code: 'UNSUPPORTED_ORIGIN' }),
       )
       expect(() => acquire(member(), ORIGIN, {})).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_ORIGIN' }))
+
       // Same setup written differently is the same key
       expect(clientKey({ ...ssts, reconnectAttempts: 5 })).toBe(clientKey(ssts))
     })
@@ -316,6 +335,7 @@ if (import.meta.vitest) {
     test('a failed connection rejects every waiter and clears the slot', async () => {
       fakes.restore()
       fakes = fakeClients(() => Promise.reject(new Error('refused')))
+
       const failing = { reconnectAttempts: 1 }
       const waiters = [acquire(member(), ORIGIN, failing), acquire(member(), ORIGIN, failing)]
       for (const waiter of waiters) await expect(waiter).rejects.toMatchObject({ code: 'SESSION_LOST' })
@@ -326,11 +346,13 @@ if (import.meta.vitest) {
       fakes.restore()
       const opened = Promise.withResolvers<void>()
       fakes = fakeClients(() => opened.promise)
+
       const a = member()
       const connecting = acquire(a, ORIGIN, {})
       const released = release(a, Promise.resolve())
       await flush()
       expect(fakes.clients[0]!.disconnected).toBe(false)
+
       opened.resolve()
       await Promise.all([connecting, released])
       expect(fakes.clients[0]!.disconnected).toBe(true)
@@ -339,11 +361,13 @@ if (import.meta.vitest) {
     test('a player connecting during disposal waits for it, then gets a new client', async () => {
       const a = member()
       await acquire(a, ORIGIN, {})
+
       const teardown = Promise.withResolvers<void>()
       void release(a, teardown.promise)
       const next = acquire(member(), 'moqt://other.example.com/app', {})
       await flush()
       expect(fakes.clients).toHaveLength(1)
+
       teardown.resolve()
       expect(await next).toBe(fakes.clients[1])
       expect(fakes.clients[0]!.disconnected).toBe(true)
@@ -354,6 +378,7 @@ if (import.meta.vitest) {
       vi.stubGlobal('document', page)
       const [a, b] = [member(), member()]
       await Promise.all([acquire(a, ORIGIN, {}), acquire(b, ORIGIN, {})])
+
       page.visibilityState = 'hidden'
       fakes.clients[0]!.drop()
       await flush()
@@ -386,6 +411,7 @@ if (import.meta.vitest) {
       fakes.restore()
       const setup = Promise.withResolvers<void>()
       fakes = fakeClients((i) => (i === 0 ? setup.promise : Promise.resolve()))
+
       const connecting = acquire(member(), ORIGIN, {})
       await flush()
       fakes.clients[0]!.emit('goaway', new GoAway('moqt://next.example.com/app', 5000n))
@@ -401,6 +427,7 @@ if (import.meta.vitest) {
       fakes = fakeClients((i) => (i === 0 ? Promise.resolve() : Promise.reject(new Error('gone'))))
       const a = member()
       await acquire(a, ORIGIN, { reconnectAttempts: 1 })
+
       fakes.clients[0]!.drop()
       await flush()
       expect(a.log).toEqual(['reconnecting 1', 'fail SESSION_LOST'])

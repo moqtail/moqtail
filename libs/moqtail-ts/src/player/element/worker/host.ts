@@ -72,6 +72,7 @@ export class WorkerHost {
   /** The worker's global names, and `element:<name>` for each engine it creates. */
   environment(): string[] {
     const names = new Set<string>()
+
     for (
       let scope: object | null = globalThis;
       scope && scope !== Object.prototype;
@@ -79,6 +80,7 @@ export class WorkerHost {
     ) {
       for (const name of Object.getOwnPropertyNames(scope)) names.add(name)
     }
+
     return [...names, ...[...this.#classes.keys()].map((name) => `element:${name}`)]
   }
 
@@ -97,14 +99,17 @@ export class WorkerHost {
   ): void {
     // Comlink hands a proxied function over as a remote, whose port goes on `release()`
     if (report) this.#reports.set(id, report as unknown as Comlink.Remote<(report: unknown) => void>)
+
     try {
       const Class = this.#classes.get(name)
       if (!Class) throw new TypeError(`The worker has no engine for "${name}"`)
+
       const writers = outputs.map((key) => {
         const output = new Output(id, (error) => void this.#main?.fail(id, error))
         this.#outputs.set(key, output)
         return (item: PadOutput) => output.write(item)
       })
+
       const engine = new Class({ outputs: writers, options, report: (value) => void this.#reports.get(id)?.(value) })
       this.#engines.set(id, engine)
       Comlink.expose(engine, port)
@@ -118,10 +123,12 @@ export class WorkerHost {
   route(key: number, route: 'bridge' | Link[]): void {
     const output = this.#outputs.get(key)
     if (!output) return
+
     if (route === 'bridge') {
       output.route((item) => this.#main!.bridge(key, item))
       return
     }
+
     output.route(async (item) => {
       await Promise.all(route.map((link, i) => this.#deliver(link, i === 0 ? item : cloned(item))))
     })
@@ -132,8 +139,10 @@ export class WorkerHost {
     this.#engines.delete(id)
     this.#reports.get(id)?.[Comlink.releaseProxy]()
     this.#reports.delete(id)
+
     for (const [key, output] of this.#outputs) {
       if (output.producer !== id) continue
+
       output.close()
       this.#outputs.delete(key)
     }
@@ -145,6 +154,7 @@ export class WorkerHost {
       closeFrame(item)
       return
     }
+
     try {
       if (item.type === 'event') await engine.event(item.event, link.role)
       else await engine.receive(item, link.role)

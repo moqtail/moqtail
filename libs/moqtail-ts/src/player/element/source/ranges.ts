@@ -66,18 +66,23 @@ export function toSpans(
     ...(ranges?.mediaTimeRanges ?? []).map((r) => [r, timeline?.timeToLocation.bind(timeline)] as const),
     ...(ranges?.wallclockRanges ?? []).map((r) => [r, timeline?.wallclockToLocation.bind(timeline)] as const),
   ]
+
   for (const [range, toLocation] of timed) {
     // Estimating would play the wrong content
     if (!toLocation) throw new PlayerError('UNSUPPORTED_SOURCE', 'A time range needs a media timeline or template')
+
     const start = toLocation(range.start)
     const end = range.end === undefined ? undefined : toLocation(range.end)
     if (!start || (range.end !== undefined && !end)) {
       throw new PlayerError('UNSUPPORTED_SOURCE', `Range ${range.start}-${range.end ?? ''} is outside the timeline`)
     }
+
     converted.push({ start: new Location(start.group, 0n), ...(end && { end: { group: end.group } }) })
   }
+
   const window = accessibleStart(first, timeline)
   const edge = timeline?.range && timeline.timeToLocation(timeline.range.end)
+
   return merge(converted)
     .filter((r) => !window || !r.end || !beyond(window, r.end))
     .map((r) => ({
@@ -92,6 +97,7 @@ export function toSpans(
 export function merge(ranges: readonly { start: Location; end?: End }[]): { start: Location; end?: End }[] {
   const sorted = [...ranges].sort((a, b) => a.start.compare(b.start))
   const merged: { start: Location; end?: End }[] = []
+
   for (const range of sorted) {
     const last = merged.at(-1)
     if (last && (!last.end || !beyond(range.start, last.end))) {
@@ -101,6 +107,7 @@ export function merge(ranges: readonly { start: Location; end?: End }[]): { star
       merged.push({ ...range })
     }
   }
+
   return merged
 }
 
@@ -126,7 +133,9 @@ export function clamp(location: Location, spans: readonly Span[]): { index: numb
   spans.forEach((span, index) => {
     const before = span.start.compare(location) > 0
     const after = span.end && beyond(location, span.end)
+
     if (!before && !after) best = { index, location, distance: 0 }
+
     const edge = before ? span.start : after ? new Location(span.end!.group, span.end!.object ?? 0n) : location
     const distance = Math.abs(Number(edge.group - location.group))
     if (distance < best.distance) best = { index, location: edge, distance }
@@ -166,14 +175,17 @@ if (import.meta.vitest) {
     const live = cmafTrack('v1')
     const vod = cmafTrack('v1', { isLive: false })
     const locationRanges = [{ start: at(2), end: { group: 3n } }, { start: at(8) }]
+
     expect(show(toSpans({ locationRanges }, live, undefined))).toEqual(['2.0-3.* fetch', '8.0-'])
     expect(show(toSpans({ locationRanges }, vod, undefined))).toEqual(['2.0-3.* fetch', '8.0- fetch'])
+
     // The edge is at group 6: a closed range reaching past it is a live history subscribe
     const mediaTimeRanges = [
       { start: 2000, end: 5000 },
       { start: 9000, end: 13000 },
     ]
     expect(show(toSpans({ mediaTimeRanges }, live, timeline(10000)))).toEqual(['2.0-3.* fetch', '5.0-7.*'])
+
     const wallclockRanges = [{ start: 1_004_000 }]
     expect(show(toSpans({ wallclockRanges }, live, timeline()))).toEqual(['3.0-'])
     expect(() => toSpans({ mediaTimeRanges }, live, undefined)).toThrow(PlayerError)
@@ -186,6 +198,7 @@ if (import.meta.vitest) {
       { start: at(1), end: { group: 2n } },
       { start: at(4), end: { group: 9n } },
     ]
+
     expect(show(toSpans({ locationRanges }, track, windowed))).toEqual(['6.0-9.* fetch'])
   })
 
@@ -194,6 +207,7 @@ if (import.meta.vitest) {
       { start: at(5), end: { group: 8n } },
       { start: at(20), end: { group: 22n, object: 3n } },
     ]).map((s) => ({ ...s, fetch: true }))
+
     expect(clamp(at(6, 4), spans)).toEqual({ index: 0, location: at(6, 4) })
     expect(clamp(at(1), spans)).toEqual({ index: 0, location: at(5) })
     expect(clamp(at(10), spans)).toEqual({ index: 0, location: at(8) })
@@ -221,6 +235,7 @@ if (import.meta.vitest) {
     await flush()
     c.client.last.push(mediaObject(8), mediaObject(9)) // past the last range: not written
     await flush()
+
     expect(c.requests()).toEqual(['fetch v1 2.0-4', 'fetch v1 8.0-8', 'fetchCancel 1'])
     expect(c.trace()).toEqual(['props live,mimeType,track', '2.0', '4.0', 'gap', '8.0', 'eos'])
   })
@@ -230,6 +245,7 @@ if (import.meta.vitest) {
     const catalog = fakeCatalog([], twoSecondTimeline(100_000))
     const c = await cmafChain([cmafTrack('v1')], { catalog, cmaf: urlRanges({ mediaTimeRanges }) })
     await flush()
+
     // Groups 3 to 4 end at 10 s, behind the edge: fetched
     expect(c.requests()).toEqual(['fetch v1 3.0-4'])
     expect(c.sink.items()[0]).toMatchObject({ properties: { duration: 8 } })
@@ -253,6 +269,7 @@ if (import.meta.vitest) {
     await flush()
     c.seek(15) // group 8, nearer to the second range
     await flush()
+
     expect(c.requests().at(-1)).toBe('fetch v1 10.0-12')
   })
 }

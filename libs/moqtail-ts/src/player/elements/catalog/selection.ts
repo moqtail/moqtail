@@ -40,6 +40,7 @@ export interface SelectionOptions {
 /** A track with its `role` inferred when the catalog leaves it out: MIME type, then video or audio fields. */
 export function withRole(track: CatalogTrack): CatalogTrack {
   if (track.role !== undefined) return track
+
   const prefix = track.mimeType?.split('/')[0]
   const role =
     prefix === 'video' || prefix === 'audio'
@@ -49,6 +50,7 @@ export function withRole(track: CatalogTrack): CatalogTrack {
         : track.samplerate !== undefined || track.channelConfig !== undefined
           ? 'audio'
           : undefined
+
   return role ? { ...track, role } : track
 }
 
@@ -68,32 +70,40 @@ const setKey = (t: CatalogTrack, index: number) => (t.altGroup === undefined ? `
 export function mediaSets(tracks: readonly CatalogTrack[], probe: SelectionOptions['probe']): SelectedSet[] {
   const candidates = tracks.filter(isCandidate)
   if (candidates.length === 0) return []
+
   const renderGroup = candidates[0]!.renderGroup
   const groups = new Map<string, CatalogTrack[]>()
+
   candidates
     .filter((t) => t.renderGroup === renderGroup)
     .forEach((t, i) => {
       const key = setKey(t, i)
       groups.set(key, [...(groups.get(key) ?? []), t])
     })
+
   const sets: SelectedSet[] = []
+
   for (const group of groups.values()) {
     const split: SelectedSet[] = []
     for (const track of group) {
       const definition = probe(track)
       if (!definition) continue
+
       const set = split.find((s) => s.definition === definition && s.tracks[0]!.packaging === track.packaging)
       if (set) set.tracks.push(track)
       else split.push({ definition, tracks: [track] })
     }
+
     sets.push(...split)
   }
+
   return sets
 }
 
 /** The audio set for `language`: exact tag, then primary subtag, then the first. */
 export function pickAudio(sets: SelectedSet[], language: string | undefined): SelectedSet | undefined {
   const lang = (s: SelectedSet) => s.tracks[0]!.lang?.toLowerCase()
+
   const wanted = language?.toLowerCase()
   const primary = wanted?.split('-')[0]
   return (
@@ -110,6 +120,7 @@ export function pickAudio(sets: SelectedSet[], language: string | undefined): Se
 export function startFirst(tracks: CatalogTrack[]): CatalogTrack[] {
   const spaced = tracks.filter((t) => t.keyframeSpacing !== undefined)
   if (spaced.length === 0) return tracks
+
   const start = spaced.reduce((a, b) => (b.keyframeSpacing! < a.keyframeSpacing! ? b : a))
   return [start, ...tracks.filter((t) => t !== start)]
 }
@@ -125,14 +136,17 @@ export function selectMedia(tracks: readonly CatalogTrack[], options: SelectionO
     const kept = s.tracks.filter((t) => cost(t) !== undefined)
     return kept.length > 0 ? [{ ...s, tracks: kept }] : []
   })
+
   // A set's tracks share a definition and a packaging, so they cost the same
   const cheapest = lowest(playable, (s) => cost(s.tracks[0]!)!)
+
   const sets = lowest(cheapest, (s) => s.definition.priority ?? DEFAULT_PRIORITY)
   const video = sets.find((s) => s.tracks[0]!.role === 'video')
   const audio = pickAudio(
     sets.filter((s) => s.tracks[0]!.role === 'audio'),
     options.language,
   )
+
   return [video, audio].filter((s) => s !== undefined).map((s) => ({ ...s, tracks: startFirst(s.tracks) }))
 }
 
@@ -142,16 +156,19 @@ export function selectEventTimelines(
   options: SelectionOptions,
 ): { sets: SelectedSet[]; skipped: CatalogTrack[] } {
   const wanted = options.eventTimelines ?? []
+
   const matched = tracks.filter(
     (t) => t.packaging === 'eventtimeline' && (wanted === 'all' || wanted.includes(t.eventType ?? '')),
   )
   const sets: SelectedSet[] = []
   const skipped: CatalogTrack[] = []
+
   for (const track of matched) {
     const definition = options.probe(track)
     if (definition) sets.push({ definition, tracks: [track] })
     else skipped.push(track)
   }
+
   return { sets, skipped }
 }
 
@@ -159,10 +176,12 @@ export function selectEventTimelines(
 function lowest(sets: SelectedSet[], measure: (set: SelectedSet) => number): SelectedSet[] {
   const key = (s: SelectedSet) => (s.tracks[0]!.altGroup === undefined ? undefined : setKey(s.tracks[0]!, 0))
   const best = new Map<string, number>()
+
   for (const s of sets) {
     const k = key(s)
     if (k !== undefined) best.set(k, Math.min(best.get(k) ?? Infinity, measure(s)))
   }
+
   return sets.filter((s) => key(s) === undefined || measure(s) === best.get(key(s)!))
 }
 
@@ -202,6 +221,7 @@ if (import.meta.vitest) {
     test('withRole infers from the MIME type, then video and audio fields', () => {
       const base = { name: 'x', nameBytes: new Uint8Array(), namespace: Tuple.fromUtf8Path('ns'), packaging: 'cmaf' }
       const role = (extra: Partial<CatalogTrack>) => withRole({ ...base, isLive: true, ...extra } as CatalogTrack).role
+
       expect([
         role({ mimeType: 'audio/mp4', width: 1 }),
         role({ height: 1 }),
@@ -218,6 +238,7 @@ if (import.meta.vitest) {
         { ...video, name: 'b', altGroup: 1, packaging: 'loc' },
         { ...video, name: 'c', altGroup: 1, keyframeSpacing: 1 },
       ]
+
       expect(names(selectMedia(set, { probe }))).toEqual(['cmaf: c,a'])
       expect(names(mediaSets(set, probe))).toEqual(['cmaf: a,c', 'loc: b'])
     })
@@ -227,8 +248,10 @@ if (import.meta.vitest) {
         track(name, { packaging: 'cmaf', altGroup: 1, ...extra }),
         track(`${name}_locmaf`, { packaging: 'locmaf', locmafVersion: '0.3', altGroup: 1, ...extra }),
       ]
+
       const video = { codec: 'avc1.64001f', height: 720 }
       const audio = { codec: 'mp4a.40.2', channelConfig: '2', altGroup: 2 }
+
       const tracks = [...pair('v1', video), ...pair('v2', video), ...pair('a', audio)]
       expect(names(mediaSets(tracks, probe))).toEqual([
         'cmaf: v1,v2',
@@ -237,9 +260,11 @@ if (import.meta.vitest) {
         'locmaf: a_locmaf',
       ])
       expect(names(selectMedia(tracks, { probe }))).toEqual(['locmaf: v1_locmaf,v2_locmaf', 'locmaf: a_locmaf'])
+
       // An unsupported version leaves CMAF
       const old = tracks.map((t) => (t.packaging === 'locmaf' ? { ...t, locmafVersion: '0.2' } : t))
       expect(names(selectMedia(old, { probe }))).toEqual(['cmaf: v1,v2', 'cmaf: a'])
+
       const cameras = [
         track('main_cam', { packaging: 'cmaf', altGroup: 1, ...video }),
         track('alt_cam', { packaging: 'locmaf', locmafVersion: '0.3', altGroup: 2, ...video }),
@@ -254,15 +279,18 @@ if (import.meta.vitest) {
         track('v_cmaf', { ...video, packaging: 'cmaf' }),
         track('v_locmaf', { ...video, packaging: 'locmaf', locmafVersion: '0.3' }),
       ]
+
       const mse = costFor([collectingSink({ packaging: 'cmaf' })])
       const canvas = costFor([collectingSink({ packaging: 'raw' })], [testTransform({ takes: 'loc', makes: 'raw' })])
       const pick = (sets: CatalogTrack[], cost?: SelectionOptions['cost']) =>
         names(selectMedia(sets, { probe, ...(cost && { cost }) }))
+
       expect([pick(tracks, mse), pick(tracks, canvas), pick(tracks)]).toEqual([
         ['locmaf: v_locmaf'],
         ['loc: v_loc'],
         ['locmaf: v_locmaf'],
       ])
+
       // In sets of their own, the first one in catalog order is dropped when no sink reaches it
       const apart = tracks.map((t, i) => ({ ...t, altGroup: i + 1 }))
       expect([pick(apart, mse), pick(apart)]).toEqual([['cmaf: v_cmaf'], ['loc: v_loc']])
@@ -275,6 +303,7 @@ if (import.meta.vitest) {
         track('v1', { ...video, codec: 'avc1.64001f', altGroup: 2 }),
         track('v2', { ...video, codec: 'hvc1.1.6.L93.B0', altGroup: 2 }),
       ]
+
       const cost = (t: CatalogTrack) => (t.codec?.startsWith('hvc1') ? undefined : 0)
       expect(names(selectMedia(tracks, { probe, cost }))).toEqual(['cmaf: v1'])
     })
@@ -282,6 +311,7 @@ if (import.meta.vitest) {
     test('audio: exact tag, then primary subtag, then the first set', () => {
       const audio = (lang: string) => ({ definition: cmaf, tracks: [{ lang } as CatalogTrack] })
       const sets = [audio('en'), audio('fr-FR'), audio('fr-CA')]
+
       expect([
         pickAudio(sets, 'fr-CA'),
         pickAudio(sets, 'FR-be'),
@@ -299,8 +329,10 @@ if (import.meta.vitest) {
         track('ads', { ...event, eventType: 'ads' }),
       ]
       expect(selectEventTimelines(tracks, { probe }).sets).toEqual([])
+
       const all = selectEventTimelines(tracks, { probe, eventTimelines: 'all' })
       expect([names(all.sets), all.skipped.map((t) => t.name)]).toEqual([['sap: sap'], ['ads']])
+
       const listed = selectEventTimelines(tracks, { probe, eventTimelines: ['ads'] })
       expect([listed.sets, listed.skipped.map((t) => t.name)]).toEqual([[], ['ads']])
     })

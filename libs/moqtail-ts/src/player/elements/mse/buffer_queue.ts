@@ -40,12 +40,14 @@ export class BufferQueue {
     return new Promise((resolve, reject) => {
       operation(this.buffer) // a synchronous throw, e.g. QuotaExceededError, rejects
       if (!this.buffer.updating) return resolve()
+
       const listening = new AbortController()
       const done = (event: Event) => {
         listening.abort()
         if (event.type === 'updateend') resolve()
         else reject(new DOMException(`SourceBuffer ${event.type}`, 'InvalidStateError'))
       }
+
       // `error` and `abort` come before their `updateend`, so they settle first
       for (const type of ['updateend', 'error', 'abort']) {
         this.buffer.addEventListener(type, done, { signal: listening.signal })
@@ -63,11 +65,13 @@ if (import.meta.vitest) {
       const buffer = new FakeSourceBuffer()
       const queue = new BufferQueue(buffer as unknown as SourceBuffer)
       const order: string[] = []
+
       await Promise.all([
         queue.run((b) => b.appendBuffer(new Uint8Array(1))).then(() => order.push('a')),
         queue.run((b) => b.changeType('audio/mp4')).then(() => order.push('b')),
         queue.run((b) => b.remove(0, 0.5)).then(() => order.push('c')),
       ])
+
       expect(order).toEqual(['a', 'b', 'c'])
       expect(buffer.log).toEqual(['append 1', 'changeType audio/mp4', 'remove 0-0.5'])
       expect(buffer.ranges).toEqual([[0.5, 1]])
@@ -76,14 +80,17 @@ if (import.meta.vitest) {
     test('a throw or an error event rejects that operation only', async () => {
       const buffer = new FakeSourceBuffer()
       const queue = new BufferQueue(buffer as unknown as SourceBuffer)
+
       buffer.fail = 'quota'
       const quota = queue.run((b) => b.appendBuffer(new Uint8Array(1)))
       await expect(quota).rejects.toMatchObject({ name: 'QuotaExceededError' })
+
       buffer.fail = 'error'
       const failed = queue.run((b) => b.appendBuffer(new Uint8Array(2)))
       const next = queue.run((b) => b.appendBuffer(new Uint8Array(3)))
       await expect(failed).rejects.toMatchObject({ name: 'InvalidStateError' })
       await next
+
       expect(buffer.ranges).toEqual([[0, 1]])
     })
   })

@@ -36,11 +36,13 @@ const BUILT_IN_ENGINES: [string, EngineClass][] = [
  */
 export function serveWorker(engines: Record<string, EngineClass> = {}): void {
   const classes = new Map(BUILT_IN_ENGINES)
+
   for (const [name, engine] of Object.entries(engines)) {
     checkName(`Engine "${name}"`, name)
     if (classes.has(name)) throw new TypeError(`Engine "${name}" is a built-in engine`)
     classes.set(name, engine)
   }
+
   registerTransferHandlers()
   Comlink.expose(new WorkerHost(classes))
 }
@@ -52,6 +54,7 @@ if (import.meta.vitest) {
   test('serveWorker reports element:<name> for the built-in engines and the caller’s', async () => {
     const host = Comlink.wrap<WorkerHost>(inProcessWorker({ grayscale: PassEngine }))
     const names = await host.environment()
+
     expect(names).toEqual(expect.arrayContaining(['element:webcodecs', 'element:playout', 'element:grayscale']))
     expect(names).toContain('MessageChannel')
   })

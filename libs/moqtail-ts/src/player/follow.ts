@@ -32,6 +32,7 @@ export function eachClient(player: MOQtailPlayer, attach: (client: MOQtailClient
     detach = attach(client)
   }
   if (player.client) use(player.client)
+
   player.on('client', use)
   return () => {
     player.off('client', use)
@@ -55,20 +56,24 @@ export function followData(
 
   const onData = (event: DataEvent) => {
     if (event.direction !== 'in') return
+
     if (event.kind === 'header') streams.set(event.streamId, { header: event })
     const stream = streams.get(event.streamId)
     if (!stream) return
     if (event.kind === 'end') streams.delete(event.streamId)
+
     if (stream.track === undefined) {
       const name = client?.trackNameOf(stream.header)
       if (name) stream.track = decoder.decode(name.name)
     }
+
     listener(event, stream.track, stream.header)
   }
 
   return eachClient(player, (next) => {
     client = next
     streams.clear()
+
     next.on('dataevent', onData)
     return () => next.off('dataevent', onData)
   })
@@ -113,13 +118,16 @@ if (import.meta.vitest) {
       first.emit('dataevent', object(1)) // stream opened before following: skipped
       first.emit('dataevent', header(2))
       first.emit('dataevent', object(2))
+
       const second = fakeClient()
       player.client = second
       player.emit('client', second)
+
       first.emit('dataevent', header(3)) // the replaced client is no longer followed
       second.emit('dataevent', header(5))
       stop()
       second.emit('dataevent', object(5))
+
       expect(seen).toEqual([
         ['header', 'video', 4n],
         ['object', 'video', 4n],

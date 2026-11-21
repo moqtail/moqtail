@@ -90,11 +90,14 @@ export class Recovery {
     this.active = start
     this.#first = start
     this.#spans = plan.spans
+
     if (plan.readAhead) {
       delivery.adopt(plan.readAhead)
       this.#ready = Promise.resolve(plan.readAhead.accepted)
     }
+
     this.#target = this.#spans[0] ? this.#spanTarget(this.#spans[0]) : { fetch: !start.isLive }
+
     const { player, signal } = context
     const lost = () => {
       this.#reconnect ??= Promise.withResolvers()
@@ -107,13 +110,16 @@ export class Recovery {
     const changed = () => {
       if (this.#holding !== undefined && this.#isFinal()) this.#attempt.abort()
     }
+
     player.on('reconnecting', lost)
     player.on('reconnected', back)
     player.on('catalog', changed)
+
     signal.addEventListener('abort', () => {
       player.off('reconnecting', lost)
       player.off('reconnected', back)
       player.off('catalog', changed)
+
       back()
       this.resume()
       this.#ended?.resolve()
@@ -126,6 +132,7 @@ export class Recovery {
     const maxFailures = this.#context.player.options.client?.reconnectAttempts ?? DEFAULT_RECONNECT_ATTEMPTS
     let failures = 0
     let ready = this.#ready
+
     while (!signal.aborted) {
       await this.#reconnect?.promise // a lost session isn't a failure, it waits for the new one
       await this.#paused?.promise
@@ -134,41 +141,52 @@ export class Recovery {
         await this.#finish()
         continue
       }
+
       this.#attempt = new AbortController()
       const attempt = AbortSignal.any([this.#attempt.signal, signal])
+
       if (this.#seekTo !== undefined) await this.#locateSeek()
       if (attempt.aborted) continue
+
       // While holding, the publisher may restart: re-subscribe with backoff, capped at 5 s
       if (this.#holding !== undefined && !(await waitFor(backoffDelay(this.#holding++), attempt))) continue
 
       const end = this.rangeEnd(this.active)
       const outcome = await this.#delivery.play(this.active, attempt, { ...this.#target, ...(end && { end }) }, ready)
       ready = undefined
+
       if (this.#delivery.delivered) {
         failures = 0
         this.#holding = undefined
         this.#target = { fetch: this.#target.fetch } // a retry resumes from where delivery stands
       }
+
       if (this.#handover) {
         ready = this.#continueOnHandover(this.#handover, outcome)
         continue
       }
+
       if (outcome === 'stopped') continue
+
       if (outcome === 'done') {
         if (this.#spans.length === 0) continue
         if (!this.#nextSpan()) await this.#finish()
         continue
       }
+
       if (outcome === 'ended') {
         if (this.#isFinal()) await this.#finish()
         else this.#holding ??= 0
         continue
       }
+
       if (this.#holding !== undefined) continue // while holding, a rejection is just another try
+
       if (outcome === 'failed') {
         if (!(await waitFor(backoffDelay(failures), attempt))) continue
         if (++failures < maxFailures) continue
       }
+
       failures = 0
       await this.#delivery.failSeeks() // a seek that couldn't be served is answered as failed
       if (!this.#fallback()) return
@@ -179,6 +197,7 @@ export class Recovery {
   seek(mediaTime: number): void {
     this.#delivery.seeks++
     this.#seekTo = mediaTime
+
     // A switch during a seek resumes on the new track
     this.#takeHandover()
     this.#attempt.abort(REPLACED)
@@ -242,6 +261,7 @@ export class Recovery {
     this.#handover = undefined
     this.active = handover.track
     this.#target = { fetch: this.#target.fetch, start: handover.start }
+
     if (outcome !== 'stopped' && !handover.soft) return handover.request
     cancelLate(handover)
     return undefined
@@ -250,6 +270,7 @@ export class Recovery {
   #takeHandover(): void {
     const handover = this.#handover
     if (!handover) return
+
     this.#handover = undefined
     this.active = handover.track
     cancelLate(handover)
@@ -264,6 +285,7 @@ export class Recovery {
   #nextSpan(): boolean {
     const next = this.#spans[++this.#span]
     if (!next) return false
+
     this.#target = this.#spanTarget(next)
     this.#delivery.gap = true
     return true
@@ -276,23 +298,27 @@ export class Recovery {
     const track = this.active
     const timeline = await this.#context.catalog?.timeline(track)
     if (this.#seekTo !== undefined) return // a newer seek supersedes it
+
     if (track !== this.active) {
       // Switched meanwhile: the next loop locates it on the new track
       this.#seekTo = time
       return
     }
+
     const key = trackKey(track)
     const set = this.#host.tracks()
     const estimate = (t: number) => this.#estimate(track, t) ?? this.#fromLast(t, track)
     let location = locate(time, track, timeline, estimate)
     if (!location) return this.#delivery.failSeeks()
     let fetch = !track.isLive
+
     if (this.#spans.length > 0) {
       const clamped = clamp(mapLocation(location, track, this.#first, set), this.#spans)
       this.#span = clamped.index
       location = mapLocation(clamped.location, this.#first, track, set)
       fetch = this.#spans[clamped.index]!.fetch
     }
+
     const last = this.#delivery.last
     this.#target = seekTarget(location, fetch, last?.track === key ? last.location : undefined)
   }
@@ -302,6 +328,7 @@ export class Recovery {
     this.#holding = undefined
     await this.#delivery.eos()
     if (this.#seekTo !== undefined || this.#context.signal.aborted) return
+
     this.#ended = Promise.withResolvers()
     await this.#ended.promise
     this.#ended = undefined
@@ -313,6 +340,7 @@ export class Recovery {
     const set = this.#host.tracks()
     const previous = set.find((t) => trackKey(t) === last?.track)
     if (!last || !previous) return undefined
+
     const at = this.#estimate(previous, mediaTime)
     return at && mapLocation(at, previous, track, set)
   }
@@ -322,6 +350,7 @@ export class Recovery {
     const set = this.#host.tracks()
     const key = trackKey(track)
     const { times } = this.#delivery
+
     // A long GoP may not have shown two groups yet: the catalog's group duration stands in
     const duration = times.groupDuration(key) ?? groupDuration(track, set)
     return times.estimate(key, mediaTime, groupStep(track, set), duration)
@@ -330,6 +359,7 @@ export class Recovery {
   /** Moves to the selected rendition closest in bitrate, or gives up. */
   #fallback(): boolean {
     this.#failed.add(trackKey(this.active))
+
     const next = closestBitrate(
       this.#host.candidates().filter((t) => !this.#failed.has(trackKey(t))),
       bitrateOf(this.active),
@@ -338,6 +368,7 @@ export class Recovery {
       this.#host.giveUp()
       return false
     }
+
     this.active = next
     return true
   }
@@ -346,6 +377,7 @@ export class Recovery {
   #isFinal(): boolean {
     const catalog = this.#context.catalog
     if (!catalog || catalog.isComplete) return true
+
     const key = trackKey(this.active)
     return !(catalog.tracks.find((t) => trackKey(t) === key) ?? this.active).isLive
   }
@@ -420,6 +452,7 @@ if (import.meta.vitest) {
       await elapse()
       c.client.last.reset()
       await elapse()
+
       // Two failures in a row without data move on to v2
       expect(heard).toEqual(['v1', 'v1', 'v1', 'v2'])
       expect(c.trace()).toEqual(['props live,mimeType,track', '1.0', 'gap', '3.0', 'props track'])
@@ -433,6 +466,7 @@ if (import.meta.vitest) {
       await elapse()
       c.client.last.reset()
       await elapse()
+
       const filter = c.client.sent<Sent>('fetch')[1]!.locationFilter
       expect([filter.startGroup, filter.startObject]).toEqual([2n, 5n])
       expect(c.trace()).not.toContain('gap')
@@ -448,9 +482,11 @@ if (import.meta.vitest) {
       c.client.last.end(PublishDoneStatusCode.TrackEnded)
       await elapse()
       await elapse()
+
       // Rejections while holding aren't failures: the source keeps trying and keeps its pad
       expect(c.client.sent('subscribe').length).toBeGreaterThan(2)
       expect(c.source.pads).toHaveLength(1)
+
       c.client.respond = () => ({})
       await elapse()
       c.client.last.push(mediaObject(5))
@@ -462,6 +498,7 @@ if (import.meta.vitest) {
       catalog.isComplete = true
       c.chain.host.player.emit('catalog', catalog as never)
       await elapse()
+
       expect(c.trace().slice(-1)).toEqual(['eos'])
       const sent = c.client.sent('subscribe').length
       await elapse()
@@ -476,10 +513,12 @@ if (import.meta.vitest) {
       c.client.last.end()
       await flush()
       expect(c.trace().slice(-1)).toEqual(['eos'])
+
       c.seek(5) // group 3
       await flush()
       c.client.last.push(mediaObject(3))
       await flush()
+
       expect(c.requests().filter((r) => r.startsWith('fetch '))).toEqual(['fetch v1 0.0-', 'fetch v1 3.0-'])
       expect(c.trace().slice(-3)).toEqual(['eos', 'seek', '3.0'])
     })
@@ -494,7 +533,9 @@ if (import.meta.vitest) {
       await elapse()
       c.reconnected()
       await elapse()
+
       expect(c.client.sent<Sent>('subscribe').map(requested)).toEqual(['v1'])
+
       c.client.last.push(mediaObject(7))
       await elapse()
       expect(c.trace()).toEqual(['props live,mimeType,track', '1.0', 'gap', '7.0'])
@@ -506,9 +547,11 @@ if (import.meta.vitest) {
       await elapse()
       c.client.last.push(mediaObject(3, 1))
       await elapse()
+
       c.lose()
       c.reconnected()
       await elapse()
+
       const filter = c.client.sent<Sent>('fetch')[0]!.locationFilter
       expect([filter.startGroup, filter.startObject]).toEqual([3n, 2n])
     })

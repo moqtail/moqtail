@@ -109,12 +109,14 @@ export class Decoding implements Engine {
 
   async receive(item: PadItem): Promise<void> {
     if (this.#failed) return
+
     if (item.type === 'properties') {
       if ('timescale' in item.properties) this.#arrivalTimescale = item.properties.timescale
       this.#enqueue(() => this.#applyProperties(item.properties))
     } else if (item.type === 'packet') {
       this.#arrived(item.packet)
     }
+
     while (this.#heldSeconds() >= HELD_LIMIT && !this.#closed) await this.#room.promise
   }
 
@@ -130,10 +132,12 @@ export class Decoding implements Engine {
   /** A downstream `flush` drops the packets held and what the decoder holds, and starts over at the next key frame. */
   signal(signal: PadSignal): void {
     if (signal.type !== 'flush') return
+
     this.#epoch++
     this.#held = undefined
     this.#roomMade()
     this.#sendHeld()
+
     if (this.#decoder?.state !== 'configured') return
     this.#decoder.reset()
     this.#pending.length = 0
@@ -150,8 +154,10 @@ export class Decoding implements Engine {
     const timestamp = chunkTimestamp(packet, this.#arrivalTimescale)
     const own = findProperty(packet.properties, Timescale)?.timescale
     const timescale = own === undefined ? this.#arrivalTimescale : Number(own)
+
     const arrival = { packet, timestamp, timescale, epoch: this.#epoch }
     this.#enqueue(() => this.#decode(arrival))
+
     if (this.#held) this.#held.to = Math.max(this.#held.to, timestamp)
     else this.#held = { from: timestamp, to: timestamp }
     this.#sendHeld()
@@ -161,19 +167,23 @@ export class Decoding implements Engine {
     const reconfigure =
       ('decoderConfig' in properties && !deepEqual(properties.decoderConfig, this.#properties.decoderConfig)) ||
       ('initData' in properties && !deepEqual(properties.initData, this.#properties.initData))
+
     this.#properties = { ...this.#properties, ...properties }
     if (reconfigure) await this.#configure()
     if ('timescale' in properties) this.#outputTimescale = properties.timescale
+
     await this.#output({ type: 'properties', properties })
   }
 
   async #configure(): Promise<void> {
     const { decoderConfig, initData } = this.#properties
     if (!decoderConfig) return
+
     const init: DecoderInit = {
       output: (payload) => this.#decoded(payload),
       error: (error) => this.#reportFailure(error),
     }
+
     if ('sampleRate' in decoderConfig) {
       const { codec, sampleRate, numberOfChannels } = decoderConfig
       const description = initData ?? aacDescription(codec, sampleRate, numberOfChannels)
@@ -186,6 +196,7 @@ export class Decoding implements Engine {
       this.#decoder = await configured(this.#codecs.VideoDecoder, this.#decoder, init, config)
       this.#kind = 'video'
     }
+
     // With a description, payloads are in the canonical format WebCodecs expects
     this.#lengthPrefixed = !initData && ANNEX_B_CODECS.test(decoderConfig.codec)
     this.#awaitingKey = true
@@ -194,26 +205,32 @@ export class Decoding implements Engine {
   async #decode({ packet, timestamp, timescale, epoch }: Arrival): Promise<void> {
     await this.#lastWrite
     if (epoch !== this.#epoch) return
+
     const decoder = this.#decoder
     const type = chunkType(packet, this.#kind)
+
     if (decoder?.state !== 'configured' || (this.#awaitingKey && type !== 'key')) {
       this.#passed(timestamp)
       return
     }
+
     const data = this.#lengthPrefixed ? annexB(packet.payload) : packet.payload
     if (!data) {
       this.#awaitingKey = true
       this.#passed(timestamp)
       return
     }
+
     this.#awaitingKey = false
     const base = { track: packet.track, location: packet.location, properties: packet.properties }
     this.#pending.push({ base, timestamp, timescale })
+
     if (decoder instanceof this.#codecs.AudioDecoder) {
       decoder.decode(new this.#codecs.EncodedAudioChunk({ type, timestamp, data }))
     } else {
       decoder.decode(new this.#codecs.EncodedVideoChunk({ type, timestamp, data }))
     }
+
     while (decoder.decodeQueueSize > DECODE_QUEUE_LIMIT) {
       await new Promise((resolve) => decoder.addEventListener('dequeue', resolve, { once: true }))
     }
@@ -236,21 +253,26 @@ export class Decoding implements Engine {
       output.close()
       return
     }
+
     const { base, timescale } = pending
     // Objects decoded after it stay, so one stray timestamp can't drop the frames behind it
     this.#pending = audio
       ? this.#pending.slice(index + 1)
       : this.#pending.filter((p, i) => i > index || p.timestamp > output.timestamp)
+
     const payload = audio ? restamped(output as AudioData, pending.timestamp) : output
+
     // Frames carry no clock of their own (LOC 2.3.1.1, 2.3.1.2)
     if (timescale !== undefined && timescale !== this.#outputTimescale) {
       this.#outputTimescale = timescale
       void this.#output({ type: 'properties', properties: { timescale } })
     }
+
     if (this.#kind === 'video') {
       this.#open = this.#open.filter((frame) => frame.format !== null)
       this.#open.push(payload as VideoFrame)
     }
+
     this.#lastWrite = this.#output({ type: 'frame', frame: { ...base, payload } })
     this.#passed(pending.timestamp)
   }
@@ -269,6 +291,7 @@ export class Decoding implements Engine {
   #sendHeld(): void {
     const seconds = this.#heldSeconds()
     if (Math.abs(seconds - this.#heldSent) < HELD_REPORT_STEP) return
+
     this.#heldSent = seconds
     this.#report({ type: 'held', seconds })
   }
@@ -282,6 +305,7 @@ export class Decoding implements Engine {
   #failure(): string {
     const open = this.#open.filter((frame) => frame.format !== null)
     if (open.length === 0) return 'Decoding failed'
+
     const timestamps = open.map((frame) => frame.timestamp)
     const span = (Math.max(...timestamps) - Math.min(...timestamps)) / 1_000_000
     return `Decoding failed with ${open.length} decoded frames still open, spanning ${span.toFixed(2)} s`
@@ -289,10 +313,12 @@ export class Decoding implements Engine {
 
   async #flush(): Promise<void> {
     if (this.#decoder?.state !== 'configured') return
+
     // WebCodecs requires a key chunk after a flush
     this.#awaitingKey = true
     // A reset or close meanwhile rejects it, and nothing it held is output
     await this.#decoder.flush().catch(() => {})
+
     // Chunks the decoder didn't output by now never will be
     this.#pending.length = 0
   }
@@ -322,13 +348,17 @@ export class Decoding implements Engine {
  */
 function restamped(data: AudioData, timestamp: number): AudioData {
   if (data.timestamp === timestamp) return data
+
   const { sampleRate, numberOfChannels, numberOfFrames } = data
   const planes = new Float32Array(numberOfChannels * numberOfFrames)
+
   for (let planeIndex = 0; planeIndex < numberOfChannels; planeIndex++) {
     const plane = planes.subarray(planeIndex * numberOfFrames, (planeIndex + 1) * numberOfFrames)
     data.copyTo(plane, { planeIndex, format: 'f32-planar' })
   }
+
   data.close()
+
   return new AudioData({ format: 'f32-planar', sampleRate, numberOfChannels, numberOfFrames, timestamp, data: planes })
 }
 
@@ -349,11 +379,14 @@ async function configured<D extends { configure(config: C): void }, C extends { 
   if (!supported) {
     throw new PlayerError('MEDIA_FAILURE', `WebCodecs can't decode "${config.codec}"`, { element: 'webcodecs' })
   }
+
   if (current instanceof Decoder) {
     current.configure(config)
     return current
   }
+
   if (current && current.state !== 'closed') current.close()
+
   const decoder = new Decoder(init)
   decoder.configure(config)
   return decoder

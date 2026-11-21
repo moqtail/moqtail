@@ -70,16 +70,21 @@ export function decoderConfigOf(
 export function trackOfProperties(identifiers: Identifiers): CatalogTrack | undefined {
   const { track: name, trackBytes, namespace, isLive, trackProperties, objects = [] } = identifiers
   if (name === undefined || !trackBytes || !namespace || isLive === undefined) return undefined
+
   const objectProperties = objects.map((o) => o.properties)
   const config =
     configOf(trackProperties, 'track-property') ??
     objectProperties.map((p) => configOf(p, 'object-property')).find((c) => c !== undefined)
+
   const codec = [trackProperties, ...objectProperties].map((p) => findProperty(p, CodecString)).find((c) => c)?.codec
   if (!config || !codec) return undefined
+
   const { role, type, property, data } = config
+
   // AudioDecoder.configure() needs the sample rate and channels before any AudioData exists
   const format = role === 'audio' ? audioFormatOf(codec, data) : undefined
   if (role === 'audio' && !format) return undefined
+
   return {
     name,
     nameBytes: trackBytes,
@@ -110,6 +115,7 @@ export function timestampMicros(
 ): number | undefined {
   const timestamp = findProperty(properties, Timestamp)
   if (!timestamp) return undefined
+
   const own = findProperty(properties, Timescale)?.timescale
   return timestamp.toMicros(own ?? (timescale === undefined ? undefined : BigInt(timescale)))
 }
@@ -142,11 +148,15 @@ function aacFormat(config: Uint8Array): { samplerate: number; channelConfig: str
     }
     return value
   }
+
   if (read(5) === 31) read(6) // escaped object type
+
   const index = read(4)
   const samplerate = index === EXPLICIT_SAMPLE_RATE ? read(24) : AAC_SAMPLE_RATES[index]
   const channels = AAC_CHANNELS[read(4)]
+
   if (offset > config.length * 8 || !samplerate || !channels) return undefined
+
   return { samplerate, channelConfig: String(channels) }
 }
 
@@ -157,6 +167,7 @@ if (import.meta.vitest) {
   test('decoderConfigOf: coded size for video, sample rate and channels for audio', () => {
     const video = { ...track('v1'), packaging: 'loc', role: 'video', codec: 'avc3.64001f', width: 1280, height: 720 }
     expect(decoderConfigOf(video, 'avc3.64001f')).toEqual({ codec: 'avc3.64001f', codedWidth: 1280, codedHeight: 720 })
+
     const audio = {
       ...track('a1'),
       packaging: 'loc',
@@ -172,9 +183,11 @@ if (import.meta.vitest) {
     // testsrc's AAC-LC at 48 kHz, stereo, with an SBR sync extension
     const aac = new Uint8Array([0x11, 0x90, 0x56, 0xe5, 0x00])
     expect(audioFormatOf('mp4a.40.2', aac)).toEqual({ samplerate: 48_000, channelConfig: '2' })
+
     const head = new Uint8Array(19)
     head.set(new TextEncoder().encode('OpusHead'))
     head[9] = 1
+
     expect(audioFormatOf('opus', head)).toEqual({ samplerate: 48_000, channelConfig: '1' })
     expect(audioFormatOf('flac', aac)).toBeUndefined()
     expect(audioFormatOf('mp4a.40.2', new Uint8Array([0x11]))).toBeUndefined()

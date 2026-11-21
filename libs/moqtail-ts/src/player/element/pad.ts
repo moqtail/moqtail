@@ -125,15 +125,19 @@ export class Pad {
    */
   async write(item: PadOutput): Promise<void> {
     if (this.direction !== 'src') throw new TypeError('write() is only for source pads')
+
     if (this.#routed) {
       await this.#routed
       return this.write(item)
     }
+
     const connections = [...this.#connections.values()]
+
     if (connections.length === 0) {
       closeFrame(item)
       return
     }
+
     await Promise.all(connections.map((c, i) => c.push(i === 0 ? item : cloned(item))))
   }
 
@@ -169,6 +173,7 @@ export class Pad {
   /** @internal Holds writes until the returned function is called, once the pad is routed. */
   holdWrites(): () => void {
     const { promise, resolve } = Promise.withResolvers<void>()
+
     // Registered first, so it clears the hold before the held writes run, keeping their order
     this.#routed = promise.then(() => {
       this.#routed = undefined
@@ -180,11 +185,14 @@ export class Pad {
   connect(element: Consumer, onError: ErrorHandler): void {
     const sink = new Pad('sink', element, this.capabilities)
     element.pads.push(sink)
+
     const deliver = (item: PadOutput) =>
       item.type === 'event' ? sink.deliverEvent(item.event) : element.receive(sink, item)
+
     this.#connections.set(sink, new Connection(deliver, (error) => onError(error, sink)))
     this.peers.push(sink)
     sink.peers.push(this)
+
     element.emit('padadded', sink)
   }
 
@@ -193,6 +201,7 @@ export class Pad {
     const [source, sink] = this.direction === 'src' ? [this, peer] : [peer, this]
     source.#connections.get(sink)?.close()
     source.#connections.delete(sink)
+
     remove(source.peers, sink)
     remove(sink.peers, source)
   }
@@ -203,6 +212,7 @@ export class Pad {
 
   #deliverSignal(signal: PadSignal): boolean {
     for (const listener of this.#signalListeners) if (listener(signal)) return true
+
     let handled = false
     for (const pad of this.#otherSide()) if (pad.signal(signal)) handled = true
     return handled
@@ -212,6 +222,7 @@ export class Pad {
 export function addPad(element: BaseElement, direction: 'src' | 'sink', capabilities: Capabilities): Pad {
   const pad = new Pad(direction, element, capabilities)
   element.pads.push(pad)
+
   element.emit('padadded', pad)
   return pad
 }
@@ -222,10 +233,12 @@ export function addPad(element: BaseElement, direction: 'src' | 'sink', capabili
  */
 export function removePad(pad: Pad, failed = false): void {
   if (!remove(pad.element.pads, pad)) return
+
   for (const peer of [...pad.peers]) {
     pad.unlink(peer)
     if (pad.direction === 'src') removePad(peer, failed)
   }
+
   pad.element.emit('padremoved', pad, failed)
 }
 
@@ -272,10 +285,12 @@ export class Connection {
       closeFrame(item)
       return Promise.resolve()
     }
+
     // A queued frame pins a decoder buffer, so its producer decodes no further until the consumer takes it
     const taken = item.type === 'frame' ? new Promise<void>((resolve) => this.#taken.set(item, resolve)) : undefined
     this.#queue.push(item)
     this.#wake?.()
+
     if (taken) return taken
     if (this.#queue.length < CONNECTION_CAPACITY) return Promise.resolve()
     return new Promise((resolve) => this.#waiting.push(resolve))
@@ -284,10 +299,12 @@ export class Connection {
   /** Drops the queue, ends the loop, and releases waiting producers so they don't hang. */
   close(): void {
     this.#closed = true
+
     for (const item of this.#queue.splice(0)) closeFrame(item)
     for (const resolve of this.#waiting.splice(0)) resolve()
     for (const resolve of this.#taken.values()) resolve()
     this.#taken.clear()
+
     this.#wake?.()
   }
 
@@ -295,9 +312,11 @@ export class Connection {
     for (;;) {
       const item = this.#queue.shift() ?? (await this.#next())
       if (!item || this.#closed) return
+
       this.#taken.get(item)?.()
       this.#taken.delete(item)
       if (this.#queue.length < CONNECTION_CAPACITY) this.#waiting.shift()?.()
+
       try {
         await this.#deliver(item)
       } catch (error) {
@@ -308,6 +327,7 @@ export class Connection {
 
   #next(): Promise<PadOutput | undefined> {
     if (this.#closed) return Promise.resolve(undefined)
+
     return new Promise((resolve) => {
       this.#wake = () => {
         this.#wake = undefined
@@ -329,13 +349,16 @@ if (import.meta.vitest) {
   describe('Pad', () => {
     test('packets, properties, and events arrive in order, events only after the previous receive()', async () => {
       const { pad, sink } = await connected((s) => (s.slow = flush))
+
       void pad.write(properties)
       void pad.write(packet(1))
       void pad.write(eos)
       await pad.write(packet(2))
+
       await flush()
       await flush()
       await flush()
+
       expect(sink.items()).toEqual([properties, packet(1), eos, packet(2)])
     })
 
@@ -344,13 +367,17 @@ if (import.meta.vitest) {
       const { source, sink, pad: slowPad } = await connected()
       const fastPad = source.addPad()
       sink.slow = (pad) => (pad === sink.pads[0] ? blocked.promise : Promise.resolve())
+
       void slowPad.write(packet(1))
       await fastPad.write(packet(2))
       await flush()
+
       expect(sink.items(sink.pads[1])).toEqual([packet(2)])
       expect(sink.items(sink.pads[0])).toEqual([])
+
       blocked.resolve()
       await flush()
+
       expect(sink.items(sink.pads[0])).toEqual([packet(1)])
     })
 
@@ -358,15 +385,19 @@ if (import.meta.vitest) {
       const blocked = gate()
       const { chain, pad, sink } = await connected((s) => (s.slow = () => blocked.promise))
       let resolved = 0
+
       const writes = Array.from({ length: CONNECTION_CAPACITY + 8 }, (_, i) =>
         pad.write(packet(i)).then(() => resolved++),
       )
       await flush()
+
       // One item is inside receive(), the queue holds the rest up to capacity
       expect(resolved).toBe(CONNECTION_CAPACITY)
+
       await chain.destroy()
       await Promise.all(writes)
       expect(resolved).toBe(CONNECTION_CAPACITY + 8)
+
       blocked.resolve()
       await flush()
       expect(sink.items()).toEqual([])
@@ -376,15 +407,20 @@ if (import.meta.vitest) {
       const { Location } = await import('@/model/common/location')
       const blocked = gate()
       const { chain, pad } = await connected((s) => (s.slow = () => blocked.promise))
+
       const frame = (): PadOutput => ({
         type: 'frame',
         frame: { track: 'v1', location: new Location(0n, 0n), properties: [], payload: { close() {} } as VideoFrame },
       })
+
       const written: number[] = []
+
       for (const n of [1, 2]) void pad.write(frame()).then(() => written.push(n))
       await flush()
+
       // The first is inside receive(), the second waits to be taken
       expect(written).toEqual([1])
+
       await chain.destroy()
       await flush()
       expect(written).toEqual([1, 2])
@@ -395,17 +431,21 @@ if (import.meta.vitest) {
       let transform: import('@/player/testing/elements').TestTransform | undefined
       let source: import('@/player/testing/elements').TestSource | undefined
       let sink: import('@/player/testing/elements').CollectingSink | undefined
+
       chain.addSource(testSource({ script: (s) => ((source = s), s.addPad(), s.emit('nomorepads')) }), {})
       chain.addTransform(testTransform({ setup: (t) => (transform = t) }))
       chain.addSink(collectingSink({ setup: (k) => (sink = k) }))
+
       await chain.init(new AbortController().signal)
 
       const upstream: PadSignal[] = []
       source!.pads[0]!.onSignal((signal) => (upstream.push(signal), true))
       await source!.pads[0]!.write(packet(1))
       await source!.pads[0]!.write(eos)
+
       await flush()
       await flush()
+
       expect(sink!.pads[0]!.peers[0]!.element).toBe(transform)
       expect(sink!.items()).toEqual([packet(1), eos])
 
@@ -414,10 +454,12 @@ if (import.meta.vitest) {
 
       // A signal skips what's written: it reaches the sink before the packet the source can't push yet
       sink!.slow = () => new Promise(() => {})
+
       void source!.pads[0]!.write(packet(2))
       expect(source!.pads[0]!.signal({ type: 'flush' })).toBe(true)
       expect(sink!.signals).toEqual([{ type: 'flush' }])
       expect(sink!.items()).toEqual([packet(1), eos])
+
       sink!.consumeSignals = false
       expect(source!.pads[0]!.signal({ type: 'flush' })).toBe(false)
     })
@@ -428,26 +470,31 @@ if (import.meta.vitest) {
       const closed: string[] = []
       const fake = (name: string): Frame['payload'] =>
         ({ name, close: () => closed.push(name), clone: () => fake(`${name} clone`) }) as unknown as Frame['payload']
+
       const base = { track: 'v1', location: new Location(1n, 0n), properties: [] }
       const frame = (name: string): PadOutput => ({ type: 'frame', frame: { ...base, payload: fake(name) } })
 
       const sinks: import('@/player/testing/elements').CollectingSink[] = []
       let source: import('@/player/testing/elements').TestSource | undefined
       const { chain } = testChain()
+
       const script = (s: import('@/player/testing/elements').TestSource) => {
         source = s
         s.addPad()
         s.emit('nomorepads')
       }
+
       chain.addSource(testSource({ script }), {})
       chain.addSink(collectingSink({ setup: (k) => sinks.push(k) }))
       chain.addSink(collectingSink({ setup: (k) => sinks.push(k) }))
       await chain.init(new AbortController().signal)
+
       const pad = source!.pads[0]!
 
       const first = frame('a')
       await pad.write(first)
       await flush()
+
       expect(sinks[0]!.items()).toEqual([first])
       expect(sinks[1]!.items()).toEqual([
         { type: 'frame', frame: { ...base, payload: expect.objectContaining({ name: 'a clone' }) } },
@@ -456,14 +503,18 @@ if (import.meta.vitest) {
       await source!
         .addPad([{ direction: 'out', code: CapabilityCode.PACKAGING, value: 'raw' }])
         .write(frame('unlinked'))
+
       const blocked = gate()
       for (const sink of sinks) sink.slow = () => blocked.promise
       void pad.write(frame('received'))
       void pad.write(frame('queued'))
+
       await flush()
+
       await chain.destroy()
       await pad.write(frame('late'))
       blocked.resolve()
+
       expect(closed.sort()).toEqual(['late', 'queued', 'queued clone', 'unlinked'])
     })
   })

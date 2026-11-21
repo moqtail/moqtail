@@ -59,9 +59,11 @@ const RAW_BOXES = 4n
 export function parseObject(payload: Uint8Array): LocmafObject {
   const buf = new FrozenByteBuffer(payload)
   const genBoxes: Uint8Array[] = []
+
   try {
     for (;;) {
       if (buf.remaining === 0) throw new LocmafError('The object ends before its header')
+
       const type = buf.getVI()
       if (type === GEN_BOX) {
         genBoxes.push(genBox(buf))
@@ -86,11 +88,13 @@ export function parseObject(payload: Uint8Array): LocmafObject {
 export function readList(bytes: Uint8Array): bigint[] {
   const buf = new FrozenByteBuffer(bytes)
   const values: bigint[] = []
+
   try {
     while (buf.remaining > 0) values.push(buf.getVI())
   } catch (error) {
     throw new LocmafError('A list field is truncated', { cause: error })
   }
+
   return values
 }
 
@@ -103,10 +107,13 @@ export function unzigzag(z: bigint): bigint {
 function genBox(buf: FrozenByteBuffer): Uint8Array {
   const size = buf.getVI()
   if (size < 4n || size > 0xfffffffbn) throw new LocmafError(`genBox size ${size} is out of range`)
+
   const body = buf.getBytes(Number(size))
+
   const box = new Uint8Array(4 + body.length)
   new DataView(box.buffer).setUint32(0, box.length)
   box.set(body, 4)
+
   return box
 }
 
@@ -121,27 +128,34 @@ function properties(block: Uint8Array, full: boolean): Fields {
   const buf = new FrozenByteBuffer(block)
   const seen = new Set<bigint>()
   const fields: Fields = new Map()
+
   while (buf.remaining > 0) {
     const id = buf.getVI()
     if (seen.has(id)) throw new LocmafError(`Field ${id} repeats`)
     seen.add(id)
+
     const value = id % 2n === 0n ? buf.getVI() : buf.getBytes(length(buf))
     if (KNOWN.has(id)) fields.set(Number(id), value)
   }
+
   if (full && fields.has(Field.deleted)) throw new LocmafError('A full header lists deletions')
   if (!full && fields.has(Field.baseMediaDecodeTime)) throw new LocmafError('A delta header carries the BMDT')
+
   return fields
 }
 
 /** Complete boxes, each with its actual 32-bit size, filling the rest of the object (§9.1, §18). */
 function rawBoxes(boxes: Uint8Array): Uint8Array {
   if (boxes.length === 0) throw new LocmafError('A rawBoxes element is empty')
+
   const view = new DataView(boxes.buffer, boxes.byteOffset, boxes.byteLength)
+
   for (let at = 0; at < boxes.length;) {
     const size = at + 8 <= boxes.length ? view.getUint32(at) : 0
     if (size < 8 || at + size > boxes.length) throw new LocmafError('rawBoxes holds an incomplete box')
     at += size
   }
+
   return boxes
 }
 
@@ -152,10 +166,12 @@ if (import.meta.vitest) {
 
   const encode = (...items: (number | bigint | Uint8Array)[]) => {
     const buf = new ByteBuffer()
+
     for (const item of items) {
       if (item instanceof Uint8Array) buf.putBytes(item)
       else buf.putVI(item)
     }
+
     return buf.toUint8Array()
   }
   const bytes = (...values: number[]) => new Uint8Array(values)
@@ -165,6 +181,7 @@ if (import.meta.vitest) {
   test('genBoxes, then a header whose unknown fields are skipped by parity, then the mdat', () => {
     const block = encode(14, 1, 10, 9000, 18, 300, 19, 2, bytes(7, 7))
     const object = parseObject(encode(1, 8, type('prft'), bytes(1, 2, 3, 4), 2, block.length, block, bytes(9, 9)))
+
     expect(object).toEqual({
       genBoxes: [box('prft', bytes(1, 2, 3, 4))],
       full: true,
@@ -180,9 +197,11 @@ if (import.meta.vitest) {
   test('rawBoxes is the whole object, its boxes complete', () => {
     const styp = box('styp', bytes(1, 2, 3, 4))
     expect(parseObject(encode(4, styp))).toEqual({ raw: styp })
+
     for (const raw of [bytes(), styp.subarray(0, 10), box('free').fill(0, 0, 4), box('free').fill(1, 3, 4)]) {
       malformed(encode(4, raw))
     }
+
     malformed(encode(1, 4, type('free'), 4, styp))
   })
 

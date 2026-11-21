@@ -64,6 +64,7 @@ export class Policy {
       const hidden = index < this.#layers.length - 1
       values = applyLayer(layer, values).map((v) => (hidden ? Math.tanh(v) : v))
     })
+
     return [...values]
   }
 
@@ -76,10 +77,12 @@ export class Policy {
     const top = Math.max(...logits.filter((_, action) => legal[action]))
     const weights = logits.map((logit, action) => (legal[action] ? Math.exp(logit - top) : 0))
     let draw = random() * weights.reduce((sum, weight) => sum + weight, 0)
+
     for (let action = 0; action < weights.length; action++) {
       draw -= weights[action]!
       if (draw < 0 && weights[action]! > 0) return action as Action
     }
+
     return Action.Stay
   }
 }
@@ -105,6 +108,7 @@ function parseLayers(bytes: Uint8Array): Layer[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (view.getUint8(0) !== FEATURES_VERSION || view.getUint32(1, true) !== featuresHash())
     throw new TypeError('The model was trained on another feature list')
+
   const shapes = Array.from({ length: view.getUint8(5) }, (_, index) => {
     const at = 6 + index * 6
     return {
@@ -114,7 +118,9 @@ function parseLayers(bytes: Uint8Array): Layer[] {
       biasScale: float16(view.getUint16(at + 4, true)),
     }
   })
+
   const codes = int4Codes(bytes, 6 + shapes.length * 6)
+
   return shapes.map(({ inputs, outputs, weightScale, biasScale }) => ({
     inputs,
     outputs,
@@ -131,6 +137,7 @@ function int4Codes(bytes: Uint8Array, offset: number): { next(): number } {
       const byte = bytes[nibble >> 1]!
       const code = nibble % 2 === 0 ? byte & 0xf : byte >> 4
       nibble++
+
       return code >= 8 ? code - 16 : code
     },
   }
@@ -141,5 +148,6 @@ function float16(bits: number): number {
   const sign = bits & 0x8000 ? -1 : 1
   const exponent = (bits >> 10) & 0x1f
   const fraction = bits & 0x3ff
+
   return exponent === 0 ? sign * fraction * 2 ** -24 : sign * (1 + fraction / 1024) * 2 ** (exponent - 15)
 }

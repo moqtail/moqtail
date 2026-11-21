@@ -88,12 +88,15 @@ if (import.meta.vitest) {
       new Timescale(90_000n),
       new CodecString('avc3.640028'),
     ].map((p) => new UnknownTrackProperty(p.toKeyValuePair()))
+
     const init = { type: 'track-property' as const, property: VideoConfig.TYPE }
     const c = await cmafChain([locTrack({ init })], {
       element: Loc,
       respond: () => ({ trackProperties }),
     })
+
     await flush()
+
     expect(c.sink.items()).toEqual([
       {
         type: 'properties',
@@ -111,11 +114,13 @@ if (import.meta.vitest) {
   test('packets keep the payload and properties, and group times come from the LOC Timestamp', async () => {
     const c = await cmafChain([locTrack({ timescale: 90_000 })], { element: Loc })
     await flush()
+
     // Wall-clock µs, as without a TIMESCALE track property: the catalog's timescale isn't LOC's
     const at = (ms: number) => [new Timestamp(BigInt(1_700_000_000_000 + ms) * 1000n).toKeyValuePair()]
     const first = mediaObject(1, 0, at(0))
     c.client.last.push(first, mediaObject(1, 1, at(500)), mediaObject(2, 0, at(2000)))
     await flush()
+
     expect(c.trace()).toEqual(['props decoderConfig,live,track', '1.0', '1.1', '2.0', 'props groupDuration'])
     expect(c.sink.items()[1]).toMatchObject({ packet: { payload: first.payload, properties: first.properties } })
     expect(c.sink.items().at(-1)).toMatchObject({ properties: { groupDuration: 2 } })
@@ -130,6 +135,7 @@ if (import.meta.vitest) {
     const c = await cmafChain([locTrack()], { element: Loc })
     const time = (properties: ReturnType<typeof ticks>, timescale?: number) =>
       c.source.mediaTime(locTrack(), packetOf('v1', mediaObject(1, 0, properties), new Uint8Array()), { timescale })
+
     expect(time(ticks(3000n, 1000n), 90_000)).toBe(3)
     expect(time(ticks(180_000n), 90_000)).toBe(2)
     expect(time(ticks(2_000_000n))).toBe(2)
@@ -142,15 +148,20 @@ if (import.meta.vitest) {
       respond: (_, options) => (requested(options) === 'v1' ? { trackProperties } : {}),
     })
     await flush()
+
     c.client.last.push(mediaObject(1, 0, ticks(90_000n)))
     await flush()
+
     const switched = c.source.switch('v2')
     await flush()
+
     const [v1, v2] = c.client.requests
     v1!.push(mediaObject(2, 0, ticks(180_000n))) // past the switch point
     await flush()
     v2!.push(mediaObject(2, 0, ticks(2_000_000n), 'v2'))
+
     await switched
+
     expect(c.trace().slice(-2)).toEqual(['props timescale,track', '2.0'])
     expect(c.sink.items().at(-2)).toStrictEqual({
       type: 'properties',

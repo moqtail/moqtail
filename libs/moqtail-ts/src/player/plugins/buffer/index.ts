@@ -38,6 +38,7 @@ export const liveBuffer = definePlugin({
       jumpFactor = LIVE_BUFFER_DEFAULTS.jumpFactor,
       jumpTolerance = LIVE_BUFFER_DEFAULTS.jumpTolerance,
     } = options
+
     if (!(catchupRate > 1 && catchupRate < 2)) throw new TypeError('catchupRate must be between 1 and 2')
     if (!(targetLatency > 0 && targetLatency < Infinity)) throw new TypeError('targetLatency must be a positive number')
     if (!(tolerance >= 0 && tolerance < Infinity)) throw new TypeError('tolerance must be a non-negative number')
@@ -47,6 +48,7 @@ export const liveBuffer = definePlugin({
     if (!(minRate > 0 && minRate <= 1)) throw new TypeError('minRate must be between 0 and 1')
     if (!(jumpFactor > 1 && jumpFactor < Infinity)) throw new TypeError('jumpFactor must be above 1')
     if (!(jumpTolerance > 0 && jumpTolerance < Infinity)) throw new TypeError('jumpTolerance must be a positive number')
+
     return new LiveBufferController({
       catchupRate,
       targetLatency,

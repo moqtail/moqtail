@@ -112,12 +112,15 @@ export abstract class EventTimelineElement extends SourceElement {
   protected parseRecord(raw: Record<string, unknown>): TimelineRecord | undefined {
     const { T, L, M } = raw
     if (!('data' in raw) || [T, L, M].filter((i) => i !== undefined).length !== 1) return undefined
+
     if (L !== undefined) {
       const location = toLocation(L)
       return location && { L: location, data: raw['data'] }
     }
+
     const index = T ?? M
     if (typeof index !== 'number' || !Number.isFinite(index)) return undefined
+
     return T !== undefined ? { T: index, data: raw['data'] } : { M: index, data: raw['data'] }
   }
 
@@ -136,6 +139,7 @@ export abstract class EventTimelineElement extends SourceElement {
       onIncremental: received,
       onStale: (reason) => this.#warn(`Event timeline "${this.track.name}" went stale: ${reason.message}`, reason),
     })
+
     try {
       await this.#reader.start()
     } catch (cause) {
@@ -153,23 +157,28 @@ export abstract class EventTimelineElement extends SourceElement {
       this.parseHeader(findProperty(this.#reader?.subscribeOk?.trackProperties, MsfEventTimelineHeaderProperty)?.header)
       this.#headerRead = true
     }
+
     if (this.#pad.peers.length > 0) {
       void this.#pad.write({
         type: 'packet',
         packet: packetOf(renditionId(this.track, this.context.catalog), object, payload),
       })
     }
+
     const json = parseJsonArray(payload, 'An event timeline must be a JSON array of records (MSF 8.2)')
     const eventType = this.track.eventType ?? ''
     let dropped = 0
+
     for (const raw of json) {
       const isObject = typeof raw === 'object' && raw !== null && !Array.isArray(raw)
       const record = isObject ? this.parseRecord(raw as Record<string, unknown>) : undefined
       if (!record) dropped++
       if (!record || (this.incremental && !isAfter(record, this.#last))) continue
+
       this.#last = record
       this.context.player.emit('timelineevent', { track: this.track, eventType, record })
     }
+
     if (dropped > 0) this.#warn(`Dropped ${dropped} malformed record(s) of event timeline "${this.track.name}"`)
   }
 
@@ -205,9 +214,11 @@ if (import.meta.vitest) {
   /** A test event timeline loaded by a top-level source, with an optional sink taking its pad. */
   async function setup(incremental: boolean, options: { header?: Uint8Array; sink?: boolean } = {}) {
     const client = new FakeClient()
+
     if (options.header) {
       client.respond = () => ({ trackProperties: [new MsfEventTimelineHeaderProperty(options.header!) as never] })
     }
+
     const headers: (string | undefined)[] = []
     class Events extends EventTimelineElement {
       protected readonly incremental = incremental
@@ -226,6 +237,7 @@ if (import.meta.vitest) {
         return element
       },
     })
+
     const events = { ...track('events'), packaging: 'eventtimeline', eventType: 'x' }
     const parent = testSource({
       script: async (s) => {
@@ -233,29 +245,36 @@ if (import.meta.vitest) {
         s.emit('nomorepads')
       },
     })
+
     const { chain } = testChain(
       () => [],
       () => client,
     )
+
     const delivered: TimelineEvent[] = []
     const warnings: string[] = []
     chain.host.player.on('timelineevent', (e) => delivered.push(e as TimelineEvent))
     chain.host.player.on('warning', (w) => warnings.push(w.message))
     chain.addSource(parent, {})
+
     let sink: CollectingSink | undefined
     if (options.sink) chain.addSink(collectingSink({ setup: (s) => ((sink = s), (s.accept = () => true)) }))
+
     void chain.init(new AbortController().signal)
     await flush()
+
     const push = async (...objects: MoqtObject[]) => {
       client.last.push(...objects)
       await settle()
     }
+
     return { events: delivered, warnings, headers, push, sink: () => sink }
   }
 
   describe('EventTimelineElement', () => {
     test('MSF 8.5 records by T, L, and M; malformed ones dropped with a warning', async () => {
       const t = await setup(false)
+
       await t.push(
         object(1, 0, [{ T: 1756885678361, data: { clock: '12:00' } }]),
         object(2, 0, [
@@ -265,11 +284,13 @@ if (import.meta.vitest) {
         ]),
         object(3, 0, [{ M: 23051, data: { class: 'human' } }, { M: 'x', data: 1 }, { M: 1 }, 'record']),
       )
+
       expect(t.events.map((e) => [e.eventType, e.record])).toEqual([
         ['x', { T: 1756885678361, data: { clock: '12:00' } }],
         ['x', { L: new Location(0n, 0n), data: [47.1812, 8.4592] }],
         ['x', { M: 23051, data: { class: 'human' } }],
       ])
+
       expect(t.warnings).toEqual([
         'Dropped 2 malformed record(s) of event timeline "events"',
         'Dropped 3 malformed record(s) of event timeline "events"',
@@ -278,21 +299,26 @@ if (import.meta.vitest) {
 
     test('a sequence delivers each record once across independent and incremental objects', async () => {
       const t = await setup(true, { header: text('{"crs":"WGS84"}') })
+
       const at = (group: number) => ({ L: [group, 0], data: group })
       await t.push(object(1, 0, [at(0), at(1)]), object(1, 1, [at(2)]), object(2, 0, [at(0), at(1), at(2), at(3)]))
+
       expect(t.events.map((e) => e.record.data)).toEqual([0, 1, 2, 3])
       expect(t.headers).toEqual(['{"crs":"WGS84"}'])
     })
 
     test('one record per group ignores later objects; a connected pad gets the objects', async () => {
       const t = await setup(false, { sink: true })
+
       await t.push(
         object(1, 0, [{ M: 0, data: 'a' }]),
         object(1, 1, [{ M: 1, data: 'b' }]),
         object(2, 0, [{ M: 0, data: 'c' }]),
       )
+
       expect(t.events.map((e) => e.record.data)).toEqual(['a', 'c'])
       expect(t.headers).toEqual([undefined])
+
       const packets = t
         .sink()!
         .items()

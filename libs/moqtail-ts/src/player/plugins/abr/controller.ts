@@ -108,21 +108,26 @@ export class MlAbrController implements AbrController {
     const prober = new Prober()
     const onState = (state: PlayerState) => signals.playerState(state, seconds())
     const onAutoplayBlocked = () => signals.autoplayBlocked(player.state, seconds())
+
     player.on('statechange', onState)
     player.on('autoplayblocked', onAutoplayBlocked)
     onState(player.state)
+
     // Known before the first tick, so the first groups count as video
     signals.videoTracks = this.#videoTracks(player)
+
     const unfollow = followData(player, (event, track, header) => {
       if (header.stream === 'subgroup') signals.received(event, track)
       else if (event.kind === 'object')
         prober.received(track, header.requestId, { at: event.at / 1000, bytes: event.payloadLength })
     })
+
     const unclient = eachClient(player, () => {
       signals.forgetStreams()
       prober.cancel()
       return () => {}
     })
+
     const timer = setInterval(() => this.#tick(), this.#tickMs)
     this.#session = {
       player,
@@ -138,6 +143,7 @@ export class MlAbrController implements AbrController {
         clearInterval(timer)
         unfollow()
         unclient()
+
         player.off('statechange', onState)
         player.off('autoplayblocked', onAutoplayBlocked)
       },
@@ -147,6 +153,7 @@ export class MlAbrController implements AbrController {
   detach(): void {
     const session = this.#session
     if (!session) return
+
     this.#session = undefined
     session.stop()
     session.prober.cancel()
@@ -157,38 +164,49 @@ export class MlAbrController implements AbrController {
     const policy = this.#policy
     // Only the viewer's pause holds decisions: a start or a seek the link can't feed is ABR's to solve
     if (!session || !policy || session.player.state === 'paused') return
+
     const ladder = videoLadder(session.player)
     if (!ladder) return
+
     const now = seconds()
     const { signals, prober } = session
     signals.videoTracks = this.#videoTracks(session.player)
     signals.prune(now)
+
     // Evidence ages only while the controller is free to act on it
     if (!session.settling) prober.age(this.#tickMs / 1000)
+
     const active = ladder.renditions.findIndex((r) => r.active)
     this.#settle(session, now)
+
     // After the settle, which can move where the windows start
     const stalledTime = signals.stalledTime(now)
     const requested = this.#requested(session, ladder, active, stalledTime, now)
     session.requested = requested
+
     const playing = ladder.renditions[active === -1 ? requested : active]!
     const arrivalRate = signals.arrivalRate(now, playing.frameRate)
     if (this.#contradicted(session, playing, stalledTime, now)) prober.forgetEstimates()
     const probeResult = prober.settle(now, signals.arrivals(), ladder.renditions[requested + 1]?.bitrate)
+
     if (stalledTime > 0 || arrivalRate < SHORT) session.troubleAt = now
+
     const observation = this.#observe(session, ladder, requested, playing, { stalledTime, arrivalRate }, now)
     const inputs = features(observation)
     const reported = { observation, features: inputs, ...(probeResult !== undefined && { probeResult }) }
+
     // A stall still gets a decision while warming up
     if (!signals.warmedUp(now) && observation.stalledTime === 0) {
       this.#onDecision?.({ ...reported, action: Action.Stay, warmingUp: true })
       return
     }
+
     const action = policy.choose(inputs, legalActions(observation))
     const switchedTo =
       action === Action.Up ? climbTarget(observation) : action === Action.Down ? downTarget(observation) : undefined
     if (switchedTo !== undefined) this.#switch(session, ladder, requested, switchedTo, now)
     if (action === Action.Probe) this.#probe(session, ladder, requested, now)
+
     this.#onDecision?.({ ...reported, action, ...(switchedTo !== undefined && { switchedTo }) })
   }
 
@@ -200,6 +218,7 @@ export class MlAbrController implements AbrController {
   #requested(session: Session, ladder: Ladder, active: number, stalledTime: number, now: number): number {
     const { requested, signals } = session
     if (requested === undefined || requested >= ladder.renditions.length) return Math.max(active, 0)
+
     const settled = now - session.switchedAt > Math.max(RESYNC, 2 * (signals.groupInterval() ?? 0))
     return active !== -1 && settled && stalledTime === 0 ? active : requested
   }
@@ -211,8 +230,10 @@ export class MlAbrController implements AbrController {
   #settle(session: Session, now: number): void {
     const { settling, signals } = session
     if (!settling) return
+
     const settled = !signals.streaming(settling.from) && signals.lastObjectAt(settling.to) > settling.since
     if (!settled && now - settling.since < SETTLE_TIMEOUT) return
+
     session.settling = undefined
     session.settledAt = now
     signals.measureFrom(now)
@@ -239,6 +260,7 @@ export class MlAbrController implements AbrController {
     const { player, sink, signals, prober } = session
     const { currentTime, buffered } = sink
     const range = rangeAt(currentTime, buffered)
+
     return {
       forwardBuffer: range === -1 ? 0 : buffered.end(range) - currentTime,
       playbackRate: player.state === 'playing' ? sink.playbackRate : 0,
@@ -267,8 +289,10 @@ export class MlAbrController implements AbrController {
       to: this.#target(renditions[to]!).name,
       since: now,
     }
+
     if (to > from) session.prober.forgetFailures()
     else session.prober.steppedDown(now)
+
     // The latest switch wins: a superseded one rejects with ABORTED
     source.switch(renditions[to]!.id).catch(() => {})
   }
@@ -278,16 +302,19 @@ export class MlAbrController implements AbrController {
     const probed = source.getRenditions().find((r) => this.#target(r).name === groups[0]?.track)
     const client = player.client
     if (!client || !probed) return
+
     const bytes = probeBytes(renditions[requested]!.bitrate, renditions[requested + 1]!.bitrate)
     prober.start(client, this.#target(probed), planProbe(groups, bytes), now)
   }
 
   #videoTracks(player: MOQtailPlayer): Map<string, string> {
     const heads = new Map<string, string>()
+
     for (const r of videoSource(player)?.getRenditions() ?? []) {
       const head = this.#target(r).name
       for (const member of r.ladder ?? [head]) heads.set(member, head)
     }
+
     return heads
   }
 
@@ -299,6 +326,7 @@ export class MlAbrController implements AbrController {
       target = { name: track, fullTrackName: FullTrackName.tryNew(namespace, trackBytes) }
       this.#targets.set(rendition.src, target)
     }
+
     return target
   }
 }
@@ -315,6 +343,7 @@ function videoLadder(player: MOQtailPlayer): Ladder | undefined {
   const source = videoSource(player)
   const renditions = (source?.getRenditions() ?? []).filter((r) => r.selected).sort((a, b) => a.bitrate - b.bitrate)
   if (!source || renditions.length < 2 || renditions.some((r) => !(r.bitrate > 0))) return undefined
+
   return { source, renditions }
 }
 

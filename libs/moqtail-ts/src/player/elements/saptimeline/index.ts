@@ -38,10 +38,13 @@ export class SapTimelineElement extends EventTimelineElement {
   protected override parseRecord(raw: Record<string, unknown>): SapRecord | undefined {
     const record = super.parseRecord(raw)
     if (!record?.L || !isSapData(record.data, record.L.object === 0n)) return undefined
+
     const sap = record as SapRecord
+
     // Kept by the base class's delivery rule, so the history independent objects repeat isn't stored twice
     const last = this.#records.at(-1)
     if (!last || sap.L.compare(last.L) > 0) this.#records.push(sap)
+
     return sap
   }
 }
@@ -75,24 +78,30 @@ if (import.meta.vitest) {
     const client = new FakeClient()
     let sap: SapTimelineElement | undefined
     const sapTrack = { ...track('sap'), packaging: 'eventtimeline', eventType: SAP_EVENT_TYPE }
+
     const parent = testSource({
       script: async (s) => {
         sap = await s.ctx.load(SapTimeline, { tracks: [sapTrack] })
         s.emit('nomorepads')
       },
     })
+
     const { chain } = testChain(
       () => [],
       () => client,
     )
+
     const events: TimelineEvent[] = []
     const warnings: string[] = []
     chain.host.player.on('timelineevent', (e) => events.push(e as TimelineEvent))
     chain.host.player.on('warning', (w) => warnings.push(w.message))
+
     chain.addSource(parent, {})
     await chain.init(new AbortController().signal)
+
     const object = (group: number, id: number, records: unknown) =>
       testObject('sap', group, id, new TextEncoder().encode(JSON.stringify(records)))
+
     client.last.push(
       object(0, 0, [{ L: [0, 0], data: [2, 0] }]),
       object(0, 1, [{ L: [0, 60], data: [3, 2100] }]),
@@ -104,8 +113,10 @@ if (import.meta.vitest) {
         { L: [1, 60], data: [3, 6100] },
       ]),
     )
+
     await settle()
     const show = (r: TimelineRecord) => `${r.L?.group}.${r.L?.object} ${String(r.data)}`
+
     expect(events.map((e) => show(e.record))).toEqual(['0.0 2,0', '0.60 3,2100', '1.60 3,6100'])
     expect(sap!.records.map(show)).toEqual(['0.0 2,0', '0.60 3,2100', '1.60 3,6100'])
     expect(warnings).toEqual(['Dropped 2 malformed record(s) of event timeline "sap"'])

@@ -70,6 +70,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
     super(context)
     this.#canvas = canvas
     this.#preroll = preroll
+
     this.on('padadded', (pad) => {
       this.#place(pad)
       this.#setTracks()
@@ -79,6 +80,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
       this.#start()
       this.#maybeReady()
     })
+
     // Without a worker there's nothing to wait for
     if (!context.worker) this.#start()
   }
@@ -119,22 +121,27 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
 
   setPlaybackRate(rate: number): void {
     if (!(rate > 0 && Number.isFinite(rate))) throw new TypeError(`"playout" playback rate must be > 0, got ${rate}`)
+
     this.#playbackRate = rate
     void this.#engine.promise.then((engine) => engine.setPlaybackRate(rate))
   }
 
   async play(): Promise<void> {
     if (this.#state === 'playing' || this.#ended) return
+
     this.#state = 'playing'
     await (await this.#engine.promise).play()
+
     // shortcut: a context the page doesn't allow to start keeps resume() pending until a user gesture, with no autoplayblocked for audio yet
     void this.#output?.context.resume()
   }
 
   async pause(): Promise<void> {
     if (this.#state === 'paused') return
+
     this.#state = 'paused'
     await (await this.#engine.promise).pause()
+
     void this.#output?.context.suspend()
     this.dispatchEvent(new Event('pause'))
   }
@@ -142,19 +149,25 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   /** Forward only, as `liveBuffer` jumps: what's before `mediaTime` is dropped, and playback goes on from there. */
   async seek(mediaTime: number): Promise<void> {
     if (!(mediaTime >= this.currentTime)) throw new TypeError(`"playout" can't seek back: it has no DVR`)
+
     this.#seek?.resolve()
+
     const seek = Promise.withResolvers<void>()
     this.#seek = seek
     this.#currentTime = mediaTime
+
     this.dispatchEvent(new Event('seeking'))
     await (await this.#engine.promise).seek(mediaTime)
+
     return seek.promise
   }
 
   override async destroy(): Promise<void> {
     await this.#placed?.engine.close()
+
     this.#seek?.reject(new PlayerError('ABORTED', 'The sink was destroyed', { element: 'playout' }))
     this.#seek = undefined
+
     this.#closeAudio()
     await super.destroy()
   }
@@ -198,6 +211,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
     const report = (report: EngineReport) => this.#onReport(report)
     const offscreen =
       worker && pads.length > 0 && pads.every((pad) => worker.inWorker(pad)) && offscreenOf(this.#canvas)
+
     if (worker && offscreen) {
       const options = { canvas: offscreen, preroll: this.#preroll }
       this.#placed = {
@@ -210,11 +224,14 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
         this.fail(new PlayerError('UNSUPPORTED_SOURCE', failure, { element: 'playout' }))
         return
       }
+
       this.#placed = {
         engine: new PlayoutEngine({ outputs: [], options: { canvas: this.#canvas, preroll: this.#preroll }, report }),
       }
     }
+
     this.#engine.resolve(this.#placed.engine)
+
     for (const pad of pads) this.#place(pad)
   }
 
@@ -222,6 +239,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   #place(pad: Pad): void {
     const worker = this.context.worker
     if (pad.direction !== 'sink' || !this.#placed || !worker?.inWorker(pad)) return
+
     if ('worker' in this.#placed) worker.link(pad, this.#placed.engine)
     else worker.bridge(pad)
   }
@@ -231,23 +249,29 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
     this.#audio ??= createAudioOutput(sampleRate, numberOfChannels, this.#preroll).then(
       async (output) => {
         this.#output = output
+
         if (this.context.signal.aborted) {
           this.#closeAudio()
           return output
         }
+
         output.node.onprocessorerror = (error) =>
           this.fail(
             new PlayerError('MEDIA_FAILURE', 'The audio processor failed', { element: 'playout', cause: error }),
           )
+
         const engine = await this.#engine.promise
         await engine.attachAudio(Comlink.transfer(output.node.port, [output.node.port]))
+
         if (this.#state === 'playing') void output.context.resume()
+
         return output
       },
       (cause: unknown) => {
         throw new PlayerError('MEDIA_FAILURE', 'Could not start the audio output', { element: 'playout', cause })
       },
     )
+
     this.#audio.catch((error: PlayerError) => this.fail(error))
   }
 
@@ -259,6 +283,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   #maybeReady(): void {
     if (this.#ready || !this.negotiated || this.states.size === 0) return
     if (![...this.states.values()].every((s) => s.received)) return
+
     this.#ready = true
     this.emit('ready')
   }
@@ -298,15 +323,19 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   #presentation(currentTime: number | undefined, bufferedEnd: number | undefined): void {
     if (currentTime !== undefined) this.#currentTime = currentTime
     this.#bufferedEnd = bufferedEnd
+
     const context = this.#output?.context
     if (context?.state === 'running') {
       const { contextTime = 0, performanceTime = 0 } = context.getOutputTimestamp()
       if (performanceTime > 0)
         void this.#placed?.engine.outputTimestamp({ contextTime, time: performance.timeOrigin + performanceTime })
     }
+
     if (this.#state !== 'playing') return
+
     this.#played = true
     const now = performance.now()
+
     if (now - this.#timeUpdate < TIME_UPDATE_INTERVAL_MS) return
     this.#timeUpdate = now
     this.dispatchEvent(new Event('timeupdate'))
@@ -315,6 +344,7 @@ export class PlayoutSink extends MediaSink<PlayoutPadState> {
   #closeAudio(): void {
     const output = this.#output
     if (!output) return
+
     output.node.disconnect()
     void output.context.close()
   }
@@ -346,6 +376,7 @@ function timeRanges(ranges: [number, number][]): TimeRanges {
     if (!range) throw new DOMException(`No range at ${index}`, 'IndexSizeError')
     return range[edge]
   }
+
   return { length: ranges.length, start: (index) => at(index, 0), end: (index) => at(index, 1) }
 }
 

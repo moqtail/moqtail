@@ -53,7 +53,9 @@ export function* children(data: Uint8Array): Generator<{ type: string; body: Uin
 export function baseMediaDecodeTime(fragment: Uint8Array): number | undefined {
   const tfdt = findBox(fragment, ['moof', 'traf', 'tfdt'])
   if (!tfdt || tfdt.length < 8) return undefined
+
   const view = new DataView(tfdt.buffer, tfdt.byteOffset, tfdt.byteLength)
+
   // A full box: version, then 3 bytes of flags
   if (view.getUint8(0) === 1) return tfdt.length < 12 ? undefined : Number(view.getBigUint64(4))
   return view.getUint32(4)
@@ -63,9 +65,11 @@ export function baseMediaDecodeTime(fragment: Uint8Array): number | undefined {
 export function mediaTimescale(init: Uint8Array): number | undefined {
   const mdhd = findBox(init, ['moov', 'trak', 'mdia', 'mdhd'])
   if (!mdhd) return undefined
+
   // Version 1 has 64-bit creation and modification times, version 0 32-bit ones
   const offset = mdhd[0] === 1 ? 20 : 12
   if (mdhd.length < offset + 4) return undefined
+
   return new DataView(mdhd.buffer, mdhd.byteOffset, mdhd.byteLength).getUint32(offset)
 }
 
@@ -83,6 +87,7 @@ if (import.meta.vitest) {
     const styp = box('styp', new Uint8Array(4))
     const v0 = [styp, box('moof', box('mfhd', new Uint8Array(8)), box('traf', fullBox('tfdt', 0, u32(90_000))))]
     const v1 = box('moof', box('traf', fullBox('tfdt', 1, u64(2n ** 33n))))
+
     expect(baseMediaDecodeTime(concat(...v0))).toBe(90_000)
     expect(baseMediaDecodeTime(v1)).toBe(2 ** 33)
     expect(baseMediaDecodeTime(new Uint8Array([1, 2]))).toBeUndefined()

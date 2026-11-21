@@ -71,9 +71,11 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     const first = context.tracks[0]!
     this.#tracks = context.tracks
     this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
+
     // The draft has no selection rule (SSTS 3): our preference order decides
     this.algorithms = sstsAlgorithms(context.client.serverSetup, preferred)
     this.#algorithm = this.algorithms[0] ?? 0n
+
     // What the child emits, which isn't always the catalog's packaging: a LOCMAF child emits CMAF
     const packaging = options.child.capabilities
       .flat()
@@ -82,6 +84,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
       { direction: 'out', code: CapabilityCode.PACKAGING, value: packaging ?? first.packaging },
       { direction: 'out', code: CapabilityCode.ROLE, value: first.role ?? 'video' },
     ])
+
     this.#forward = new Forwarder({
       context,
       pad: this.pad,
@@ -91,11 +94,13 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
       sinkPadOf: (child) => this.pads.find((p) => p.direction === 'sink' && p.peers[0]?.element === child.element),
       renditionChanged: (track) => this.context.player.emit('renditionchange', this, this.#rendition(track)),
     })
+
     this.pad.onSignal((signal) => {
       if (signal.type !== 'seek') return false
       void this.#forward.seek(signal.mediaTime)
       return true
     })
+
     this.on('padadded', (sink) => {
       if (sink.direction !== 'sink') return
       sink.onEvent((event) => this.#forward.onChildEvent(sink.peers[0]?.element, event))
@@ -105,6 +110,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     this.on('padremoved', (sink) => {
       if (sink.direction === 'sink') this.#onChildRemoved(sink)
     })
+
     this.emit('nomorepads')
   }
 
@@ -120,6 +126,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     const results = await Promise.allSettled(this.#tracks.map((t) => this.#load(t)))
     const errors = results.flatMap((r) => (r.status === 'rejected' ? [r.reason] : []))
     if (errors.length < results.length) return
+
     const code = errors[0] instanceof PlayerError ? errors[0].code : 'UNSUPPORTED_SOURCE'
     throw new PlayerError(code, 'Every track of the switching set failed to load', {
       element: 'ssts',
@@ -156,17 +163,22 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     const children = [...this.#children.values()]
     const before = children.map((c) => this.#isMember(c))
     const wasPinned = this.#pinned !== undefined
+
     this.#selected = new Set(renditionIds)
     this.#pinned = renditionIds.length === 1 && this.#tracks.length > 1 ? renditionIds[0] : undefined
     this.context.player.emit('selectionchange', this)
+
     await Promise.all(
       children.map((child, i) => {
         const member = this.#isMember(child)
         if (before[i] === member) return
+
         if (!member) delete child.subscription
+
         return child.element?.selectRenditions(member ? [this.#id(child.track)] : [])
       }),
     )
+
     // A pin changes every threshold; subscriptions made above already carry the new ones
     if (wasPinned || this.#pinned !== undefined) {
       await Promise.all(this.#subscribed().map((c) => this.#update(c)))
@@ -177,16 +189,19 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   setTracks(tracks: readonly CatalogTrack[]): void {
     const keepSelection = this.#pinned !== undefined
     const next = new Set(tracks.map(trackKey))
+
     for (const [key, child] of this.#children) {
       if (next.has(key)) continue
       this.#children.delete(key)
       if (child.element) void this.context.release(child.element)
     }
+
     for (const track of tracks) {
       if (this.#children.has(trackKey(track))) continue
       if (!keepSelection) this.#selected.add(this.#id(track))
       void this.#load(track).catch(() => {})
     }
+
     this.#tracks = tracks
   }
 
@@ -211,10 +226,12 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     if (!this.algorithms.includes(id)) {
       throw new PlayerError('UNSUPPORTED_SOURCE', `SSTS algorithm ${id} wasn't negotiated`, { element: 'ssts' })
     }
+
     const call = ++this.#algorithmCalls
     const previous = this.#algorithmLock
     const done = Promise.withResolvers<void>()
     this.#algorithmLock = done.promise
+
     try {
       await previous
       if (call !== this.#algorithmCalls) throw new PlayerError('ABORTED', 'A later setAlgorithm superseded this one')
@@ -227,7 +244,9 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   async #load(track: CatalogTrack): Promise<void> {
     const child: Child = { track, properties: {}, eos: false }
     this.#children.set(trackKey(track), child)
+
     const { switchFrom, ranges } = this.options
+
     let element: BaseElement
     try {
       element = await this.context.load(this.options.child, {
@@ -243,6 +262,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
       this.#children.delete(trackKey(track))
       throw error
     }
+
     child.element = element as unknown as BaseElement & MediaSourceElement
     // shortcut: an unselected new track subscribes once before it's taken out; a load option could skip that
     if (!this.#isMember(child)) await child.element.selectRenditions([])
@@ -258,6 +278,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
       subscribed: (_, result) => {
         const replaced = child.subscription !== undefined
         child.subscription = { result }
+
         // The publisher dropped the old one from its count (SSTS 6.3): re-send the set size
         if (replaced) void this.#update(child).catch(() => {})
       },
@@ -266,9 +287,11 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
 
   #assignment(track: CatalogTrack): SwitchingSetAssignment {
     const activate = this.#paused ? 0n : BigInt(this.#selectedChildren().length)
+
     // A pinned track has 1 and the others 0, so the relay picks it at any throughput
     const pinned = this.#pinned !== undefined
     const kbps = pinned ? BigInt(this.#pinned === this.#id(track)) : BigInt(Math.round(bitrateOf(track) / 1000))
+
     return new SwitchingSetAssignment(this.#setIdFor(this.context.client), this.#algorithm, kbps, 1n, activate, 0)
   }
 
@@ -279,6 +302,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
       nextSetId.set(client, id + 1n)
       this.#setId = { client, id }
     }
+
     return this.#setId.id
   }
 
@@ -287,11 +311,14 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     const before = this.#algorithm
     this.#algorithm = id
     const children = this.#subscribed()
+
     const results = await Promise.allSettled(children.map((c) => this.#update(c)))
     const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
     if (!failed) return
+
     this.#algorithm = before
     await Promise.allSettled(children.filter((_, i) => results[i]!.status === 'fulfilled').map((c) => this.#update(c)))
+
     throw failed.reason
   }
 
@@ -327,7 +354,9 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   #onChildRemoved(sink: Pad): void {
     const from = sink.peers[0]?.element
     if (this.#forward.seekChildRemoved(from)) return
+
     for (const [key, child] of this.#children) if (child.element === from) this.#children.delete(key)
+
     if (this.#children.size === 0 && this.pads.includes(this.pad)) this.removePad(this.pad)
     else this.#forward.endIfDone()
   }
@@ -369,6 +398,7 @@ export function sstsSource(algorithms: readonly bigint[]) {
       if (sstsAlgorithms(context.client.serverSetup, algorithms).length === 0) {
         throw new PlayerError('UNSUPPORTED_SOURCE', 'The session did not negotiate SSTS', { element: 'ssts' })
       }
+
       const source = new SstsSource(context, options, algorithms)
       await source.start()
       return source
@@ -404,13 +434,16 @@ if (import.meta.vitest) {
   ) {
     const client = new FakeClient()
     client.serverSetup = new Setup(new SetupOptions().addSstsAlgorithms(options.algorithms ?? [0n, 0xff01n]).build())
+
     const { chain, failures } = testChain(
       () => [],
       () => client,
     )
+
     const ssts = sstsSource(options.preferred ?? SSTS_ALGORITHMS)
     const sources: SstsSource[] = []
     let sink!: Sink
+
     chain.addSource(
       testSource({
         script: async (parent) => {
@@ -420,16 +453,20 @@ if (import.meta.vitest) {
               await parent.ctx.load(ssts, { ...request, ...(options.catalog && { catalog: options.catalog }) }),
             )
           }
+
           parent.emit('nomorepads')
         },
       }),
       {},
     )
     chain.addSink(collectingSink({ setup: (k) => ((sink = k), (k.accept = () => true)) }))
+
     await chain.init(new AbortController().signal)
+
     const renditions: string[] = []
     chain.host.player.on('renditionchange', (_, rendition) => renditions.push(rendition.id))
     await flush()
+
     return {
       client,
       sources,
@@ -473,17 +510,20 @@ if (import.meta.vitest) {
   test('every track subscribes into its set: negotiated algorithm, activate = set size, no FORWARD, IDs per client', async () => {
     const audio = cmafTrack('a1', { role: 'audio', bitrate: 128_000 })
     const c = await sstsChain([[v('v1', 800_000), v('v2', 2_000_000)], [audio]], { algorithms: [7n, 0xff01n] })
+
     const subscribes = c.client.sent<SubscribeOptions>('subscribe')
     expect(subscribes.map((s) => [requested(s), s.forward, assigned(s)])).toEqual([
       ['v1', undefined, 'set 0 alg 65281 kbps 800 activate 2'],
       ['v2', undefined, 'set 0 alg 65281 kbps 2000 activate 2'],
       ['a1', undefined, 'set 1 alg 65281 kbps 128 activate 1'],
     ])
+
     expect(c.sources.map((s) => [s.algorithms, s.algorithm])).toEqual([
       [[0xff01n], 0xff01n],
       [[0xff01n], 0xff01n],
     ])
     expect(c.sources[1]!.pad.capabilities.map((cap) => cap.value)).toEqual(['cmaf', 'audio'])
+
     // The first of ours that the peer accepts
     expect((await sstsChain([[v('v1')]])).source.algorithm).toBe(0n)
     expect((await sstsChain([[v('v1')]], { preferred: [0xff01n, 0n] })).source.algorithm).toBe(0xff01n)
@@ -491,16 +531,19 @@ if (import.meta.vitest) {
 
   test('the arriving track writes its properties first and is the active one; one eos after every child', async () => {
     const c = await sstsChain([[v('v1'), v('v2')]])
+
     c.request('v1').push(mediaObject(1, 0))
     await flush()
     c.request('v2').push(mediaObject(2, 0, null, 'v2'))
     await flush()
     c.request('v1').end(PublishDoneStatusCode.TrackEnded)
     await flush()
+
     expect(c.trace()).toEqual(['props v1', '1.0', 'props v2', '2.0'])
     c.request('v2').end(PublishDoneStatusCode.TrackEnded)
     await flush()
     expect(c.trace().slice(-1)).toEqual(['eos'])
+
     expect(c.renditions).toEqual(['v1', 'v2'])
     expect(c.source.getRenditions().map((r) => [r.id, r.active])).toEqual([
       ['v1', false],
@@ -511,21 +554,27 @@ if (import.meta.vitest) {
   test('selectRenditions unsubscribes and re-adds; a retry re-sends activate', async () => {
     const c = await sstsChain([[v('v1'), v('v2'), v('v3')]])
     vi.useFakeTimers()
+
     await c.source.selectRenditions(['v1', 'v2'])
     await vi.advanceTimersByTimeAsync(0)
     expect(c.client.sent('unsubscribe')).toEqual([2n])
+
     c.request('v1').reset()
     await vi.advanceTimersByTimeAsync(6000)
+
     // The retry carries the current set size, then the count is sent again for the replacement
     const retry = c.client.sent<SubscribeOptions>('subscribe').at(-1)!
     expect([requested(retry), assigned(retry)]).toEqual(['v1', 'set 0 alg 0 kbps 1000 activate 2'])
+
     const [update] = c.client.sent<UpdateOptions>('subscribeUpdate')
     expect(update).toEqual({ subscriptionRequestId: 3n, parameters: [expect.any(SwitchingSetAssignment)] })
     expect(assigned(update!)).toBe('set 0 alg 0 kbps 1000 activate 2')
+
     await c.source.selectRenditions(['v1', 'v2', 'v3'])
     await vi.advanceTimersByTimeAsync(0)
     const added = c.client.sent<SubscribeOptions>('subscribe').at(-1)!
     expect([requested(added), assigned(added)]).toEqual(['v3', 'set 0 alg 0 kbps 1000 activate 3'])
+
     expect(c.failures).toEqual([])
   })
 
@@ -533,22 +582,28 @@ if (import.meta.vitest) {
     const c = await sstsChain([[v('v1', 800_000), v('v2', 2_000_000), v('v3', 4_000_000)]])
     await c.source.selectRenditions(['v1', 'v2'])
     await flush()
+
     c.client.calls.length = 0
     await expect(c.source.switch('nope')).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE' })
+
     await c.source.switch('v2')
     await flush()
+
     const updates = () => c.client.sent<UpdateOptions>('subscribeUpdate').map((u) => assigned(u))
     const v3 = c.client.sent<SubscribeOptions>('subscribe')
     expect(v3.map((s) => [requested(s), assigned(s)])).toEqual([['v3', 'set 0 alg 0 kbps 0 activate 3']])
     expect(updates()).toEqual(['set 0 alg 0 kbps 0 activate 3', 'set 0 alg 0 kbps 1 activate 3'])
     expect(c.client.sent('unsubscribe')).toEqual([])
+
     expect(c.source.getRenditions().map((r) => [r.id, r.selected])).toEqual([
       ['v1', false],
       ['v2', true],
       ['v3', false],
     ])
+
     c.client.calls.length = 0
     await c.source.selectRenditions(['v1', 'v2', 'v3'])
+
     expect(updates()).toEqual([
       'set 0 alg 0 kbps 800 activate 3',
       'set 0 alg 0 kbps 2000 activate 3',
@@ -560,6 +615,7 @@ if (import.meta.vitest) {
     const c = await sstsChain([[v('v1'), v('v2')]])
     await c.source.pauseSwitching()
     await c.source.resumeSwitching()
+
     const updates = c.client.sent<UpdateOptions>('subscribeUpdate')
     expect(updates.map((u) => [Object.keys(u).sort(), assigned(u)])).toEqual([
       [['parameters', 'subscriptionRequestId'], 'set 0 alg 0 kbps 1000 activate 0'],
@@ -569,11 +625,14 @@ if (import.meta.vitest) {
 
   test('setAlgorithm moves the whole set, later subscriptions follow, and a rejected update rolls back', async () => {
     const c = await sstsChain([[v('v1'), v('v2')]])
+
     await expect(c.source.setAlgorithm(7n)).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE' })
     await c.source.setAlgorithm(0xff01n)
+
     const updates = () =>
       c.client.sent<UpdateOptions>('subscribeUpdate').map((u) => `${u.subscriptionRequestId} ${assigned(u)}`)
     expect(updates()).toEqual(['0 set 0 alg 65281 kbps 1000 activate 2', '1 set 0 alg 65281 kbps 1000 activate 2'])
+
     await c.source.selectRenditions([])
     await c.source.selectRenditions(['v1', 'v2'])
     await flush()
@@ -583,6 +642,7 @@ if (import.meta.vitest) {
     c.client.update = (args) => {
       if (args.subscriptionRequestId === 2n) throw new Error('rejected')
     }
+
     await expect(c.source.setAlgorithm(0n)).rejects.toThrow('rejected')
     expect(c.source.algorithm).toBe(0xff01n)
     expect(updates()).toEqual([
@@ -594,6 +654,7 @@ if (import.meta.vitest) {
     c.client.update = () => {}
     const first = c.source.setAlgorithm(0n)
     const latest = c.source.setAlgorithm(0xff01n)
+
     await expect(first).rejects.toMatchObject({ code: 'ABORTED' })
     await latest
     expect(c.source.algorithm).toBe(0xff01n)
@@ -603,10 +664,12 @@ if (import.meta.vitest) {
     const c = await sstsChain([[v('v1'), v('v2')]], { catalog: fakeCatalog([], twoSecondTimeline()) })
     c.request('v1').push(mediaObject(5), mediaObject(6))
     await flush()
+
     c.sink.pads[0]!.signal({ type: 'seek', mediaTime: 60 }) // group 31, past the edge
     await flush()
     c.request('v1').push(mediaObject(40))
     await flush()
+
     expect(c.trace().slice(-2)).toEqual(['seek', '40.0'])
 
     c.sink.pads[0]!.signal({ type: 'seek', mediaTime: 5 }) // group 3, behind it
@@ -614,12 +677,15 @@ if (import.meta.vitest) {
     const history = c.client.requests.at(-1)!
     expect(history.kind).toBe('fetch')
     expect(assigned(history.options)).toBe('none') // a fetch is outside the set
+
     c.request('v1').push(mediaObject(41)) // the set waits behind the history
     history.push(mediaObject(3), mediaObject(40))
     history.end()
     await flush()
+
     c.request('v1').push(mediaObject(42))
     await flush()
+
     expect(c.trace().slice(5)).toEqual(['props v1', 'seek', '3.0', '40.0', 'props v1', 'gap', '42.0'])
   })
 
@@ -628,8 +694,10 @@ if (import.meta.vitest) {
       media: true,
       script: (s, options) => {
         if (options?.['ranges']) throw new PlayerError('UNSUPPORTED_SOURCE', 'no history')
+
         const pad = s.addPad()
         s.emit('nomorepads')
+
         const object = mediaObject(5)
         void pad.write({ type: 'packet', packet: packetOf('v1', object, object.payload!) })
       },
@@ -638,8 +706,10 @@ if (import.meta.vitest) {
       child: child as unknown as typeof Cmaf,
       catalog: fakeCatalog([], twoSecondTimeline()),
     })
+
     c.sink.pads[0]!.signal({ type: 'seek', mediaTime: 5 }) // group 3, behind group 5
     await flush()
+
     expect(c.sink.items().at(-1)).toEqual({
       type: 'event',
       event: { type: 'discontinuity', reason: 'seek', failed: true },
@@ -650,7 +720,9 @@ if (import.meta.vitest) {
     const c = await sstsChain([[v('v1'), v('v2')]])
     c.source.setTracks([v('v1'), v('v3')])
     await flush()
+
     expect(c.client.sent('unsubscribe')).toEqual([1n])
+
     const added = c.client.sent<SubscribeOptions>('subscribe').at(-1)!
     expect([requested(added), assigned(added)]).toEqual(['v3', 'set 0 alg 0 kbps 1000 activate 2'])
   })
@@ -664,14 +736,17 @@ if (import.meta.vitest) {
         void pad.write(packet(1))
       },
     })
+
     const c = await sstsChain([[cmafTrack('l1', { packaging: 'loc' })]], { child: loc as unknown as typeof Cmaf })
     expect(c.source.pad.capabilities.map((cap) => cap.value)).toEqual(['loc', 'video'])
     expect(c.sink.items().filter((i) => i.type === 'packet')).toHaveLength(1)
+
     // The pad carries what the child emits: LOCMAF tracks rebuilt into CMAF
     const { Locmaf } = await import('@/player/elements/locmaf')
     const locmaf = cmafTrack('m1', { packaging: 'locmaf', locmafVersion: '0.3' })
     const rebuilt = await sstsChain([[locmaf]], { child: Locmaf as unknown as typeof Cmaf })
     expect(rebuilt.source.pad.capabilities.map((cap) => cap.value)).toEqual(['cmaf', 'video'])
+
     await expect(sstsChain([[v('v1')]], { child: testSource() as unknown as typeof Cmaf })).rejects.toMatchObject({
       code: 'UNSUPPORTED_SOURCE',
     })
@@ -688,15 +763,18 @@ if (import.meta.vitest) {
         script: (s) => {
           const name = s.ctx.tracks[0]!.name
           if (bad.includes(name)) throw new PlayerError('MEDIA_FAILURE', `no ${name}`)
+
           const pad = s.addPad([{ direction: 'out', code: CapabilityCode.PACKAGING, value: 'cmaf' }])
           s.emit('nomorepads')
           void pad.write(packet(1))
         },
       }) as unknown as typeof Cmaf
+
     await expect(sstsChain([[v('v1'), v('v2')]], { child: failing(['v1', 'v2']) })).rejects.toMatchObject({
       code: 'MEDIA_FAILURE',
       cause: { errors: [expect.any(PlayerError), expect.any(PlayerError)] },
     })
+
     const c = await sstsChain([[v('v1'), v('v2')]], { child: failing(['v1']) })
     expect(c.sink.items().filter((i) => i.type === 'packet')).toHaveLength(1)
     expect(c.failures).toEqual([])

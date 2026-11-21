@@ -67,6 +67,7 @@ export function locate(
 ): Location | undefined {
   const location = timeline?.timeToLocation(mediaTime * 1000) ?? estimate(mediaTime)
   if (!location) return undefined
+
   const window = accessibleStart(track, timeline)
   return window && window.compare(location) > 0 ? window : new Location(location.group, 0n)
 }
@@ -97,6 +98,7 @@ if (import.meta.vitest) {
     expect(times.estimate('v1', 13)).toEqual(new Location(7n, 0n))
     expect(times.estimate('v1', 0)).toEqual(new Location(1n, 0n))
     expect(times.estimate('v2', 13)).toBeUndefined()
+
     // A 6 s track of a 500 ms grid (groups 0, 12, 24, …): rounded down onto its grid
     const spaced = new GroupTimes()
     spaced.record('v1', 12n, 6)
@@ -115,6 +117,7 @@ if (import.meta.vitest) {
       range: { start: 18_000, end: 30_000 },
     }
     const none = () => undefined
+
     expect(locate(4, cmafTrack('v1'), timeline, none)).toEqual(new Location(3n, 0n))
     expect(locate(4, cmafTrack('v1', { accessibleWindowTime: 12_000 }), timeline, none)).toEqual(new Location(10n, 7n))
     expect(locate(4, cmafTrack('v1'), undefined, () => new Location(9n, 0n))).toEqual(new Location(9n, 0n))
@@ -135,6 +138,7 @@ if (import.meta.vitest) {
     await flush()
     c.client.last.push(mediaObject(3))
     await flush()
+
     expect(c.requests()).toEqual(['fetch v1 0.0-', 'fetchCancel 0', 'fetch v1 3.0-'])
     expect(c.trace()).toEqual(['props live,mimeType,track', '1.0', 'seek', '3.0'])
   })
@@ -150,6 +154,7 @@ if (import.meta.vitest) {
     await flush()
     c.client.last.push(mediaObject(40))
     await flush()
+
     expect(c.requests()).toEqual([
       'subscribe v1 next',
       'subscribe v1 nextobject fill 3.0-',
@@ -171,6 +176,7 @@ if (import.meta.vitest) {
     await flush()
     c.client.last.push(mediaObject(7))
     await flush()
+
     expect(c.requests().filter((r) => r.startsWith('fetch '))).toEqual(['fetch v1 0.0-', 'fetch v1 7.0-'])
     expect(c.trace().slice(1)).toEqual(['1.0', 'seek', 'seek', 'seek', '7.0'])
   })
@@ -182,6 +188,7 @@ if (import.meta.vitest) {
     await flush()
     c.seek(11)
     await flush()
+
     expect(c.requests().at(-1)).toBe('fetch v1 6.0-')
   })
 
@@ -190,9 +197,11 @@ if (import.meta.vitest) {
     await flush()
     c.client.last.push(mediaObject(1))
     await flush()
+
     c.client.respond = () => refuse()
     c.seek(5)
     await flush()
+
     expect(c.trace().slice(-1)).toEqual(['seek failed'])
     expect(c.source.pads).toEqual([]) // no rendition left
   })
@@ -202,19 +211,23 @@ if (import.meta.vitest) {
     await flush()
     c.client.last.push(mediaObject(1))
     await flush()
+
     c.lose()
     c.seek(5)
     await flush()
+
     c.reconnected()
     await flush()
     c.client.last.push(mediaObject(3))
     await flush()
+
     expect(c.requests()).toEqual(['fetch v1 3.0-'])
     expect(c.trace().slice(-2)).toEqual(['seek', '3.0'])
   })
 
   test('seekTarget: VOD fetch, live history fill, live edge from the next group', () => {
     const at = new Location(4n, 0n)
+
     expect(seekTarget(at, true, undefined)).toEqual({ fetch: true, start: at })
     expect(seekTarget(at, false, new Location(9n, 3n))).toEqual({ fetch: false, start: at, fill: true })
     expect(seekTarget(at, false, new Location(3n, 3n))).toEqual({ fetch: false })

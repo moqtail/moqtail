@@ -37,6 +37,7 @@ export class WebCodecsTransform extends TransformElement {
   constructor(context: ElementContext, codecs: Codecs) {
     super(context)
     this.#codecs = codecs
+
     this.on('padadded', (pad) => {
       if (pad.direction === 'sink') this.#inputAdded(pad)
     })
@@ -66,19 +67,23 @@ export class WebCodecsTransform extends TransformElement {
     const inWorker = worker?.has(roleOf(input) === 'audio' ? 'AudioDecoder' : 'VideoDecoder') ? worker : undefined
     const thread = inWorker ? [{ direction: 'out' as const, code: CapabilityCode.THREAD, value: 'worker' }] : []
     const output = this.createPad('src', [...capabilities, ...thread])
+
     const report = (report: PlayerError | PadSignal) => {
       if (report instanceof PlayerError) this.context.fail(report)
       else output.signal(report)
     }
+
     const decoding = inWorker
       ? inWorker.create<Decoding>('webcodecs', { outputs: [output], report })
       : new Decoding({ outputs: [(item) => output.write(item)], options: undefined, report }, this.#codecs)
     this.#output = output
     this.#decoding = decoding
+
     input.onEvent((event) => {
       void decoding.event(event)
       return true
     })
+
     // Upstream signals from the output need no listener: unhandled, they reach the input
     input.onSignal((signal) => {
       void decoding.signal(signal)
@@ -117,6 +122,7 @@ if (import.meta.vitest) {
     const calls: string[] = []
     const closed: number[] = []
     const decoders: FakeDecoder[] = []
+
     class FakeDecoder extends EventTarget {
       state = 'unconfigured'
       decodeQueueSize = 0
@@ -174,17 +180,20 @@ if (import.meta.vitest) {
         this.#init.error(new DOMException('corrupt', 'EncodingError'))
       }
     }
+
     class Chunk {
       constructor(init: object) {
         Object.assign(this, init)
       }
     }
+
     const codecs = {
       VideoDecoder: class extends FakeDecoder {},
       AudioDecoder: class extends FakeDecoder {},
       EncodedVideoChunk: Chunk,
       EncodedAudioChunk: Chunk,
     } as unknown as Codecs
+
     return { codecs, configs, chunks, calls, closed, decoders }
   }
 
@@ -195,11 +204,13 @@ if (import.meta.vitest) {
     let source: TestSource | undefined
     let sink: CollectingSink | undefined
     const role = options.role ?? 'video'
+
     const script = (s: TestSource) => {
       source = s
       s.addPad(locCapabilities('out', role))
       s.emit('nomorepads')
     }
+
     chain.addSource(testSource({ script }), {})
     let transform: WebCodecsTransform | undefined
     const definition = defineElement({
@@ -209,10 +220,14 @@ if (import.meta.vitest) {
         return transform
       },
     })
+
     chain.addTransform(definition)
     chain.addSink(collectingSink({ packaging: 'raw', setup: (k) => (sink = k) }))
+
     await chain.init(new AbortController().signal)
+
     const pad = source!.pads[0]!
+
     return {
       ...fakes,
       failures,
@@ -223,6 +238,7 @@ if (import.meta.vitest) {
       pad,
       async write(...items: PadOutput[]) {
         for (const item of items) await pad.write(item)
+
         await settle()
       },
       /** The sink's items in short: `props <keys>`, `<group>.<object> @<timestamp>`, events by type. */
@@ -263,6 +279,7 @@ if (import.meta.vitest) {
     await d.write(properties())
     expect(d.configs).toEqual([{ codec: 'av01.0.04M.08', optimizeForLatency: true }])
     expect(d.sink.items()).toEqual([properties()])
+
     // The same config again leaves the decoder as it is
     await d.write(properties())
     expect(d.configs).toHaveLength(1)
@@ -279,6 +296,7 @@ if (import.meta.vitest) {
     await d.write(properties(), packet(0, 1, 1), packet(1, 0, 2), packet(1, 1, 3))
     await d.write({ type: 'event', event: { type: 'discontinuity', reason: 'gap' } })
     await d.write(packet(1, 2, 4), packet(2, 3, 5, independent), packet(2, 4, 6))
+
     expect(d.trace()).toEqual([
       'props decoderConfig,live,track',
       '1.0 @2',
@@ -287,6 +305,7 @@ if (import.meta.vitest) {
       '2.3 @5',
       '2.4 @6',
     ])
+
     expect(d.chunks.map((c) => c.type)).toEqual(['key', 'delta', 'key', 'delta'])
   })
 
@@ -295,11 +314,13 @@ if (import.meta.vitest) {
     d.source.addPad(locCapabilities('out', 'video'))
     expect(d.transform.pads.filter((p) => p.direction === 'sink')).toHaveLength(1)
     expect(d.warnings).toMatchObject([{ code: 'PAD_UNLINKED' }])
+
     const upstream: unknown[] = []
     d.pad.onSignal((signal) => {
       upstream.push(signal)
       return true
     })
+
     expect(d.sink.pads[0]!.signal({ type: 'seek', mediaTime: 5 })).toBe(true)
     expect(upstream).toEqual([{ type: 'seek', mediaTime: 5 }])
   })
@@ -307,12 +328,15 @@ if (import.meta.vitest) {
   test('eos flushes the decoder before it is passed on', async () => {
     const d = await decoding({ manual: true })
     await d.write(properties(), packet(1, 0, 1))
+
     // The fake outputs the held frame while it flushes
     d.decoders[0]!.flush = async () => {
       d.calls.push('flush')
       d.decoders[0]!.emit(1)
     }
+
     await d.write({ type: 'event', event: { type: 'eos' } })
+
     expect(d.calls).toEqual(['flush'])
     expect(d.trace()).toEqual(['props decoderConfig,live,track', '1.0 @1', 'eos'])
   })
@@ -322,6 +346,7 @@ if (import.meta.vitest) {
     await d.write(properties(), packet(1, 0, 1))
     d.pad.signal({ type: 'flush' })
     await d.write(packet(1, 1, 2), packet(2, 0, 3))
+
     expect(d.calls).toEqual(['reset'])
     expect(d.configs).toHaveLength(2)
     expect(d.trace().slice(1)).toEqual(['1.0 @1', '2.0 @3'])
@@ -334,15 +359,20 @@ if (import.meta.vitest) {
     const output = async (item: PadOutput) => {
       if (item.type === 'frame') await blocked.promise
     }
+
     const engine = new Decoding({ outputs: [output], options: undefined, report: () => {} }, codecs)
     await engine.receive(properties())
     await settle()
+
     for (let s = 0; s < 10; s++) await engine.receive(packet(1, s, s * 1_000_000))
+
     let returned = false
     const last = engine.receive(packet(1, 10, 10_000_000)).then(() => (returned = true))
     await settle()
+
     // The first frame isn't taken, so 0 s to 10 s are held
     expect(returned).toBe(false)
+
     blocked.resolve()
     await last
     engine.close()
@@ -351,16 +381,21 @@ if (import.meta.vitest) {
   test('packets wait encoded while the consumer holds a frame, signalled downstream as held, until a flush drops them', async () => {
     const d = await decoding()
     await d.write(properties())
+
     const blocked = Promise.withResolvers<void>()
     d.sink.slow = () => blocked.promise
     await d.write(...[0, 1, 2, 3, 4].map((n) => packet(1, n, n * 100_000)))
+
     // The first frame is inside receive(), the second waits to be taken
     expect(d.chunks).toHaveLength(2)
     expect(d.sink.signals.at(-1)).toEqual({ type: 'held', seconds: 0.3 })
+
     d.pad.signal({ type: 'flush' })
     expect(d.sink.signals.slice(-2)).toEqual([{ type: 'held', seconds: 0 }, { type: 'flush' }])
+
     blocked.resolve()
     await settle()
+
     expect(d.chunks).toHaveLength(2)
     expect(d.trace().slice(1)).toEqual(['1.0 @0', '1.1 @100000'])
   })
@@ -382,7 +417,9 @@ if (import.meta.vitest) {
       type: 'packet',
       packet: { ...item.packet, payload: new Uint8Array(nal) },
     })
+
     expect(video.chunks.map((c) => [...c.data])).toEqual([[0, 0, 0, 1, 0x65, 0x88]])
+
     // With a VIDEO_CONFIG description, payloads go as they are
     await video.write(properties('avc3.64001f', { initData: new Uint8Array([1]) }), {
       type: 'packet',
@@ -395,6 +432,7 @@ if (import.meta.vitest) {
     const d = await decoding()
     await d.write(properties('av01.0.04M.08', { timescale: 90_000 }))
     await d.write(packet(1, 0, 1000, new Timescale(1000n)), packet(1, 1, 90_000))
+
     expect(d.trace()).toEqual([
       'props decoderConfig,live,timescale,track',
       'props timescale',
@@ -402,6 +440,7 @@ if (import.meta.vitest) {
       'props timescale',
       '1.1 @1000000',
     ])
+
     expect(
       d.sink
         .items()
@@ -414,11 +453,16 @@ if (import.meta.vitest) {
     const d = await decoding({ manual: true })
     const objects = [packet(1, 0, 0), packet(1, 1, 2000), packet(1, 2, 1000), packet(1, 3, 1000)]
     await d.write(properties(), ...objects)
+
     // B-frames come out in presentation order, 2000 is skipped, 5000 is no chunk's
     d.decoders[0]!.emit(0, 1000, 5000, 1000)
+
     await d.write({ type: 'event', event: { type: 'eos' } })
+
     d.decoders[0]!.emit(2000)
+
     await settle()
+
     const frames = d.sink.items().flatMap((item) => (item.type === 'frame' ? [item.frame] : []))
     const { track, location, properties: objectProperties } = objects[2]!.packet
     expect(frames.map((f) => f.location.object)).toEqual([0n, 2n, 3n])
@@ -429,12 +473,15 @@ if (import.meta.vitest) {
   test('objects stamped before an output frame are dropped, since outputs come in presentation order', async () => {
     const d = await decoding({ manual: true })
     await d.write(properties(), packet(1, 0, 0), packet(1, 1, 1000), packet(1, 2, 2000))
+
     // 1000 is skipped, so its object is gone once 2000 is out
     d.decoders[0]!.emit(0, 2000, 1000)
+
     // Objects decoded after a stray late timestamp keep theirs
     await d.write(packet(2, 0, 9000), packet(2, 1, 3000))
     d.decoders[0]!.emit(9000, 3000)
     await settle()
+
     expect(d.trace().slice(1)).toEqual(['1.0 @0', '1.2 @2000', '2.0 @9000', '2.1 @3000'])
     expect(d.closed).toEqual([1000])
   })
@@ -448,8 +495,10 @@ if (import.meta.vitest) {
       packet(1, 1, 20_000),
       packet(1, 2, 40_000),
     )
+
     d.decoders[0]!.emit(0, 40_000)
     await settle()
+
     expect(d.trace().slice(1)).toEqual(['1.0 @0', '1.2 @40000'])
   })
 
@@ -462,12 +511,16 @@ if (import.meta.vitest) {
       packet(1, 2, 1_000_000),
       packet(1, 3, 1_500_000),
     )
+
     const [first] = d.sink.items().flatMap((item) => (item.type === 'frame' ? [item.frame] : []))
     first!.payload.close()
     d.decoders[0]!.fail()
+
     expect(d.failures).toMatchObject([{ code: 'MEDIA_FAILURE', element: 'webcodecs' }])
     expect(d.failures[0]!.message).toBe('Decoding failed with 3 decoded frames still open, spanning 1.00 s')
+
     await d.write(packet(1, 4, 2_000_000), properties('vp8'))
+
     expect(d.failures).toHaveLength(1)
     expect(d.trace().slice(1)).toEqual(['1.0 @0', '1.1 @500000', '1.2 @1000000', '1.3 @1500000'])
   })
@@ -478,6 +531,7 @@ if (import.meta.vitest) {
       type: 'properties',
       properties: { decoderConfig: { codec: 'opus', sampleRate: 48_000, numberOfChannels: 2 } },
     })
+
     expect(d.decoders.map((decoder) => decoder.state)).toEqual(['closed', 'configured'])
   })
 }

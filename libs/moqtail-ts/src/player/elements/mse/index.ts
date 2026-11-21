@@ -39,6 +39,7 @@ export const MSE = defineElement({
   },
   init: async (context, options: MSEOptions) => {
     checkOptions(options)
+
     const { ManagedMediaSource, MediaSource } = globalThis as MediaSources
     const Backend = ManagedMediaSource ?? MediaSource
     if (!Backend) {
@@ -46,6 +47,7 @@ export const MSE = defineElement({
         element: 'mse',
       })
     }
+
     return new MSESink(context, options, Backend, Backend === ManagedMediaSource)
   },
 })

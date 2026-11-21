@@ -131,6 +131,7 @@ const PROBE_BACKOFF = [5, 10, 15] as const
 export function featuresHash(): number {
   let hash = 0x811c9dc5
   for (const byte of new TextEncoder().encode(FEATURES.join(','))) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0
+
   return hash
 }
 
@@ -142,6 +143,7 @@ export function features(o: Observation): number[] {
   const { ladder, requested: k } = o
   const top = ladder.length - 1
   const bitrate = ladder[k]!
+
   return [
     Math.log1p(clamp(o.forwardBuffer, 0, 30)),
     o.playbackRate - 1,
@@ -170,15 +172,19 @@ export function features(o: Observation): number[] {
  */
 export function legalActions(o: Observation): boolean[] {
   if (o.settling || o.sinceSettled < SETTLE_MEASURE) return [false, true, false, false]
+
   const k = o.requested
   const top = o.ladder.length - 1
+
   const trouble = o.stalledTime > 0 || o.arrivalRate < SHORT || o.forwardBuffer < LOW_BUFFER
   const room = k < top && o.evidence !== null && o.evidence * 8 * UP_MARGIN >= o.ladder[k + 1]!
   const starved = o.stalledTime > 0 || o.arrivalRate < STARVED
   const calm = o.sinceTrouble >= STABLE_RESET && (o.sinceProbe === null || o.sinceProbe >= STABLE_RESET)
   const backingOff = o.sinceProbe !== null && o.sinceProbe < probeBackoff(calm ? 0 : o.probeFailures)
+
   // Once probes show room, another one says nothing new
   const canProbe = k < top && o.probeable && !o.probing && !starved && !backingOff && !room
+
   return [k > 0 && trouble, true, room, canProbe]
 }
 
@@ -187,6 +193,7 @@ export function climbTarget(o: Observation): number {
   const budget = (o.evidence ?? 0) * 8 * UP_MARGIN
   let target = o.requested + 1
   for (let r = target; r < o.ladder.length; r++) if (o.ladder[r]! <= budget) target = r
+
   return target
 }
 
@@ -198,6 +205,7 @@ export function downTarget(o: Observation): number {
   const budget = o.throughput * 8 * DOWN_MARGIN
   let target = 0
   for (let r = 0; r < o.requested; r++) if (o.ladder[r]! <= budget) target = r
+
   return target
 }
 
@@ -243,6 +251,7 @@ if (import.meta.vitest) {
       const [, , , qpos, up, down] = features(observation())
       expect(qpos).toBe(0.5)
       expect([up, down]).toEqual([Math.log(2), Math.log(2)])
+
       const scaled = features(observation({ ladder: [10e6, 20e6, 40e6], activeBitrate: 20e6, receivedBytes: 5e6 }))
       expect(scaled).toEqual(features(observation()))
     })
@@ -306,6 +315,7 @@ if (import.meta.vitest) {
       expect([0, 1, 2, 3, 9].map(probeBackoff)).toEqual([0, 5, 10, 15, 15])
       expect(legalActions(observation({ probeFailures: 2, sinceProbe: 9 }))[Action.Probe]).toBe(false)
       expect(legalActions(observation({ probeFailures: 2, sinceProbe: 10 }))[Action.Probe]).toBe(true)
+
       const waiting = { probeFailures: 9, sinceProbe: 14 }
       expect(legalActions(observation({ ...waiting }))[Action.Probe]).toBe(false)
       expect(legalActions(observation({ probeFailures: 9, sinceProbe: 15 }))[Action.Probe]).toBe(true) // the 15 s cap

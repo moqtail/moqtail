@@ -36,6 +36,7 @@ export function invalidCatalog(reason: string, cause?: unknown): PlayerError {
 export function toBytes(s: string): Uint8Array {
   if (!s.isWellFormed()) throw invalidCatalog(`${JSON.stringify(s)} has an unpaired surrogate (MSF 11.2.1)`)
   if (s.includes('\0')) throw invalidCatalog(`${JSON.stringify(s)} contains U+0000 (MSF 11.2.1)`)
+
   return encoder.encode(s)
 }
 
@@ -48,6 +49,7 @@ export function splitNamespace(s: string): Tuple {
   if (fields.length > 32 || fields.includes('')) {
     throw invalidCatalog(`namespace ${JSON.stringify(s)} needs 1 to 32 non-empty fields (MSF 5.2.2)`)
   }
+
   return new Tuple(fields.map((field) => new TupleField(toBytes(field))))
 }
 
@@ -85,6 +87,7 @@ if (import.meta.vitest) {
       for (const bad of ['', '/a', 'a/', 'a//b', Array(33).fill('x').join('/')]) {
         expect(() => splitNamespace(bad)).toThrow(PlayerError)
       }
+
       expect(splitNamespace(Array(32).fill('x').join('/')).fields).toHaveLength(32)
     })
   })

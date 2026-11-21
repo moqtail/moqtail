@@ -58,6 +58,7 @@ if (import.meta.vitest) {
   const { activePlugins, initPlugins } = await import('@/player/plugin')
   const setup = (algorithms?: bigint[]) =>
     new Setup(algorithms ? new SetupOptions().addSstsAlgorithms(algorithms).build() : [])
+
   const offered = (...config: Parameters<typeof ssts>) =>
     initPlugins([ssts(...config)]).map((p) => p.setupOptions.build().length)
 
@@ -73,6 +74,7 @@ if (import.meta.vitest) {
     expect([offered(), offered({ algorithms: [0xff02n] }), offered({ algorithms: [] })]).toEqual([[1], [1], []])
     expect(() => ssts({ algorithms: [1n, 1n] })).not.toThrow() // checked per player, in init
     expect(() => initPlugins([ssts({ algorithms: [1n, 1n] })])).toThrow(TypeError)
+
     const plugins = initPlugins([ssts({ algorithms: [0xff01n] })])
     expect([activePlugins(plugins, setup([0xff01n])).length, activePlugins(plugins, setup([0n])).length]).toEqual([
       1, 0,

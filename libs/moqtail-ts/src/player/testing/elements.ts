@@ -109,10 +109,12 @@ export class CollectingSink extends SinkElement {
     this.on('nomorepads', () => this.emit('ready'))
     this.on('padadded', (pad) => {
       this.log.set(pad, [])
+
       pad.onEvent((event) => {
         this.log.get(pad)?.push({ type: 'event', event })
         return true
       })
+
       pad.onSignal((signal) => {
         this.signals.push(signal)
         return this.consumeSignals
@@ -281,6 +283,7 @@ export function testChain(
 ) {
   const warnings: Error[] = []
   const failures: Error[] = []
+
   const chain = new Chain({
     player: fakePlayer(),
     client: () => client() as MOQtailClient,
@@ -291,6 +294,7 @@ export function testChain(
     warn: (e) => warnings.push(e),
     fail: (e) => failures.push(e),
   })
+
   return { chain, warnings, failures }
 }
 
@@ -326,6 +330,7 @@ export async function connected(setup?: (sink: CollectingSink) => void) {
   let source: TestSource | undefined
   let sink: CollectingSink | undefined
   const { chain, warnings, failures } = testChain()
+
   chain.addSource(
     testSource({
       script: (s) => {
@@ -336,6 +341,7 @@ export async function connected(setup?: (sink: CollectingSink) => void) {
     }),
     {},
   )
+
   chain.addSink(
     collectingSink({
       setup: (k) => {
@@ -344,6 +350,7 @@ export async function connected(setup?: (sink: CollectingSink) => void) {
       },
     }),
   )
+
   await chain.init(new AbortController().signal)
   return { chain, warnings, failures, source: source!, sink: sink!, pad: source!.pads[0]! }
 }

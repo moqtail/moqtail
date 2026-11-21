@@ -89,14 +89,17 @@ export function planProbe(groups: readonly KnownGroup[], targetBytes: number): P
   const objects = groups.flatMap(({ group, objects }) => objects.map(({ id, bytes }) => ({ group, id, bytes })))
   const total = objects.reduce((sum, { bytes }) => sum + bytes, 0)
   if (objects.length === 0 || total <= 0 || targetBytes <= 0) return []
+
   const prefix = (count: number, bytes: number): ProbeRange => ({
     start: { group: objects[0]!.group, object: objects[0]!.id },
     end: { group: objects[count - 1]!.group, object: objects[count - 1]!.id },
     objects: count,
     bytes,
   })
+
   const plan = Array.from({ length: Math.floor(targetBytes / total) }, () => prefix(objects.length, total))
   const rest = targetBytes - total * plan.length
+
   let count = 0
   let bytes = 0
   while (count < objects.length && bytes + objects[count]!.bytes < rest) bytes += objects[count++]!.bytes
@@ -104,6 +107,7 @@ export function planProbe(groups: readonly KnownGroup[], targetBytes: number): P
   if (count < objects.length && bytes + objects[count]!.bytes - rest <= rest - bytes) bytes += objects[count++]!.bytes
   if (count === 0 && plan.length === 0) bytes += objects[count++]!.bytes
   if (count > 0) plan.push(prefix(count, bytes))
+
   return plan
 }
 
@@ -115,8 +119,10 @@ export function planProbe(groups: readonly KnownGroup[], targetBytes: number): P
  */
 export function probeEstimate(probe: readonly Arrival[], others: readonly Arrival[], requestedAt: number): number {
   if (probe.length === 0) return 0
+
   const last = probe.reduce((latest, { at }) => Math.max(latest, at), -Infinity)
   const within = others.filter(({ at }) => at > requestedAt && at <= last)
+
   const bytes = [...probe, ...within].reduce((sum, arrival) => sum + arrival.bytes, 0)
   return bytes / Math.max(last - requestedAt, 1e-3)
 }
@@ -183,8 +189,10 @@ export class Prober {
   received(track: string | undefined, requestId: bigint | undefined, arrival: Arrival): void {
     const inFlight = this.#inFlight
     if (!inFlight) return
+
     const ours = requestId !== undefined && inFlight.requestIds.has(requestId)
     const unnamed = inFlight.requestIds.size < inFlight.fetches && track !== undefined && track === inFlight.track
+
     if (ours || unnamed) inFlight.arrivals.push(arrival)
   }
 
@@ -196,17 +204,22 @@ export class Prober {
   settle(now: number, others: readonly Arrival[], nextBitrate: number | undefined): number | undefined {
     const inFlight = this.#inFlight
     if (!inFlight) return undefined
+
     const deadline = inFlight.requestedAt + PROBE_TIMEOUT
     const arrivals = inFlight.arrivals.filter(({ at }) => at <= deadline)
     const complete = arrivals.length >= inFlight.expectedObjects
     if (!complete && !behindPace(inFlight, arrivals, now) && now < deadline) return undefined
+
     this.cancel()
+
     const bytesPerSecond = probeEstimate(arrivals, others, inFlight.requestedAt)
     const room = nextBitrate === undefined || bytesPerSecond * 8 >= nextBitrate
+
     this.#failures = room ? 0 : this.#failures + 1
     this.#estimates = [...this.#estimates, { bytesPerSecond, age: 0 }].slice(-CONFIRMING)
     this.#estimatedAt = now
     this.#endedAt = now
+
     return bytesPerSecond
   }
 
@@ -239,8 +252,10 @@ export class Prober {
   cancel(): void {
     const inFlight = this.#inFlight
     if (!inFlight) return
+
     this.#inFlight = undefined
     inFlight.abort.abort()
+
     for (const id of inFlight.requestIds) {
       // The session may be gone, with the FETCH
       Promise.resolve(inFlight.client.fetchCancel(id)).catch(() => {})
@@ -269,6 +284,7 @@ export class Prober {
       end.group,
       end.object,
     )
+
     try {
       const result = await inFlight.client.fetch({
         priority: PROBE_PRIORITY,
@@ -276,6 +292,7 @@ export class Prober {
         fullTrackName,
         locationFilter,
       })
+
       // A refused FETCH leaves the probe to time out with what else arrived
       if (!('stream' in result)) return
       if (this.#inFlight !== inFlight) {
@@ -284,6 +301,7 @@ export class Prober {
         Promise.resolve(inFlight.client.fetchCancel(result.requestId)).catch(() => {})
         return
       }
+
       inFlight.requestIds.add(result.requestId)
       // Arrivals are counted from the client's data events, so the objects themselves are dropped
       await result.stream.pipeTo(new WritableStream(), { signal: inFlight.abort.signal })
@@ -316,6 +334,7 @@ if (import.meta.vitest) {
       group: BigInt(group),
       objects: sizes.map((bytes, id) => ({ id: BigInt(id), bytes })),
     }))
+
   const summary = (plan: ProbeRange[]) =>
     plan.map((r) => `${r.start.group}.${r.start.object}-${r.end.group}.${r.end.object} ${r.objects}/${r.bytes}`)
 
@@ -344,11 +363,13 @@ if (import.meta.vitest) {
       { at: 0.1, bytes: 1000 },
       { at: 0.5, bytes: 1000 },
     ]
+
     const live = [
       { at: -0.1, bytes: 500 }, // before the request
       { at: 0.3, bytes: 500 },
       { at: 0.6, bytes: 500 }, // after the last probe object
     ]
+
     expect(probeEstimate(probe, live, 0)).toBe(2500 / 0.5)
     expect(probeEstimate([], live, 0)).toBe(0)
   })
@@ -361,19 +382,24 @@ if (import.meta.vitest) {
         fetchCancel: vi.fn(async () => {}),
       }
     }
+
     const target = { name: 'v', fullTrackName: {} as FullTrackName }
     const plan = planProbe(known([1, 1000, 1000]), 2000)
 
     test('settles once every planned object arrived, and counts probes that found no room', async () => {
       const client = fakeClient()
       const prober = new Prober()
+
       prober.start(client as unknown as MOQtailClient, target, plan, 10)
       await vi.waitFor(() => expect(client.fetch).toHaveBeenCalledTimes(1))
+
       prober.received('v', 1n, { at: 10.1, bytes: 1000 })
       expect(prober.settle(10.1, [], 1e6)).toBeUndefined()
+
       prober.received('other', undefined, { at: 10.15, bytes: 1000 })
       prober.received('v', 1n, { at: 10.2, bytes: 1000 })
       expect(prober.settle(10.2, [], 1e6)).toBeCloseTo(10_000)
+
       expect(prober.observe(11)).toMatchObject({
         probeEstimate: expect.closeTo(10_000),
         probing: false,
@@ -388,11 +414,14 @@ if (import.meta.vitest) {
       prober.start(client as unknown as MOQtailClient, target, plan, 0)
       await vi.waitFor(() => expect(client.fetch).toHaveBeenCalled())
       await Promise.resolve()
+
       expect(prober.settle(0.2, [], 1e6)).toBeUndefined() // within the round trip's allowance
       expect(prober.settle(0.5, [], 1e6)).toBe(0) // nothing yet, half of its pace was due
       expect(client.fetchCancel).toHaveBeenCalledWith(1n)
+
       prober.forgetEstimates()
       expect(prober.observe(3)).toMatchObject({ probeEstimate: null, probeAge: null, probeFailures: 1 })
+
       prober.forgetFailures()
       expect(prober.observe(3).probeFailures).toBe(0)
     })
@@ -403,15 +432,20 @@ if (import.meta.vitest) {
         const client = fakeClient()
         prober.start(client as unknown as MOQtailClient, target, plan, now)
         await vi.waitFor(() => expect(client.fetch).toHaveBeenCalled())
+
         prober.received('v', 1n, { at: now + 0.1, bytes })
         prober.received('v', 1n, { at: now + 0.2, bytes })
         prober.settle(now + 0.2, [], 1e6)
       }
+
       await probeOnce(0, 1000)
       await probeOnce(1, 9000) // an outlier
+
       expect(prober.observe(2).evidence).toBeNull()
       await probeOnce(2, 1000)
+
       expect(prober.observe(3).evidence).toBeCloseTo(10_000) // the median, not the outlier
+
       prober.age(10)
       expect(prober.observe(3).evidence).toBeNull() // no longer fresh
     })
@@ -420,11 +454,14 @@ if (import.meta.vitest) {
       const client = fakeClient()
       const prober = new Prober()
       prober.start(client as unknown as MOQtailClient, target, plan, 0)
+
       prober.received('v', 7n, { at: 0.05, bytes: 1000 }) // before FETCH_OK: by track
       await vi.waitFor(() => expect(client.fetch).toHaveBeenCalled())
       await Promise.resolve()
+
       prober.received('v', 7n, { at: 0.1, bytes: 1000 }) // a fill of the same track
       expect(prober.settle(0.1, [], 1e6)).toBeUndefined()
+
       prober.received('v', 1n, { at: 0.2, bytes: 1000 })
       expect(prober.settle(0.2, [], 1e6)).toBeCloseTo(10_000)
     })

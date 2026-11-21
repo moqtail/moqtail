@@ -41,6 +41,7 @@ export function canonicalChunk(chunk: Chunk, defaults: TrackDefaults): Uint8Arra
   const n = chunk.sizes.length
   const tfhdDefault = (values: number[], trex: number) =>
     values.length > 0 && allEqual(values) && values[0] !== trex ? values[0] : undefined
+
   const durationsVary = !allEqual(chunk.durations)
   const sizesVary = !allEqual(chunk.sizes)
   // Equal flags after a different first one use first_sample_flags (§15.6)
@@ -69,6 +70,7 @@ export function canonicalChunk(chunk: Chunk, defaults: TrackDefaults): Uint8Arra
     (sizesVary ? SAMPLE_SIZE : 0) |
     (flagsVary ? SAMPLE_FLAGS : 0) |
     (ctos ? SAMPLE_CTO : 0)
+
   const version = chunk.compositionTimeOffsets.some((c) => c < 0) ? 1 : 0
   const records = chunk.sizes.flatMap((size, i) => [
     ...(durationsVary ? [chunk.durations[i]!] : []),
@@ -76,12 +78,15 @@ export function canonicalChunk(chunk: Chunk, defaults: TrackDefaults): Uint8Arra
     ...(flagsVary ? [chunk.flags[i]!] : []),
     ...(ctos ? [chunk.compositionTimeOffsets[i]!] : []),
   ])
+
   // data_offset is set once the moof size is known
   const trun = box('trun', u32((version << 24) | trFlags, n, 0, ...(firstFlags ? [chunk.flags[0]!] : []), ...records))
 
   const traf = [tfhd, tfdt, trun, ...encryption(chunk, TRAF_START + tfhd.length + tfdt.length + trun.length)]
   const moof = box('moof', box('mfhd', u32(0, 0)), box('traf', ...traf))
+
   new DataView(moof.buffer).setUint32(TRAF_START + tfhd.length + tfdt.length + 16, moof.length + 8)
+
   return concat(...chunk.genBoxes, moof, u32(8 + chunk.mdat.length), type('mdat'), chunk.mdat)
 }
 
@@ -89,9 +94,11 @@ export function canonicalChunk(chunk: Chunk, defaults: TrackDefaults): Uint8Arra
 function encryption(chunk: Chunk, at: number): Uint8Array[] {
   const { perSampleIVSize: ivSize, subsamples } = chunk
   if (ivSize === 0 && !subsamples) return []
+
   const n = chunk.sizes.length
   const auxSizes = chunk.sizes.map((_, i) => ivSize + (subsamples ? 2 + 6 * subsamples.counts[i]! : 0))
   if (auxSizes.some((size) => size > 255)) throw new LocmafError('CENC auxiliary information exceeds saiz')
+
   const uniform = allEqual(auxSizes)
   const saiz = box(
     'saiz',
@@ -100,13 +107,16 @@ function encryption(chunk: Chunk, at: number): Uint8Array[] {
     u32(n),
     ...(uniform ? [] : [new Uint8Array(auxSizes)]),
   )
+
   // senc follows saiz and the 20-byte saio; skip its header, version and flags, and sample_count
   const saio = box('saio', u32(0, 1, at + saiz.length + 20 + 16))
   const entries: Uint8Array[] = []
   let subsample = 0
+
   for (let i = 0; i < n; i++) {
     entries.push(chunk.ivs.subarray(i * ivSize, (i + 1) * ivSize))
     if (!subsamples) continue
+
     const count = subsamples.counts[i]!
     const map = new DataView(new ArrayBuffer(2 + 6 * count))
     map.setUint16(0, count)
@@ -114,8 +124,10 @@ function encryption(chunk: Chunk, at: number): Uint8Array[] {
       map.setUint16(2 + 6 * j, subsamples.clear[subsample]!)
       map.setUint32(4 + 6 * j, subsamples.protected[subsample]!)
     }
+
     entries.push(new Uint8Array(map.buffer))
   }
+
   return [saiz, saio, box('senc', u32(subsamples ? 2 : 0, n), ...entries)]
 }
 
@@ -132,6 +144,7 @@ function u32(...words: number[]): Uint8Array {
   const out = new Uint8Array(4 * words.length)
   const view = new DataView(out.buffer)
   words.forEach((word, i) => view.setUint32(4 * i, word >>> 0))
+
   return out
 }
 
@@ -148,10 +161,12 @@ function type(name: string): Uint8Array {
 function concat(...parts: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(parts.reduce((size, part) => size + part.length, 0))
   let at = 0
+
   for (const part of parts) {
     out.set(part, at)
     at += part.length
   }
+
   return out
 }
 
@@ -173,12 +188,15 @@ if (import.meta.vitest) {
   test('every golden vector decodes to its canonical chunk', () => {
     const vectors = locmafVectors()
     expect(vectors).toHaveLength(18)
+
     for (const vector of vectors) {
       const defaults = trackDefaults(vector.init)
       const reference = new Reference()
+
       for (const { group, object, payload, canonical } of vector.objects) {
         const chunk = reference.decode(new Location(group, object), payload, defaults)
         const bytes = chunk instanceof Uint8Array ? chunk : canonicalChunk(chunk, defaults)
+
         expect({ vector: vector.name, group, object, bytes }).toEqual({
           vector: vector.name,
           group,

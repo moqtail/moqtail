@@ -67,11 +67,13 @@ const MAX_NAMESPACE_FIELDS = 32
  */
 export function parseMsfUrl(uri: string): MsfSource {
   let url: MoqtUrl
+
   try {
     url = MoqtUrl.parse(uri)
   } catch (cause) {
     throw new PlayerError('UNSUPPORTED_SOURCE', `Not a moqt:// URL: ${uri}`, { cause })
   }
+
   if (url.fragment?.kind !== 'msf') unsupported(`missing #msf: fragment in ${uri}`)
 
   const [trackId = '', ...params] = url.fragment.value.split('&')
@@ -90,6 +92,7 @@ export function parseMsfUrl(uri: string): MsfSource {
     const name = percentDecode(param.slice(0, eq))
     const value = percentDecode(param.slice(eq + 1))
     if (name === '') unsupported(`parameter without a name: ${param}`)
+
     source.variables[name] = value
 
     switch (name) {
@@ -168,12 +171,14 @@ function encodeName(bytes: Uint8Array): string {
 /** Decodes one name, rejecting anything that isn't its canonical encoding (moqt-22 §8.8). */
 function decodeName(s: string): Uint8Array {
   const bytes: number[] = []
+
   for (let i = 0; i < s.length; i++) {
     const code = s.charCodeAt(i)
     if (isLiteral(code)) {
       bytes.push(code)
       continue
     }
+
     const hex = s.slice(i + 1, i + 3)
     if (s[i] !== '.' || !/^[0-9a-f]{2}$/.test(hex)) unsupported(`non-canonical name ${s}`)
     const byte = parseInt(hex, 16)
@@ -194,8 +199,10 @@ function parseLocationRange(value: string): LocationRange {
 
   const end = { group: BigInt(endGroup), ...(endObject !== undefined && { object: BigInt(endObject) }) }
   const { group, object } = range.start
+
   if (group > end.group || (group === end.group && end.object !== undefined && object > end.object))
     unsupported(`location-range starts after it ends: ${value}`)
+
   range.end = end
   return range
 }
@@ -206,8 +213,10 @@ function parseTimeRange(value: string): TimeRange {
   if (!m) unsupported(`time range ${value}`)
   const start = Number(m[1])
   const end = m[2] === undefined ? undefined : Number(m[2])
+
   if (!Number.isSafeInteger(start) || (end !== undefined && !Number.isSafeInteger(end)))
     unsupported(`time range out of bounds: ${value}`)
+
   if (end === undefined) return { start }
   if (start > end) unsupported(`time range starts after it ends: ${value}`)
   return { start, end }
@@ -238,6 +247,7 @@ if (import.meta.vitest) {
       const cat =
         'gqhkYWxnIGVzaGFyqGR0eXBNhdZ9hdWQAY3VybGZlbWlzcwZleWV2aW5uZWlhdGVwQWNyZW5lYnJmcmVqMTIzNDU2NzgwMHZpc3VlZF9hdD0xNzMwNDM'
       expect(parseMsfUrl(`${base}#msf:customerID-broadcastID--catalog&cat=${cat}`).cat).toBe(cat)
+
       const withToken = parseMsfUrl(
         `${base}?token=HTRCII74GHFT@JHBCVSW56HKKneH2Dbyq6NHBI2#msf:customerID-broadcastID--catalog&cat=${cat}`,
       )
@@ -288,6 +298,7 @@ if (import.meta.vitest) {
         'a-b', // no track name
       ])
         expect(() => msf(fragment), fragment).toThrow(expect.objectContaining(unsupportedSource))
+
       // No msf: type (MSF 5.2.44, 11.5.2) and not a moqt:// URL at all
       expect(() => parseMsfUrl('moqt://host#namespace--name&token=x')).toThrow(
         expect.objectContaining(unsupportedSource),
@@ -312,6 +323,7 @@ if (import.meta.vitest) {
       const track = new Uint8Array([0x00, 0x2d, 0x2d, 0x80])
       const url = formatMsfUrl('moqt://h/p', ns, track)
       expect(url).toBe('moqt://h/p#msf:.2d.2e.ffA-x.2e--.00.2d.2d.80')
+
       const parsed = parseMsfUrl(url)
       expect(parsed.namespace.equals(ns)).toBe(true)
       expect(parsed.trackBytes).toEqual(track)
@@ -338,6 +350,7 @@ if (import.meta.vitest) {
         Array(33).fill('a').join('-') + '--b',
       ])
         expect(() => msf(fragment), fragment).toThrow(expect.objectContaining(unsupportedSource))
+
       expect(utf8(msf(Array(32).fill('a').join('-') + '--b').namespace)).toHaveLength(32)
     })
   })

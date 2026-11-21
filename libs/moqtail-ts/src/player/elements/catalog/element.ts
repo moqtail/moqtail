@@ -101,6 +101,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     this.#source = source
     this.#switchFrom = options.switchFrom
     this.#parse = { namespace: source.namespace, variables: source.variables }
+
     this.#reader = new TrackReader(context, {
       track: { namespace: source.namespace, name: source.trackBytes },
       priority: CATALOG_PRIORITY,
@@ -108,6 +109,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
       onIndependent: (payload) => this.#received(parseCatalog(payload, this.#parse)),
       onIncremental: (payload) => {
         if (!this.#catalog) throw new Error('A delta update arrived before any catalog')
+
         this.#received(applyDelta(this.#catalog, payload, this.#parse))
       },
       onStale: (reason) => this.#onStale(reason),
@@ -147,6 +149,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   /** Seconds: the longest `trackDuration` of the loaded sources' tracks, `Infinity` while live, `NaN` unknown. */
   get duration(): number {
     if (this.streamType === 'live') return Infinity
+
     const durations = this.#selected().flatMap((t) => t.trackDuration ?? [])
     return durations.length > 0 ? Math.max(...durations) / 1000 : NaN
   }
@@ -175,6 +178,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   async timeline(track: CatalogTrack): Promise<TimelineReader | undefined> {
     const window = track.accessibleWindowTime
     if (track.template) return new TemplateTimeline(track.template, window)
+
     const timeline = this.tracks.find(
       (t) =>
         t.packaging === 'mediatimeline' &&
@@ -183,14 +187,17 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     )
     const key = timeline && trackKey(timeline)
     if (!key || this.#unavailableTimelines.has(key)) return undefined
+
     try {
       return (await this.context.load(MediaTimeline, { tracks: [timeline] })).reader(window)
     } catch (error) {
       // Concurrent callers share the failed load: warn once
       if (this.#unavailableTimelines.has(key)) return undefined
+
       this.#unavailableTimelines.add(key)
       const reason = errorMessage(error)
       this.#warn(new PlayerError('TRACK_SKIPPED', `Media timeline unavailable: ${reason}`, { element: 'catalog' }))
+
       return undefined
     }
   }
@@ -207,6 +214,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     const left = () => timeoutMs - (performance.now() - startedAt)
     const timedOut = (cause?: unknown) =>
       new PlayerError('CATALOG_TIMEOUT', `No catalog within ${timeoutMs} ms`, { element: 'catalog', cause })
+
     try {
       for (let attempt = 0; ; attempt++) {
         try {
@@ -215,12 +223,15 @@ export class CatalogElement extends SourceElement implements CatalogReader {
         } catch (cause) {
           const wait = backoffDelay(attempt)
           if (wait > left()) throw timedOut(cause)
+
           await sleep(wait, this.context.signal)
         }
       }
+
       await within(this.#first.promise, left(), this.context.signal, timedOut)
       const catalog = this.#catalog!
       this.#started = true
+
       if (catalog.tracks.length > 0) {
         const loading = this.#loadDefaults(catalog)
         // Updates wait for the default loads, whether they succeed or not
@@ -231,6 +242,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
       await this.#reader.stop()
       throw error
     }
+
     this.emit('nomorepads')
   }
 
@@ -241,15 +253,18 @@ export class CatalogElement extends SourceElement implements CatalogReader {
 
   #received({ catalog, warnings }: ParseResult): void {
     for (const warning of warnings) this.#warn(warning)
+
     const previous = this.#catalog
     const next = { ...catalog, tracks: catalog.tracks.map(withRole) }
     this.#catalog = next
     this.#stale = false
+
     if (!this.#started) {
       if (next.tracks.length > 0 || next.isComplete) this.#first.resolve()
       this.#announce()
       return
     }
+
     this.#updates = this.#updates
       .then(() => this.#reconcile(previous!, next))
       .catch((error) => this.#warn(asUpdateError(error)))
@@ -264,16 +279,20 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   #checkStreamType(): void {
     const type = this.streamType
     if (type === this.#streamType) return
+
     this.#streamType = type
+
     this.context.player.emit('streamtypechange', type)
   }
 
   #onStale(reason: Error): void {
     this.#stale = true
+
     if (this.#catalog) {
       this.#warn(asUpdateError(reason))
       return
     }
+
     // No good catalog yet: it's fatal
     const fatal = reason instanceof PlayerError && reason.code === 'UNSUPPORTED_SOURCE'
     this.#first.reject(
@@ -294,9 +313,11 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   async #selection(tracks: readonly CatalogTrack[]): Promise<SelectionOptions> {
     const { preferredLanguage, eventTimelines } = this.context.player.options
     const language = preferredLanguage ?? globalThis.navigator?.language
+
     const candidates = tracks.filter(isCandidate)
     const costs = await Promise.all(candidates.map((track) => this.context.cost(track)))
     const costOf = new Map(candidates.map((track, i) => [track, costs[i]]))
+
     return {
       probe: (track) => this.context.probe(track),
       cost: (track) => costOf.get(track),
@@ -308,33 +329,41 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   async #loadDefaults(catalog: CatalogData): Promise<void> {
     const selection = await this.#selection(catalog.tracks)
     const media = selectMedia(catalog.tracks, selection)
+
     if (media.length === 0 && selectMedia(catalog.tracks, { probe: selection.probe }).length > 0) {
       throw new PlayerError('NO_MEDIA_SINK', 'No declared sink can play a track of the catalog', { element: 'catalog' })
     }
     if (media.length === 0) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'No track in the catalog is playable', { element: 'catalog' })
     }
+
     // Playing on with an advertised role missing would hide that this browser can't play it
     const advertised = catalog.tracks.filter(isCandidate)
     for (const role of ['video', 'audio']) {
       const tracks = advertised.filter((t) => t.role === role && t.renderGroup === advertised[0]!.renderGroup)
       if (tracks.length === 0 || media.some((s) => s.tracks[0]!.role === role)) continue
+
       const codecs = [...new Set(tracks.map((t) => t.codec ?? t.packaging))].join(', ')
       throw new PlayerError('UNSUPPORTED_SOURCE', `No ${role} track in the catalog is playable (${codecs})`, {
         element: 'catalog',
       })
     }
+
     const { sets: timelines, skipped } = selectEventTimelines(catalog.tracks, selection)
+
     for (const track of skipped) {
       const message = `No element handles event timeline "${track.name}" (${track.eventType})`
       this.#warn(new PlayerError('TRACK_SKIPPED', message, { element: 'catalog' }))
     }
+
     const reference = media.find((s) => s.tracks[0]!.role === 'video') ?? media[0]!
     const byTime = await this.#rangesByTime(reference.tracks[0]!)
+
     await Promise.all([
       ...media.map(async (s) => {
         // Another set takes the ranges by media time when it can map them back to its own groups
         const mapped = s !== reference && byTime && (await this.timeline(s.tracks[0]!)) ? byTime : undefined
+
         await this.#load(s, true, mapped)
       }),
       ...timelines.map((s) => this.#load(s, false)),
@@ -351,14 +380,17 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     const ranges = this.#source.locationRanges
     const timeline = ranges.length > 0 ? await this.timeline(reference) : undefined
     if (!timeline) return undefined
+
     const times: TimeRange[] = []
     for (const { start, end } of ranges) {
       const from = timeline.locationToTime(new Location(start.group, 0n))
       // The end group runs until the next one starts
       const to = end && timeline.locationToTime(new Location(end.group + 1n, 0n))
       if (from === undefined || (end && to === undefined)) return undefined
+
       times.push({ start: from, ...(to !== undefined && { end: to - 1 }) })
     }
+
     return times
   }
 
@@ -371,9 +403,11 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     const { tracks, definition } = set
     const parent = media ? this.context.switchSource(tracks[0]!) : undefined
     const options = media ? this.#mediaOptions(byTime) : {}
+
     const element = parent
       ? await this.context.load(parent, { tracks, options: { ...options, child: definition }, catalog: this })
       : await this.context.load(definition, { tracks, options, catalog: this })
+
     this.#sets.push({ element, tracks, sample: tracks[0]!, definition, media })
     this.#checkStreamType()
   }
@@ -383,7 +417,9 @@ export class CatalogElement extends SourceElement implements CatalogReader {
     const { wallclockRanges } = this.#source
     const locationRanges = byTime ? [] : this.#source.locationRanges
     const mediaTimeRanges = [...this.#source.mediaTimeRanges, ...(byTime ?? [])]
+
     const ranged = locationRanges.length + mediaTimeRanges.length + wallclockRanges.length > 0
+
     return {
       ...(switchFrom !== undefined && { switchFrom }),
       ...(ranged && { ranges: { locationRanges, mediaTimeRanges, wallclockRanges } }),
@@ -398,21 +434,26 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   async #reconcile(previous: CatalogData, next: CatalogData): Promise<void> {
     const diff = diffTracks(previous.tracks, next.tracks)
     for (const warning of diff.warnings) this.#warn(warning)
+
     next.tracks = [...diff.tracks.values()]
     const removed = next.isComplete ? new Set<string>() : diff.removed
+
     const { cost } = await this.#selection(diff.added)
     // An added rendition the chain can't play joins no set, so ABR never switches to it
     const unplaced = diff.added.filter((t) => !isCandidate(t) || cost?.(t) !== undefined)
+
     for (const set of this.#sets) {
       const tracks = set.tracks.flatMap((t) => {
         const key = trackKey(t)
         return removed.has(key) ? [] : [diff.tracks.get(key) ?? t]
       })
+
       if (set.media) this.#placeAdded(set, tracks, unplaced)
       const changed = setChanged(set.tracks, tracks, diff)
       set.tracks = tracks
       if (changed && hasInterface(set.element, MEDIA_SOURCE)) set.element.setTracks(tracks)
     }
+
     if (unplaced.length > 0) await this.#loadMissingRoles(next)
   }
 
@@ -422,6 +463,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
       // An isComplete catalog removes nothing, so a changed track is still in the set
       const present = tracks.some((t) => trackKey(t) === trackKey(track))
       if (!present && !this.#fits(set, track)) continue
+
       if (!present) tracks.push(track)
       unplaced.splice(unplaced.indexOf(track), 1)
     }
@@ -442,13 +484,16 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   async #loadMissingRoles(catalog: CatalogData): Promise<void> {
     const roleOf = (set: LoadedSet) => set.sample.role
     const playing = new Set(this.#sets.filter((s) => s.media && s.tracks.length > 0).map(roleOf))
+
     for (const set of selectMedia(catalog.tracks, await this.#selection(catalog.tracks))) {
       const role = set.tracks[0]!.role
       if (playing.has(role)) continue
+
       for (const empty of this.#sets.filter((s) => s.media && roleOf(s) === role)) {
         this.#sets.splice(this.#sets.indexOf(empty), 1)
         await this.context.release(empty.element)
       }
+
       await this.#load(set, true)
     }
   }
@@ -465,6 +510,7 @@ function setChanged(previous: readonly CatalogTrack[], tracks: readonly CatalogT
     const key = trackKey(t)
     // Removed and still in the new catalog: it changed beyond what applies in place
     const replaced = diff.removed.has(key) && diff.tracks.has(key)
+
     return key !== trackKey(previous[i]!) || diff.updated.has(key) || replaced
   })
 }

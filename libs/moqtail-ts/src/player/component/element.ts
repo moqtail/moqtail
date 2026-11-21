@@ -113,6 +113,7 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
   /** Live, the accessible window, or nothing without one. */
   override get seekable(): TimeRanges {
     if (this.#streamType !== 'live') return this.nativeEl.seekable
+
     const range = this.#dvrRange
     return timeRanges(range ? [[0, range.end - range.start]] : [])
   }
@@ -121,11 +122,13 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     const offset = this.#offset()
     const native = this.nativeEl.buffered
     if (offset === 0) return native
+
     const pairs: [number, number][] = []
     for (let i = 0; i < native.length; i++) {
       const end = native.end(i) - offset
       if (end > 0) pairs.push([Math.max(0, native.start(i) - offset), end])
     }
+
     return timeRanges(pairs)
   }
 
@@ -146,8 +149,10 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
   /** Destroys the player, then builds a new one from `src` and `config`, as `preload` and `autoplay` ask. */
   override load(): void {
     this.#unload()
+
     const src = this.getAttribute('src')
     if (!src) return
+
     let player: MOQtailPlayer
     try {
       player = new MOQtailPlayer(this.#playerOptions())
@@ -157,10 +162,12 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
       queueMicrotask(() => this.#fail(asPlayerError(error)))
       return
     }
+
     this.#player = player
     this.#renditions = new Renditions(this, player)
     player.on('error', (error) => this.#fail(error))
     player.on('streamtypechange', (type) => this.#setStreamType(type))
+
     if (this.autoplay) {
       // A failure is the `error` event, or a blocked autoplay
       void this.play().catch(() => {})
@@ -172,6 +179,7 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
   override async play(): Promise<void> {
     const player = this.#player
     if (!player) return super.play()
+
     await this.#init(player)
     await player.play()
   }
@@ -193,9 +201,11 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     const player = this.#player
     this.#renditions?.dispose()
     this.#renditions = undefined
+
     this.#player = undefined
     this.#error = null
     this.#setStreamType('unknown')
+
     if (player) this.#destroyed = player.destroy().catch(() => {}) // destroy() is callable in any state
   }
 

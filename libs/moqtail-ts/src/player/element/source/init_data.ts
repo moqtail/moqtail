@@ -47,8 +47,10 @@ export function acceptedInitData(track: CatalogTrack, trackProperties: TrackProp
   const init = track.init
   if (!init) return undefined
   if (init.type === 'inline') return init.data
+
   const reader = readerFor(init.property)
   if (init.type === 'object-property') return undefined
+
   const data = findProperty(trackProperties, reader)?.config
   if (!data) throw new Error(`Track property 0x${init.property.toString(16)} with the init data is missing`)
   return data

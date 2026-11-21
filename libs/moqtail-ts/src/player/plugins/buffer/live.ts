@@ -93,11 +93,13 @@ export function decide(
   const { catchupRate, tolerance, stallThreshold, minRate, jumpFactor, jumpTolerance } = config
   const exact = forward + target - latency
   const goal = Math.min(Math.max(exact, min, stallThreshold), max)
+
   // Far behind the target (a seek back): land at it past the buffer at once, not chase the buffer end
   if (forward > goal * jumpFactor) return { jumpTo: -exact > goal * jumpFactor ? exact : goal }
   if (correction === 'jump') return Math.abs(forward - goal) > jumpTolerance ? { jumpTo: goal } : { rate: 1 }
   if (forward > goal + tolerance) return { rate: catchupRate }
   if (forward >= goal - tolerance) return { rate: 1 }
+
   const slow = 2 - catchupRate
   return { rate: forward < stallThreshold ? Math.max(minRate, (slow * forward) / stallThreshold) : slow }
 }
@@ -130,20 +132,24 @@ export class LiveBufferController implements BufferController {
   attach(player: MOQtailPlayer, sink: MediaSinkElement): void {
     const abort = new AbortController()
     this.#attached = { player, sink, abort }
+
     player.on('catalog', this.#refresh)
     player.on('renditionchange', this.#refresh)
     sink.addEventListener('timeupdate', () => this.#tick(sink), { signal: abort.signal })
     sink.addEventListener('seeking', () => this.#seeking(sink), { signal: abort.signal })
+
     this.#refresh()
   }
 
   detach(): void {
     const attached = this.#attached
     if (!attached) return
+
     this.#attached = undefined
     attached.abort.abort()
     attached.player.off('catalog', this.#refresh)
     attached.player.off('renditionchange', this.#refresh)
+
     if (this.#adjusted) attached.sink.setPlaybackRate(1)
     this.#adjusted = false
     this.#following = true
@@ -156,15 +162,18 @@ export class LiveBufferController implements BufferController {
     const attached = this.#attached
     const catalog = attached?.player.sources.find((s): s is CatalogElement => s instanceof CatalogElement)
     if (!attached || !catalog) return
+
     const active = new Set(
       attached.player.mediaSources.flatMap((s) => s.getRenditions().flatMap((r) => (r.active ? [r.id] : []))),
     )
     const playing = catalog.tracks.filter((t) => active.has(renditionId(t, catalog)))
     const hasTargets = (t: CatalogTrack) => t.targetLatency !== undefined || t.buffers !== undefined
+
     // Without catalog targets the timeline still gives the fallback target its wallclock latency
     const track = playing.find(hasTargets) ?? playing[0]
     this.#targets = track && hasTargets(track) ? targetsOf(track) : undefined
     if (!track) return
+
     void catalog.timeline(track).then((timeline) => {
       if (this.#attached === attached) this.#timeline = timeline
     })
@@ -178,20 +187,25 @@ export class LiveBufferController implements BufferController {
     // An unknown edge counts as at it
     this.#following = !(sink.currentTime < sink.liveEdgeStart)
     if (this.#following || !this.#adjusted) return
+
     sink.setPlaybackRate(1)
     this.#adjusted = false
   }
 
   #tick(sink: MediaSinkElement): void {
     if (sink.paused || sink.seeking || !this.#following) return
+
     const { currentTime, buffered } = sink
     const range = rangeAt(currentTime, buffered)
     if (range === -1) return // the sink jumps gaps itself
+
     const forward = buffered.end(range) - currentTime
     const targets = this.#targets ?? { target: this.#config.targetLatency, min: undefined, max: undefined }
     const state = { forward, latency: this.#latency(currentTime, forward), ...targets }
+
     // A sink whose clock stalls on each rate change would undo a catch-up and start the next one
     const decision = decide(state, this.#config, sink.preciseRate ? 'rate' : 'jump')
+
     if ('jumpTo' in decision) {
       // A failed jump leaves playback where it was
       sink.seek(liveEdge(buffered, decision.jumpTo)).catch(() => {})
@@ -228,6 +242,7 @@ if (import.meta.vitest) {
     max: undefined,
     ...s,
   })
+
   const rate = (s: Partial<BufferState>) => {
     const decision = decide(state(s), LIVE_BUFFER_DEFAULTS)
     return 'rate' in decision ? { rate: Math.round(decision.rate * 100) / 100 } : decision

@@ -39,12 +39,15 @@ export function trackDefaults(init: Uint8Array): TrackDefaults {
   if (!moov || [...children(moov)].filter((b) => b.type === 'trak').length !== 1) {
     throw new LocmafError('The CMAF Header needs exactly one trak (§4.1)')
   }
+
   const tkhd = view(findBox(moov, ['trak', 'tkhd']))
   const trex = view(findBox(moov, ['mvex', 'trex']))
   const trackIdAt = tkhd?.byteLength && tkhd.getUint8(0) === 1 ? 20 : 12
+
   if (!tkhd || tkhd.byteLength < trackIdAt + 4 || !trex || trex.byteLength < 24) {
     throw new LocmafError('The CMAF Header has no tkhd or trex')
   }
+
   const tenc = view(protection(moov))
   return {
     trackId: tkhd.getUint32(trackIdAt),
@@ -62,9 +65,11 @@ function protection(moov: Uint8Array): Uint8Array | undefined {
   const stsd = findBox(moov, ['trak', 'mdia', 'minf', 'stbl', 'stsd'])
   // A full box with an entry count, then the first entry
   const entry = stsd?.subarray(8)
+
   const skip =
     entry && entry.length >= 8 ? SAMPLE_ENTRY_FIELDS[String.fromCharCode(...entry.subarray(4, 8))] : undefined
   if (skip === undefined) return undefined
+
   return findBox(entry!.subarray(8 + skip), ['sinf', 'schi', 'tenc'])
 }
 
@@ -98,6 +103,7 @@ if (import.meta.vitest) {
   test('a header with other than one trak, or without trex, is rejected', () => {
     expect(() => trackDefaults(init(trak(), trak()))).toThrow(LocmafError)
     expect(() => trackDefaults(box('moov', trak()))).toThrow(LocmafError)
+
     const shortTkhd = box('moov', box('trak', fullBox('tkhd', 0, new Uint8Array(4))), box('mvex', trex))
     expect(() => trackDefaults(shortTkhd)).toThrow(LocmafError)
   })

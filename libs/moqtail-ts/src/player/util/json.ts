@@ -20,9 +20,11 @@ export function canonicalJson(value: unknown): string {
     if (typeof v === 'bigint') return `${v}n`
     if (v instanceof ArrayBuffer) return Array.from(new Uint8Array(v))
     if (ArrayBuffer.isView(v)) return Array.from(new Uint8Array(v.buffer, v.byteOffset, v.byteLength))
+
     if (v && typeof v === 'object' && !Array.isArray(v)) {
       return Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1)))
     }
+
     return v
   })
 }
@@ -32,6 +34,7 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
   if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false
+
   const keys = Object.keys(a)
   return (
     keys.length === Object.keys(b).length &&

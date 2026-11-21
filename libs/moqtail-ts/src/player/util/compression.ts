@@ -70,12 +70,14 @@ export function isSupportedCompression(algorithm: number): boolean {
 export async function decompress(bytes: Uint8Array, algorithm: number, maxBytes: number): Promise<Uint8Array> {
   if (!isSupportedCompression(algorithm)) throw new Error(`Unsupported MSF compression algorithm ${algorithm}`)
   if (algorithm === 0) return bytes
+
   const reader = new Blob([bytes as Uint8Array<ArrayBuffer>])
     .stream()
     .pipeThrough(new DecompressionStream('gzip'))
     .getReader()
   const chunks: Uint8Array[] = []
   let size = 0
+
   for (let read = await reader.read(); !read.done; read = await reader.read()) {
     size += read.value.length
     if (size > maxBytes) {
@@ -84,12 +86,14 @@ export async function decompress(bytes: Uint8Array, algorithm: number, maxBytes:
     }
     chunks.push(read.value)
   }
+
   const output = new Uint8Array(size)
   let offset = 0
   for (const chunk of chunks) {
     output.set(chunk, offset)
     offset += chunk.length
   }
+
   return output
 }
 

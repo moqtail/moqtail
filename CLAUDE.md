@@ -58,6 +58,7 @@ Write plain, explicit code with the smallest structure that keeps each step easy
 
 - Top-level functions use `function`; arrows for callbacks and local one-liners.
 - One nameable step per function. Inline single-use wrappers; split bodies doing several steps, no further.
+- A blank line separates the logical groups of a body, nested blocks included: guards, then setup, then each step, then the return. Keep a declaration next to the guard that checks it. Separate consecutive multi-line local helpers.
 - No side effects in expressions (`a && f()`, comma operators, `return void x++`, `return logger.warn(...)`). Use an `if` block.
 - No bare boolean flags at call sites: use two methods or a string literal param.
 - `Promise.withResolvers()`, not hand-rolled deferreds. Name a repeated value once.

@@ -54,12 +54,15 @@ export const WebCodecs = defineElement({
 async function decodable(track: Identifiers): Promise<boolean> {
   const { VideoDecoder, AudioDecoder } = globalThis as Partial<Codecs>
   if (!track.codec) return false
+
   const config = decoderConfigOf(track, track.codec)
+
   // A config WebCodecs finds invalid, such as audio without a sample rate, rejects with a TypeError
   const support =
     'sampleRate' in config
       ? AudioDecoder?.isConfigSupported(config).catch(() => undefined)
       : VideoDecoder?.isConfigSupported(config).catch(() => undefined)
+
   return (await support)?.supported === true
 }
 
@@ -84,8 +87,10 @@ if (import.meta.vitest) {
       asked.push(config)
       return { supported: config.codec !== 'hvc1.1.6.L93.B0' }
     }
+
     vi.stubGlobal('VideoDecoder', { isConfigSupported })
     vi.stubGlobal('AudioDecoder', { isConfigSupported: () => Promise.reject(new TypeError('invalid')) })
+
     try {
       const video = { packaging: 'loc', role: 'video', width: 1280, height: 720 }
       const answers = await Promise.all([
@@ -93,6 +98,7 @@ if (import.meta.vitest) {
         WebCodecs.supports!({ ...video, codec: 'hvc1.1.6.L93.B0' }),
         WebCodecs.supports!({ packaging: 'loc', role: 'audio', codec: 'opus', samplerate: 48_000, channelConfig: '2' }),
       ])
+
       expect(answers).toEqual([true, false, false])
       expect(asked[0]).toEqual({ codec: 'avc3.64001f', codedWidth: 1280, codedHeight: 720 })
     } finally {

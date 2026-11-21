@@ -47,14 +47,17 @@ export class MediaTimelineElement extends SourceElement {
   constructor(context: ElementContext) {
     super(context)
     const { namespace, nameBytes, name } = context.tracks[0]!
+
     const warn = (message: string, cause?: unknown) =>
       context.player.emit('warning', new PlayerError('TRACK_SKIPPED', message, { element: 'mediatimeline', cause }))
+
     // MSF 7.3: object 0 holds every accessible entry, later objects only new ones
     const received = (payload: Uint8Array, base: TimelineEntry[]) => {
       const { entries, dropped } = parseEntries(payload)
       if (dropped > 0) warn(`Dropped ${dropped} malformed entr(ies) of media timeline "${name}"`)
       this.#entries = [...base, ...entries].sort((a, b) => a.mediaTime - b.mediaTime)
     }
+
     this.#reader = new TrackReader(context, {
       track: { namespace, name: nameBytes },
       priority: MEDIA_PRIORITY,
@@ -77,6 +80,7 @@ export class MediaTimelineElement extends SourceElement {
    */
   async start(): Promise<void> {
     const timeoutMs = this.context.player.options.catalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS
+
     try {
       await this.#reader.start()
       await within(this.#first.promise, timeoutMs, this.context.signal, () => {
@@ -104,13 +108,17 @@ export class MediaTimelineElement extends SourceElement {
 /** The records of an MSF 7.1.1 document; malformed ones are counted, not kept. */
 export function parseEntries(payload: Uint8Array): { entries: TimelineEntry[]; dropped: number } {
   const json = parseJsonArray(payload, 'A media timeline must be a JSON array (MSF 7.1.1)')
+
   const entries = json.flatMap((record: unknown) => {
     if (!Array.isArray(record) || record.length !== 3) return []
+
     const [mediaTime, at, wallclock] = record
     const location = toLocation(at)
     const valid = location && Number.isFinite(mediaTime) && Number.isFinite(wallclock)
+
     return valid ? [{ mediaTime: mediaTime as number, location, wallclock: wallclock as number }] : []
   })
+
   return { entries, dropped: json.length - entries.length }
 }
 
@@ -138,9 +146,11 @@ export class EntriesTimeline implements TimelineReader {
   locationToTime(location: Location): number | undefined {
     // Locations need not grow with media time (MSF 7.1), so this one searches all entries
     let best: TimelineEntry | undefined
+
     for (const e of this.entries()) {
       if (e.location.compare(location) <= 0 && (!best || e.location.compare(best.location) > 0)) best = e
     }
+
     return best?.mediaTime
   }
 
@@ -155,6 +165,7 @@ export class EntriesTimeline implements TimelineReader {
     const window = this.accessibleWindowTime
     if (!end) return undefined
     if (window === undefined) return { start: list[0]!.mediaTime, end: end.mediaTime }
+
     const inside =
       end.wallclock > 0
         ? list.find((e) => e.wallclock >= Date.now() - window)
@@ -198,6 +209,7 @@ if (import.meta.vitest) {
     test('malformed entries are dropped, a document that is no array throws', () => {
       const parsed = parseEntries(text([...example.slice(0, 2), [1, [1], 0], [1, [0, 0]], 'x']))
       expect([parsed.entries.length, parsed.dropped]).toEqual([2, 3])
+
       expect(() => parseEntries(text({}))).toThrow(/MSF 7.1.1/)
     })
 
@@ -205,8 +217,10 @@ if (import.meta.vitest) {
       vi.useFakeTimers({ now: 1759924166389 })
       expect(reader(example, 4500).range).toEqual({ start: 4004, end: 8008 })
       expect(reader(example, 0).range).toEqual({ start: 8008, end: 8008 })
+
       vi.setSystemTime(1759924166389 + 60_000)
       expect(reader(example, 4500).range).toBeUndefined() // nothing left inside the window
+
       const vod = example.map(([time, at]) => [time, at, 0])
       expect(reader(vod, 4500).range).toEqual({ start: 4004, end: 8008 })
       expect(reader(vod).wallclockToLocation(Date.now())).toBeUndefined()

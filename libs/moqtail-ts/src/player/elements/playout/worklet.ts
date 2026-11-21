@@ -115,7 +115,9 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
       this.ending = false
       this.stretch = createStretch(sampleRate)
       this.input = []
+
       this.restart()
+
       this.port.onmessage = (event: MessageEvent<ProcessorMessage>) => this.receive(event.data)
     }
 
@@ -123,8 +125,10 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
       if (message.type === 'samples') {
         const { planes, timestamp, duration } = message
         const gap = this.end === undefined ? 0 : timestamp - this.end
+
         this.end = timestamp + duration
         this.duration = duration
+
         this.chunks.push({ planes, timestamp, duration, gap })
         this.trim()
       } else if (message.type === 'rate') {
@@ -137,11 +141,13 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
         this.ending = true
       } else {
         while (this.chunks.length > 0) this.shift()
+
         this.position = 0
         this.end = undefined
         this.ending = false
         this.restart()
       }
+
       this.reportConsumed()
     }
 
@@ -151,45 +157,55 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
       const skew = this.gap - this.drift
       let played = 0
       let head = this.head()
+
       // Silence while refilling after a stall counts as drift, so the clock holds
       if (head && (!this.started || this.starved) && !this.ending && this.end! - this.mediaTime(head) < this.preroll)
         head = undefined
+
       if (head && !this.started) {
         this.started = true
         this.gap = 0
         this.port.postMessage({ type: 'start', contextTime: currentTime, mediaTime: this.mediaTime(head) })
       }
+
       for (; head && played < length; played++) {
         const chunk = this.head()
         if (!chunk) break
         this.write(output, played, chunk)
         this.position += this.rate
       }
+
       // Ran out: what the segment holds is from before the stall
       if (played < length) this.stretch.reset()
       for (let i = played; i < length; i++) for (const channel of output) channel[i] = 0
+
       this.reportConsumed()
       this.report(played, length - played, skew)
+
       return true
     }
 
     /** The chunk the read position is in, counting the gap before it once it plays. */
     head(): Chunk | undefined {
       let chunk = this.chunks[0]
+
       while (chunk && this.position >= chunk.planes[0]!.length) {
         this.position -= chunk.planes[0]!.length
         this.shift()
         chunk = this.chunks[0]
       }
+
       if (chunk && chunk.gap !== 0) {
         this.gap += chunk.gap
         chunk.gap = 0
       }
+
       return chunk
     }
 
     write(output: Float32Array[], at: number, chunk: Chunk): void {
       const stretch = this.stretch
+
       if (stretch.running(this.rate) && stretch.due()) {
         const input = this.window(stretch.span, stretch.needs(this.rate))
         // Too little queued to stretch: played at the rate's pitch until the queue refills
@@ -200,6 +216,7 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
           this.drift -= skipped / sampleRate
         } else stretch.reset()
       }
+
       if (!stretch.due()) stretch.write(output, at)
       else for (let channel = 0; channel < output.length; channel++) output[channel]![at] = this.sample(chunk, channel)
     }
@@ -210,11 +227,15 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
       let queued = -start
       for (const chunk of this.chunks) queued += chunk.planes[0]!.length
       if (queued < needed) return undefined
+
       const channels = this.chunks[0]!.planes.length
+
       if (this.input.length !== channels || this.input[0]!.length !== length)
         this.input = Array.from({ length: channels }, () => new Float32Array(length))
+
       const planes = this.input
       let offset = -start
+
       for (const chunk of this.chunks) {
         if (offset >= length) break
         for (const [channel, plane] of planes.entries()) {
@@ -223,16 +244,19 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
         }
         offset += chunk.planes[0]!.length
       }
+
       return planes
     }
 
     /** Interpolated: the position is fractional after a rate other than 1. */
     sample(chunk: Chunk, channel: number): number {
       const plane = chunk.planes[channel] ?? chunk.planes[0]!
+
       const index = Math.floor(this.position)
       const fraction = this.position - index
       const current = plane[index]!
       const next = plane[index + 1] ?? this.chunks[1]?.planes[channel]?.[0] ?? current
+
       return current + (next - current) * fraction
     }
 
@@ -243,17 +267,21 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
     /** `skew` is `gap - drift` before the quantum. */
     report(played: number, silent: number, skew: number): void {
       if (!this.started) return
+
       if (played > 0) {
         this.silence = 0
         if (this.starved) this.port.postMessage({ type: 'fed' })
         this.starved = false
       }
+
       const missed = (silent * this.rate) / sampleRate
       this.drift += missed
       this.silence += missed
+
       if (this.gap - this.drift !== skew) {
         this.port.postMessage({ type: 'drift', contextTime: currentTime, drift: this.drift, gap: this.gap })
       }
+
       if (!this.starved && this.silence > this.duration) {
         this.starved = true
         this.port.postMessage({ type: 'starved' })
@@ -263,11 +291,13 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
     /** Drops what ends before `dropBefore`, and starts the first chunk there. */
     trim(): void {
       let chunk = this.chunks[0]
+
       while (chunk && chunk.timestamp + chunk.duration <= this.dropBefore) {
         this.shift()
         this.position = 0
         chunk = this.chunks[0]
       }
+
       if (chunk && chunk.timestamp < this.dropBefore)
         this.position = Math.max(this.position, (this.dropBefore - chunk.timestamp) * sampleRate)
     }
@@ -278,6 +308,7 @@ function processorModule(name: string, createStretch: (sampleRate: number) => St
 
     reportConsumed(): void {
       if (this.consumed === this.reported) return
+
       this.reported = this.consumed
       this.port.postMessage({ type: 'consumed', seconds: this.consumed })
     }
@@ -306,6 +337,7 @@ if (import.meta.vitest) {
   beforeEach(() => {
     reports = []
     consumed = []
+
     const port = {
       onmessage: null,
       postMessage: (report: ProcessorReport) => {
@@ -313,6 +345,7 @@ if (import.meta.vitest) {
         else reports.push(report)
       },
     }
+
     scope = {
       sampleRate: RATE,
       currentTime: 10,
@@ -323,6 +356,7 @@ if (import.meta.vitest) {
         processor = new Processor({ processorOptions: { preroll: PREROLL } })
       },
     }
+
     Object.assign(globalThis, scope)
     new Function(PROCESSOR_SOURCE)()
   })
@@ -351,6 +385,7 @@ if (import.meta.vitest) {
     post(samples(100, 1))
     expect(quantum(2)).toEqual([0, 0])
     expect(reports).toEqual([])
+
     post({ type: 'end' })
     expect(quantum(2)).toEqual([1, 0])
     expect(reports[0]).toEqual({ type: 'start', contextTime: 10, mediaTime: 100 })
@@ -359,14 +394,17 @@ if (import.meta.vitest) {
   test('plays chunks back to back, counts silence as drift, and refills PREROLL after a stall', () => {
     post(samples(100, 1, 2))
     post(samples(100.5, 3, 4))
+
     expect(quantum()).toEqual([1, 2, 3, 4])
     expect(reports).toEqual([{ type: 'start', contextTime: 10, mediaTime: 100 }])
     expect(quantum(2)).toEqual([0, 0])
     expect(reports.slice(1)).toEqual([{ type: 'drift', contextTime: 10, drift: 0.5, gap: 0 }])
     expect(quantum(1)).toEqual([0])
     expect(reports.slice(2)).toEqual([{ type: 'drift', contextTime: 10, drift: 0.75, gap: 0 }, { type: 'starved' }])
+
     post(samples(101, 5))
     expect(quantum(1)).toEqual([0])
+
     post(samples(101.25, 6))
     expect(quantum(2)).toEqual([5, 6])
     expect(reports.slice(4)).toEqual([{ type: 'drift', contextTime: 10, drift: 1, gap: 0 }, { type: 'fed' }])
@@ -375,6 +413,7 @@ if (import.meta.vitest) {
   test('audio that never arrived counts as a gap once playback reaches it', () => {
     post(samples(100, 1, 2))
     post(samples(101, 3, 4))
+
     expect(quantum(2)).toEqual([1, 2])
     expect(reports.at(-1)).toEqual({ type: 'start', contextTime: 10, mediaTime: 100 })
     expect(quantum(2)).toEqual([3, 4])
@@ -384,31 +423,39 @@ if (import.meta.vitest) {
   test('a rate other than 1 is stretched across chunks, and back at 1 plays the samples once that winds down', () => {
     Object.assign(globalThis, { sampleRate: 48_000 })
     new Function(PROCESSOR_SOURCE)()
+
     // A ramp of 20 ms chunks: played in order, it steps by 1; resampled at 1.5, by 1.5
     for (let i = 0; i < 50; i++) {
       const planes = [Float32Array.from({ length: 960 }, (_, j) => i * 960 + j)]
       post({ type: 'samples', planes, timestamp: 100 + i * 0.02, duration: 0.02 })
     }
+
     const steps = (length: number) => quantum(length).flatMap((v, i, all) => (i > 0 ? [v - all[i - 1]!] : []))
+
     post({ type: 'rate', rate: 1.5 })
     expect(steps(128).every((step) => step === 1)).toBe(true)
+
     for (let i = 0; i < 75; i++) quantum(128)
     post({ type: 'rate', rate: 1 })
     for (let i = 0; i < 40; i++) quantum(128)
+
     for (const step of steps(128)) expect(step).toBeCloseTo(1, 1)
   })
 
   test("at rate 2 it stretches only with a segment's worth queued, and a stall drops what the segment held", () => {
     Object.assign(globalThis, { sampleRate: 48_000 })
     new Function(PROCESSOR_SOURCE)()
+
     const chunk = (timestamp: number, length: number, value?: number): ProcessorMessage => {
       const planes = [Float32Array.from({ length }, (_, j) => value ?? j)]
       return { type: 'samples', planes, timestamp, duration: length / 48_000 }
     }
+
     post(chunk(100, 3200))
     post({ type: 'end' })
     post({ type: 'rate', rate: 2 })
     quantum(2048)
+
     post(chunk(100.1, 4000, 7))
     expect(quantum(128).every((v) => v === 7)).toBe(true)
   })
@@ -417,10 +464,12 @@ if (import.meta.vitest) {
     post(samples(100, 1, 2))
     post(samples(100.5, 3, 4))
     post(samples(101, 5, 6))
+
     quantum(2)
     expect(consumed).toEqual([])
     quantum(1)
     expect(consumed).toEqual([0.5])
+
     post({ type: 'seek', time: 101 })
     post({ type: 'flush' })
     expect(consumed).toEqual([0.5, 1, 1.5])
@@ -429,9 +478,11 @@ if (import.meta.vitest) {
   test('a seek drops what is before the target, inside a chunk too, and starts the clock at it', () => {
     post(samples(100, 1, 2))
     expect(quantum(1)).toEqual([1])
+
     post(samples(100.5, 3, 4, 5, 6))
     post({ type: 'seek', time: 101 })
     post(samples(101.5, 7))
+
     expect(quantum()).toEqual([5, 6, 7, 0])
     expect(reports.filter((r) => r.type === 'start').at(-1)).toEqual({
       type: 'start',

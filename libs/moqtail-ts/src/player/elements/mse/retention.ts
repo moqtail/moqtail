@@ -53,6 +53,7 @@ export function isQuotaExceeded(error: unknown): boolean {
 export function removeBuffered(buffer: SourceBuffer, start: number, end: number): void {
   const ranges = buffer.buffered
   if (ranges.length === 0) return
+
   const from = Math.max(start, ranges.start(0))
   const to = Math.min(end, ranges.end(ranges.length - 1))
   if (to > from) buffer.remove(from, to)
@@ -76,9 +77,11 @@ export async function append(
     const ranges = queue.buffer.buffered
     const keepFrom = trimEnd(currentTime(), QUOTA_KEEP, keyframes)
     if (!isQuotaExceeded(error) || !ranges.length || ranges.start(0) >= keepFrom) throw error
+
     await queue.run((b) => removeBuffered(b, 0, keepFrom))
     await queue.run((b) => b.appendBuffer(data as Uint8Array<ArrayBuffer>))
   }
+
   await queue.run((b) => removeBuffered(b, 0, trimEnd(currentTime(), backBuffer, keyframes)))
 }
 
@@ -118,8 +121,10 @@ if (import.meta.vitest) {
       const { buffer, queue } = setup([[0, 40]])
       await append(queue, data, () => 35, [0, 10, 20, 30], 30)
       expect(buffer.ranges).toEqual([[5, 41]])
+
       await append(queue, data, () => 35, [0, 33], 1) // keeps 1 s, but the group playing at 35 starts at 33
       expect(buffer.ranges).toEqual([[33, 42]])
+
       expect([hasRoom(queue.buffer, 35, 60), hasRoom(queue.buffer, -20, 60)]).toEqual([true, false])
     })
 
@@ -127,6 +132,7 @@ if (import.meta.vitest) {
       const { buffer, queue } = setup([[0, 10]])
       buffer.fail = 'quota'
       await append(queue, data, () => 8, [0, 2, 4, 6, 9], 30)
+
       expect(buffer.log).toEqual(['append 1', 'remove 0-6', 'append 1'])
       expect(buffer.ranges).toEqual([[6, 11]])
     })
@@ -136,6 +142,7 @@ if (import.meta.vitest) {
       buffer.fail = 'quota'
       await append(queue, data, () => 8, [0, 5], 30) // the group playing at 8 starts at 5
       expect(buffer.log).toEqual(['append 1', 'remove 0-5', 'append 1'])
+
       buffer.fail = 'quota'
       await expect(append(queue, data, () => 8, [], 30)).rejects.toMatchObject({ name: 'QuotaExceededError' })
     })

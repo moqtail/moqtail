@@ -126,6 +126,7 @@ export function initPlugins(plugins: readonly Plugin[]): PluginInstance[] {
     if (names.has(definition.name)) throw new TypeError(`Plugin "${definition.name}" is listed twice`)
     names.add(definition.name)
   }
+
   const instances: PluginInstance[] = []
   for (const { definition, config } of plugins) {
     const ctx = definition.init?.(config)
@@ -140,6 +141,7 @@ export function initPlugins(plugins: readonly Plugin[]): PluginInstance[] {
       features: definition.features?.(ctx) ?? [],
     })
   }
+
   return instances
 }
 
@@ -155,6 +157,7 @@ export function resolveFeatures(active: readonly PluginInstance[]): Features {
   const features = active.flatMap((p) => p.features)
   const items = <T extends Feature['type']>(type: T) =>
     features.flatMap((f) => (f.type === type ? [f.item as Extract<Feature, { type: T }>['item']] : []))
+
   const [bufferController] = items('buffer-controller')
   const [abrController] = items('abr-controller')
   return {
@@ -174,6 +177,7 @@ export function mergeSetupOptions(
   plugins: readonly PluginInstance[],
 ): SetupOptions | undefined {
   if (!plugins.some((p) => p.setupOptions.build().length > 0)) return base
+
   const merged = new SetupOptions()
   const owners = new Map<bigint, { owner: string; value: string }>()
   for (const pair of base?.build() ?? []) {
@@ -181,21 +185,25 @@ export function mergeSetupOptions(
     if (!owners.has(pair.typeValue))
       owners.set(pair.typeValue, { owner: 'client.setupOptions', value: canonicalJson(pair.value) })
   }
+
   for (const plugin of plugins) {
     for (const pair of plugin.setupOptions.build()) {
       const value = canonicalJson(pair.value)
       const existing = owners.get(pair.typeValue)
+
       if (existing && existing.value !== value) {
         throw new PlayerError(
           'UNSUPPORTED_ORIGIN',
           `${existing.owner} and plugin "${plugin.name}" set setup parameter 0x${pair.typeValue.toString(16)} to different values`,
         )
       }
+
       if (existing) continue
       owners.set(pair.typeValue, { owner: `plugin "${plugin.name}"`, value })
       merged.addRaw(pair)
     }
   }
+
   return merged
 }
 
@@ -211,12 +219,14 @@ if (import.meta.vitest) {
       const optional = definePlugin({ name: 'a', init: (c: { n?: number } = {}) => c })
       const required = definePlugin({ name: 'b', init: (c: { n: number }) => c })
       const none = definePlugin({ name: 'c' })
+
       expectTypeOf(none).parameters.toEqualTypeOf<[]>()
       expect([optional().config, optional({ n: 1 }).config, required({ n: 2 }).config]).toEqual([
         undefined,
         { n: 1 },
         { n: 2 },
       ])
+
       // @ts-expect-error the config is required
       required()
       // @ts-expect-error a config of the wrong type
@@ -234,8 +244,10 @@ if (import.meta.vitest) {
           return false
         },
       })
+
       const [first] = initPlugins([counted(), refused()])
       const second = initPlugins([counted()])
+
       expect([first!.ctx, second[0]!.ctx, initPlugins([refused()])]).toEqual([{ n: 1 }, { n: 2 }, []])
       expect(() => initPlugins([counted(), counted()])).toThrow(TypeError)
     })
@@ -253,6 +265,7 @@ if (import.meta.vitest) {
             { type: 'switch-source', item: testSource({ name: `${name}-switch` }) },
           ],
         })()
+
       const plugins = initPlugins([
         offer('late', Infinity),
         offer('tie-1', 100),
@@ -276,6 +289,7 @@ if (import.meta.vitest) {
             return true
           },
         })()
+
       const base = new SetupOptions().addMaxRequestUpdates(4)
       const merged = mergeSetupOptions(base, initPlugins([algorithms('a', 1), algorithms('b', 1)]))
       expect(merged?.build()).toHaveLength(2)

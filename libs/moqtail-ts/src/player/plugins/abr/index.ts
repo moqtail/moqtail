@@ -46,6 +46,7 @@ export const abr = definePlugin({
   priority: Infinity,
   init: ({ tickMs = TICK_MS, model, onDecision }: MlAbrConfig = {}) => {
     if (!(tickMs > 0 && tickMs < Infinity)) throw new TypeError('tickMs must be a positive number')
+
     const policy = model ? Policy.load(model) : (bundled ??= Policy.load(BUNDLED_MODEL))
     return new MlAbrController(tickMs, policy, onDecision)
   },

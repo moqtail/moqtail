@@ -39,17 +39,21 @@ export const Playout = defineElement({
     // Options come from the app, so a bad canvas is a programming error
     if (typeof HTMLCanvasElement === 'undefined' || !(options.canvas instanceof HTMLCanvasElement))
       throw new TypeError('Playout option canvas must be an HTMLCanvasElement')
+
     if (typeof AudioContext === 'undefined' || typeof requestAnimationFrame === 'undefined') {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'Playout needs AudioContext and requestAnimationFrame', {
         element: 'playout',
       })
     }
+
     // With a worker it may transfer, which a context rules out: it's checked once the element decides
     if (!context.worker && !options.canvas.getContext('2d'))
       throw new TypeError('The playout canvas already has a context other than "2d"')
+
     const { preroll = PREROLL } = options
     if (!(preroll >= 0 && preroll < Infinity))
       throw new TypeError('Playout option preroll must be a non-negative number')
+
     return new PlayoutSink(context, options.canvas, preroll)
   },
 })

@@ -38,6 +38,7 @@ function keyValues(s: string): Record<string, string> {
     const key = pair.slice(0, at)
     if (at > 0 && !Object.hasOwn(record, key)) record[key] = pair.slice(at + 1)
   }
+
   return record
 }
 
@@ -245,6 +246,7 @@ if (import.meta.vitest) {
         packagingMetadata: 'streamMapping=object;streamMapping=group;bad;x=1',
         template: [0, 2002, [0, 0], [1, 0], 1759924158381, 2002],
       })
+
       expect(output['custom']).toEqual({ a: 1 })
       expect(output.namespace).toBe(namespace)
       expect(output.nameBytes).toEqual(new TextEncoder().encode('v'))
@@ -257,6 +259,7 @@ if (import.meta.vitest) {
         startWallclock: 1759924158381,
         deltaWallclock: 2002,
       })
+
       const other = v.parse(TrackSchema, { ...video, packaging: 'cmaf', namespace: 'a/b', packagingMetadata: 'x=1' })
       expect(other.namespace.fields.map((f) => f.toUtf8())).toEqual(['a', 'b'])
       expect(other.packagingMetadata).toEqual({})

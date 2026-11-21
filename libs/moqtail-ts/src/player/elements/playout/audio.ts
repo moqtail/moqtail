@@ -34,8 +34,10 @@ export async function createAudioOutput(
 ): Promise<AudioOutput> {
   const context = new AudioContext({ latencyHint: 'interactive', sampleRate })
   void context.suspend()
+
   // The package ships no worklet file. A strict CSP can block `blob:` modules.
   const url = URL.createObjectURL(new Blob([PROCESSOR_SOURCE], { type: 'text/javascript' }))
+
   try {
     await context.audioWorklet.addModule(url)
   } catch (error) {
@@ -44,11 +46,13 @@ export async function createAudioOutput(
   } finally {
     URL.revokeObjectURL(url)
   }
+
   const node = new AudioWorkletNode(context, PROCESSOR_NAME, {
     numberOfInputs: 0,
     outputChannelCount: [numberOfChannels],
     processorOptions: { preroll } satisfies ProcessorOptions['processorOptions'],
   })
+
   // shortcut: no volume or mute, a GainNode goes here once asked
   node.connect(context.destination)
   return { context, node }

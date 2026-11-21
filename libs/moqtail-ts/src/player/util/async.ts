@@ -23,6 +23,7 @@ export function backoffDelay(attempt: number): number {
 export function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason)
+
     const onAbort = () => {
       clearTimeout(timer)
       reject(signal.reason)
@@ -31,6 +32,7 @@ export function sleep(ms: number, signal: AbortSignal): Promise<void> {
       signal.removeEventListener('abort', onAbort)
       resolve()
     }, ms)
+
     signal.addEventListener('abort', onAbort, { once: true })
   })
 }
@@ -46,6 +48,7 @@ export async function within<T>(
   const timer = sleep(Math.max(0, ms), AbortSignal.any([signal, done.signal])).then(() => {
     throw timedOut()
   })
+
   try {
     return await Promise.race([promise, timer])
   } finally {

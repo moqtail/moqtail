@@ -41,9 +41,11 @@ export class SeekTracker {
   /** Sets `currentTime`. Resolves on `seeked`; a newer seek, native or not, rejects it with `ABORTED`. */
   seek(mediaTime: number): Promise<void> {
     this.#abort()
+
     const { promise, resolve, reject } = Promise.withResolvers<void>()
     this.#pending = { claimed: false, resolve, reject }
     this.video.currentTime = mediaTime
+
     return promise
   }
 
@@ -65,8 +67,10 @@ export class SeekTracker {
       this.#ownJumps.splice(own, 1)
       return false
     }
+
     if (this.#pending && !this.#pending.claimed) this.#pending.claimed = true
     else this.#abort() // a native seek supersedes a pending one
+
     return true
   }
 
@@ -111,10 +115,12 @@ if (import.meta.vitest) {
       const tracker = new SeekTracker({ currentTime: 0, readyState: HAVE_NOTHING } as HTMLVideoElement)
       tracker.jump(4)
       expect(tracker.seeking()).toBe(false) // the start position's seek, at metadata
+
       tracker.jump(0)
       const seek = settled(tracker.seek(5))
       expect(tracker.seeking()).toBe(true)
       tracker.seeked()
+
       await flush()
       expect(seek.value).toBe('resolved')
     })
@@ -125,6 +131,7 @@ if (import.meta.vitest) {
       const seek = settled(tracker.seek(9))
       expect(tracker.seeking()).toBe(true)
       tracker.seeked()
+
       await flush()
       expect(seek.value).toBe('resolved')
     })
@@ -139,9 +146,11 @@ if (import.meta.vitest) {
       expect(tracker.seeking()).toBe(true)
       expect(tracker.seeking()).toBe(true) // native, supersedes the second
       tracker.seeked()
+
       const third = settled(tracker.seek(7))
       expect(tracker.seeking()).toBe(true)
       tracker.seeked()
+
       await flush()
       expect([first.value, second.value, third.value]).toEqual(['ABORTED', 'ABORTED', 'resolved'])
       expect(tracker.video.currentTime).toBe(7)

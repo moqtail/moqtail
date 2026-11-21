@@ -186,8 +186,6 @@ export default defineConfig({
     plugins: [
       llmstxt({
         domain: site,
-        // The hero name carries the aurora markup, so the title is set here.
-        title: 'MOQtail',
         // The generated API pages would be most of the index; they stay in llms-full.txt.
         ignoreFilesPerOutput: { llmsTxt: ['ts/api/**'] },
         sidebar: (sidebar) => sidebar && mapValues(sidebar as DefaultTheme.SidebarMulti, withoutApi),

@@ -1,7 +1,7 @@
 /*
- * Port of moqtail.dev's AuroraText (src/components/aurora-text.tsx). The markup sits in the hero name in docs/index.md.
- * The name box is painted with the page background; blending the blob layer with lighten (darken in dark mode)
- * keeps the background wherever it wins, so the colour only shows through the letters.
+ * Port of moqtail.dev's AuroraText (src/components/aurora-text.tsx) for the hero name in docs/index.md.
+ * VitePress clips --vp-home-hero-name-background to the letters, so the blobs are radial gradients that drift
+ * rather than blended elements: blending would need an opaque box, which hides the hero image glow on mobile.
  */
 
 :root {
@@ -10,152 +10,61 @@
   --aurora-3: hsl(210 100% 63%);
   --aurora-4: hsl(195 100% 63%);
   --aurora-5: hsl(90 100% 63%);
-  --vp-home-hero-name-color: var(--vp-c-text-1);
-  --vp-home-hero-name-background: var(--vp-c-bg);
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background:
+    radial-gradient(closest-side, var(--aurora-1), transparent) 0 0 / 50% 150% no-repeat,
+    radial-gradient(closest-side, var(--aurora-2), transparent) 100% 0 / 50% 150% no-repeat,
+    radial-gradient(closest-side, var(--aurora-3), transparent) 0 100% / 50% 150% no-repeat,
+    radial-gradient(closest-side, var(--aurora-4), transparent) 100% 100% / 50% 150% no-repeat,
+    radial-gradient(closest-side, var(--aurora-5), transparent) 50% 50% / 40% 120% no-repeat,
+    linear-gradient(90deg, var(--aurora-2), var(--aurora-3));
 }
 
 .VPHero .name.clip {
-  position: relative;
-  overflow: hidden;
-  -webkit-background-clip: border-box;
-  background-clip: border-box;
-}
-
-.VPHero .aurora {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  mix-blend-mode: lighten;
-}
-
-.dark .VPHero .aurora {
-  mix-blend-mode: darken;
-}
-
-.VPHero .aurora i {
-  position: absolute;
-  width: min(60vw, 600px);
-  height: min(60vw, 600px);
-  filter: blur(1rem);
-  mix-blend-mode: overlay;
-  animation:
-    aurora-border 6s ease-in-out infinite,
-    none 12s ease-in-out infinite alternate;
-}
-
-.VPHero .aurora i:nth-child(1) {
-  top: -50%;
-  background: var(--aurora-1);
-  animation-name: aurora-border, aurora-1;
-}
-
-.VPHero .aurora i:nth-child(2) {
-  top: 0;
-  right: 0;
-  background: var(--aurora-2);
-  animation-name: aurora-border, aurora-2;
-}
-
-.VPHero .aurora i:nth-child(3) {
-  bottom: 0;
-  left: 0;
-  background: var(--aurora-3);
-  animation-name: aurora-border, aurora-3;
-}
-
-.VPHero .aurora i:nth-child(4) {
-  right: 0;
-  bottom: -50%;
-  background: var(--aurora-4);
-  animation-name: aurora-border, aurora-4;
-}
-
-.VPHero .aurora i:nth-child(5) {
-  background: var(--aurora-5);
+  animation: aurora 12s ease-in-out infinite alternate;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .VPHero .aurora i {
+  .VPHero .name.clip {
     animation: none;
   }
 }
 
-@keyframes aurora-border {
-  0%,
+@keyframes aurora {
+  0% {
+    background-position:
+      0 0,
+      100% 0,
+      0 100%,
+      100% 100%,
+      50% 50%,
+      0 0;
+  }
+  33% {
+    background-position:
+      40% 100%,
+      60% 80%,
+      30% 0,
+      70% 20%,
+      0 30%,
+      0 0;
+  }
+  66% {
+    background-position:
+      100% 30%,
+      0 60%,
+      80% 40%,
+      10% 0,
+      100% 70%,
+      0 0;
+  }
   100% {
-    border-radius: 37% 29% 27% 27% / 28% 25% 41% 37%;
-  }
-  25% {
-    border-radius: 47% 29% 39% 49% / 61% 19% 66% 26%;
-  }
-  50% {
-    border-radius: 57% 23% 47% 72% / 63% 17% 66% 33%;
-  }
-  75% {
-    border-radius: 28% 49% 29% 100% / 93% 20% 64% 25%;
-  }
-}
-
-@keyframes aurora-1 {
-  0%,
-  100% {
-    top: 0;
-    right: 0;
-  }
-  50% {
-    top: 50%;
-    right: 25%;
-  }
-  75% {
-    top: 25%;
-    right: 50%;
-  }
-}
-
-@keyframes aurora-2 {
-  0%,
-  100% {
-    top: 0;
-    left: 0;
-  }
-  60% {
-    top: 75%;
-    left: 25%;
-  }
-  85% {
-    top: 50%;
-    left: 50%;
-  }
-}
-
-@keyframes aurora-3 {
-  0%,
-  100% {
-    bottom: 0;
-    left: 0;
-  }
-  40% {
-    bottom: 50%;
-    left: 25%;
-  }
-  65% {
-    bottom: 25%;
-    left: 50%;
-  }
-}
-
-@keyframes aurora-4 {
-  0%,
-  100% {
-    bottom: 0;
-    right: 0;
-  }
-  50% {
-    bottom: 25%;
-    right: 40%;
-  }
-  90% {
-    bottom: 50%;
-    right: 25%;
+    background-position:
+      60% 0,
+      30% 100%,
+      100% 60%,
+      40% 100%,
+      30% 0,
+      0 0;
   }
 }

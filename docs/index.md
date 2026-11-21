@@ -3,8 +3,7 @@ layout: home
 description: Documentation for the MOQtail relay and the moqtail TypeScript library.
 
 hero:
-  # The spans are the animated aurora behind the letters (theme/aurora.css).
-  name: 'MOQtail<span class="aurora" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>'
+  name: MOQtail
   text: Media over QUIC, relay to browser
   tagline: IETF-compliant MOQT relay, TypeScript client and browser player.
   image:

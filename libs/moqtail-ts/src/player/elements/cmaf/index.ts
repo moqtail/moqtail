@@ -30,8 +30,10 @@ export const Cmaf = defineElement({
   capabilities: [cmafCapabilities('out', 'video'), cmafCapabilities('out', 'audio')],
   provides: [MEDIA_SOURCE],
   probe: probeCmaf,
-  init: async (context, options?: MediaSourceOptions) =>
-    new CmafSource(context, options ?? {}, await planSource(context, options, 'cmaf')),
+  init: async (context, options: MediaSourceOptions = {}) => {
+    const plan = await planSource(context, options, 'cmaf')
+    return new CmafSource(context, options, plan)
+  },
 })
 
 /**

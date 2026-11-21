@@ -17,15 +17,10 @@
 import { findProperty } from '@/model/property/find'
 import { VideoFrameMarking } from '@/model/property/video_frame_marking'
 import type { PacketBase } from '@/player/element/pad'
-import { timestampMicros } from '@/player/elements/loc/track'
+import { AAC_SAMPLE_RATES, EXPLICIT_SAMPLE_RATE, timestampMicros } from '@/player/elements/loc/track'
 
 const START_CODE = [0, 0, 0, 1]
 const SHORT_START_CODE = [0, 0, 1]
-/** The AAC sampling frequency indexes (ISO/IEC 14496-3 1.6.3.4). */
-const SAMPLE_RATES = [
-  96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350,
-]
-const EXPLICIT_SAMPLE_RATE = 0xf
 
 /**
  * `payload` with start codes in place of 4-byte NAL unit lengths, since the WebCodecs AVC and
@@ -47,7 +42,7 @@ export function aacDescription(codec: string, sampleRate: number, numberOfChanne
   // Object types from 31 on need an escape this doesn't write
   if (!(objectType > 0 && objectType < 31)) return undefined
   if (!(numberOfChannels > 0 && numberOfChannels < 16)) return undefined
-  const index = SAMPLE_RATES.indexOf(sampleRate)
+  const index = AAC_SAMPLE_RATES.indexOf(sampleRate)
   const rate: [value: number, bits: number][] =
     index === -1
       ? [

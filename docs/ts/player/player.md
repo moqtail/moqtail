@@ -24,7 +24,7 @@ The constructor takes [`MOQtailPlayerOptions`](/ts/api/player/interfaces/MOQtail
 | Option              | Default                     | What it does                                                                                         |
 | ------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `plugins`           | none                        | Plugins made with `definePlugin()`, such as `liveBuffer()`, `abr()` and `ssts()`                     |
-| `catalogTimeoutMs`  | `10000`                     | How long to wait for the catalog before failing with `CATALOG_TIMEOUT`                               |
+| `catalogTimeoutMs`  | `10000`                     | How long to wait for the catalog, or a track without one, before failing with `CATALOG_TIMEOUT`      |
 | `maxCatalogBytes`   | 16 MiB                      | The largest catalog the player reads                                                                 |
 | `preferredLanguage` | the browser's language      | The audio language to pick, as a BCP 47 tag                                                          |
 | `eventTimelines`    | none                        | The event timelines to deliver as `timelineevent` events: a list of catalog `eventType`s, or `'all'` |
@@ -56,11 +56,31 @@ A call out of order, or after `init()`, throws a `TypeError`.
 player.source('moqt://relay.moqtail.dev#msf:moqtail-ch07--catalog', { switchFrom: true })
 ```
 
-`source()` takes the MSF URL of a catalog. A URL that names another track plays only through a source element you register: see [which tracks play](/ts/reference/msf-url#which-tracks-play).
+`source()` takes the MSF URL of a catalog, or of a media track, see [Play tracks without a catalog](#play-tracks-without-a-catalog).
 
 `source()` checks the URL at once, and throws a `PlayerError` that leaves the player `idle`: `UNSUPPORTED_SOURCE` for a URL it can't use, and `UNSUPPORTED_ORIGIN` for another origin than an earlier source's.
 
 With `switchFrom: true`, the media sources switch renditions with SWITCH_FROM, which moves the subscription to the new track, instead of opening a second subscription. The MOQtail relay supports it. Other keys in the options go to the source element.
+
+### Play tracks without a catalog
+
+Use this when the publisher sends no catalog. Call `source()` once for each track:
+
+```ts
+const canvas = document.createElement('canvas')
+document.body.append(canvas)
+
+const player = new MOQtailPlayer()
+  .source('moqt://relay.moqtail.dev#msf:moqtail-testsrc--video.2dloc')
+  .source('moqt://relay.moqtail.dev#msf:moqtail-testsrc--audio.2dloc')
+  .sink(canvas)
+
+await player.start()
+```
+
+`init()` requests each track: a FETCH of the URL's first `location-range`, or else a SUBSCRIBE from the next group. It picks the element by the track properties of the answer, and if none accepts them, by the objects it reads, up to the end of the first group. The element then plays on that request, from the first object read. See [which tracks play](/ts/reference/msf-url#which-tracks-play).
+
+A track with a `location-range` is on demand, and every other track is live, so a VOD track without one plays as live. The player emits `streamtypechange` with that type, and `liveBuffer()` and `abr()` attach as they do with a catalog. The wait for each track is bounded by `catalogTimeoutMs`.
 
 ### Play on a `<video>`
 

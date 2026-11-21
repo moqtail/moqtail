@@ -27,9 +27,17 @@ Everything before `#` is the session URL, `MsfSource.url`. The player opens a We
 
 ## Which tracks play
 
-`init()` picks a source element for the track by its identifiers. The URL gives the namespace and the track name, but not the packaging or the role that the media elements probe for. Of the built-in elements, only the catalog source accepts a URL, when its track is named `catalog`, and the catalog then [names the media tracks](/guide/concepts/media#what-the-player-reads-from-it).
+`init()` picks a source element for the track by its identifiers. The URL gives the namespace and the track name, but not the packaging or the role that the media elements probe for. Of the built-in elements, only the catalog source accepts a URL alone, when its track is named `catalog`, and the catalog then [names the media tracks](/guide/concepts/media#what-the-player-reads-from-it).
 
-A URL that names any other track plays only through a source element you register with `registerElement()`, whose `probe` accepts it. Without one, `init()` rejects with `UNSUPPORTED_SOURCE`.
+For a URL that no element accepts alone, `init()` requests the track and probes again with these identifiers added. Without a match on `trackProperties`, it reads objects and probes after each one:
+
+| Identifier        | Value                                                                             |
+| ----------------- | --------------------------------------------------------------------------------- |
+| `isLive`          | `false` with a `location-range`, fetched from the first one; `true` without       |
+| `trackProperties` | The track properties of the SUBSCRIBE_OK or FETCH_OK                              |
+| `objects`         | The objects read so far, one more on each probe, up to the end of the first group |
+
+The built-in LOC source accepts a track whose properties carry VIDEO_CONFIG or AUDIO_CONFIG and CODEC_STRING. An audio track also needs an AAC or Opus config, which gives the sample rate and the channel count. When no element accepts the track, `init()` cancels the request and rejects with `UNSUPPORTED_SOURCE`.
 
 ## Namespace and track names
 

@@ -18,6 +18,7 @@
 
 import { beforeAll, expect, onTestFinished, test, vi } from 'vitest'
 import { userEvent } from 'vitest/browser'
+import { Tuple } from '@/model/common/tuple'
 import { TransformElement, type BaseElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode, defineElement, definitionOf } from '@/player/element/define'
@@ -26,11 +27,12 @@ import type { Pad, PadItem } from '@/player/element/pad'
 import { roleOf } from '@/player/element/sink/media_sink'
 import type { PlayerError } from '@/player/error'
 import { MediaSink } from '@/player/element/sink/media_sink'
+import { formatMsfUrl } from '@/player/msf_url'
 import { MOQtailPlayer } from '@/player/player'
 import { RENDER_QUEUE_LIMIT } from '@/player/elements/playout/engine'
 import { liveBuffer } from '@/player/plugins/buffer'
 import { frameFilter, type Draw, type FrameFilter } from './harness/engines'
-import { testsrc } from './harness/sources'
+import { RELAY, testsrc } from './harness/sources'
 import { playerOptions, preferWorker } from './harness/thread'
 import { warmUp } from './harness/warm'
 
@@ -210,6 +212,32 @@ test('advertised video VideoDecoder cannot decode, neither avc1 nor avc3, fails 
 
   await expect(player.start()).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE', element: 'catalog' })
   expect(errors).toMatchObject([{ code: 'UNSUPPORTED_SOURCE', message: expect.stringContaining('No video track') }])
+})
+
+test('two LOC track URLs play on a canvas without a catalog, in sync, probed by their properties', async () => {
+  const url = (name: string) => formatMsfUrl(RELAY, Tuple.fromUtf8Path(testsrc.namespace), name)
+  const canvas = document.createElement('canvas')
+  document.body.append(canvas)
+  const player = new MOQtailPlayer(playerOptions()).source(url('video-loc')).source(url('audio-loc')).sink(canvas)
+  const { errors } = watch(player, canvas)
+
+  await player.start()
+  await until(() => player.state === 'playing', 'playing')
+  const sink = player.mediaSink!
+  // In a worker run the frames are drawn there
+  const drawn = preferWorker ? [] : spyDraws(() => sink.currentTime)
+  const start = sink.currentTime
+  await until(() => sink.currentTime >= start + 2, 'two seconds of playback', 15_000)
+
+  expect(player.sources.map((s) => definitionOf(s)!.name)).toEqual(['loc', 'loc'])
+  const decoders = (sink as unknown as BaseElement).pads.map((p) => p.peers[0]!.element)
+  expect(decoders.map((d) => definitionOf(d)!.name)).toEqual(['webcodecs', 'webcodecs'])
+  if (!preferWorker) expect(drawn.length).toBeGreaterThan(0)
+  const frame = 1 / 30 // testsrc's frame rate, which no catalog gives here
+  for (const { timestamp, currentTime } of drawn) {
+    expect(Math.abs(timestamp - currentTime)).toBeLessThan(frame + 1 / 60 + 0.01)
+  }
+  expect(errors).toEqual([])
 })
 
 test('a second player on one canvas plays on it, or fails at once if the first drew from the worker', async () => {

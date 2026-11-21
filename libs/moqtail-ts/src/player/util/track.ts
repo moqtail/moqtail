@@ -33,14 +33,16 @@ export function bitrateOf(track: CatalogTrack): number {
   return track.avgBitrate ?? track.bitrate ?? 0
 }
 
+/** `url` is the session URL `src` starts with: the catalog's by default. */
 export function rendition(
   track: CatalogTrack,
   catalog: CatalogReader | undefined,
   state: { active: boolean; selected: boolean },
+  url = catalog?.url,
 ): Rendition {
   return {
     id: renditionId(track, catalog),
-    src: formatMsfUrl(catalog?.url ?? '', track.namespace, track.nameBytes),
+    src: formatMsfUrl(url ?? '', track.namespace, track.nameBytes),
     bitrate: bitrateOf(track),
     codec: track.codec ?? '',
     ...(track.width !== undefined && { width: track.width }),

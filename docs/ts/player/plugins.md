@@ -296,7 +296,9 @@ Call `registerElement()` before `source()`. For each track, the candidates come 
 2. The `element` features of the active plugins, by plugin priority, then order.
 3. The built-in sources: catalog, CMAF, LOCMAF, LOC, media timeline and SAP timeline.
 
-Among those whose `probe` accepts the track, the lowest `priority` wins, then the earliest. Transforms the chain loads come from the same three places, with the built-in `webcodecs` last. Of the built-in sources, only the catalog source accepts the track of a URL, so a URL that names another track plays only through a source you register: see [Which tracks play](/ts/reference/msf-url#which-tracks-play).
+Among those whose `probe` accepts the track, the lowest `priority` wins, then the earliest. Transforms the chain loads come from the same three places, with the built-in `webcodecs` last.
+
+A track URL that no probe accepts alone is requested, and probed again with its `trackProperties`, then after each object it reads with `objects`: see [Which tracks play](/ts/reference/msf-url#which-tracks-play). The source's options then carry the identifiers it was accepted with, as `source`. The built-in media sources play on the request the player sent, which a source of your own can't read: the player cancels it after `init()`.
 
 The pads of the source still need a transform or sink whose `in` capabilities match them, such as a sink you pass to `player.sink(definition, options)`. Without one, the player warns `PAD_UNLINKED`. [Subscribe and fetch](/ts/client/subscribe) shows how to read a track with `context.client`.
 

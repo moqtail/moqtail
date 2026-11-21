@@ -24,7 +24,8 @@ import type { Location } from '@/model/common/location'
 import type { Tuple } from '@/model/common/tuple'
 import type { MsfSource } from '@/player/msf_url'
 import type { CatalogTrack, MediaTimelineTemplate } from '@/player/elements/catalog/types'
-import type { SourceElementDefinition } from './define'
+import type { Identifiers, SourceElementDefinition } from './define'
+import type { Preroll } from './source/preroll'
 
 // Symbol.for, so the keys still match when the ESM and CJS builds are both loaded
 /** @public Key of {@link MediaSinkElement}. */
@@ -138,6 +139,10 @@ export interface MediaSourceOptions {
   ranges?: Pick<MsfSource, 'locationRanges' | 'mediaTimeRanges' | 'wallclockRanges'>
   /** How a parent adds to every SUBSCRIBE and FETCH the source sends. */
   requests?: RequestHooks
+  /** A top-level source's identifiers, from `source()` and the player's probe. */
+  source?: Identifiers
+  /** The request the player probed a top-level source's track with, which the source reads on. */
+  preroll?: Preroll
 }
 
 /**

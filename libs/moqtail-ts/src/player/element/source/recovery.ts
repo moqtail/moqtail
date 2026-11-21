@@ -32,6 +32,7 @@ import { groupDuration, groupStep, mapEnd, mapLocation } from './alignment'
 import { cancel, REPLACED, type Accepted, type Delivery, type Outcome, type Target } from './delivery'
 import { clamp, type End, type Span } from './ranges'
 import { locate, seekTarget } from './seek'
+import type { SourcePlan } from './switching_set'
 
 /** What recovery needs from its source. */
 export interface RecoveryHost {
@@ -79,20 +80,20 @@ export class Recovery {
   readonly #spans: readonly Span[]
   #span = 0
   readonly #first: CatalogTrack
+  /** A request sent before the source existed, for the first play. */
+  readonly #ready: Promise<RequestError | Accepted> | undefined
 
-  constructor(
-    context: ElementContext,
-    delivery: Delivery,
-    host: RecoveryHost,
-    start: CatalogTrack,
-    ranges: { spans: readonly Span[] } = { spans: [] },
-  ) {
+  constructor(context: ElementContext, delivery: Delivery, host: RecoveryHost, start: CatalogTrack, plan: SourcePlan) {
     this.#context = context
     this.#delivery = delivery
     this.#host = host
     this.active = start
     this.#first = start
-    this.#spans = ranges.spans
+    this.#spans = plan.spans
+    if (plan.readAhead) {
+      delivery.adopt(plan.readAhead)
+      this.#ready = Promise.resolve(plan.readAhead.accepted)
+    }
     this.#target = this.#spans[0] ? this.#spanTarget(this.#spans[0]) : { fetch: !start.isLive }
     const { player, signal } = context
     const lost = () => {
@@ -124,7 +125,7 @@ export class Recovery {
     const { signal } = this.#context
     const maxFailures = this.#context.player.options.client?.reconnectAttempts ?? DEFAULT_RECONNECT_ATTEMPTS
     let failures = 0
-    let ready: Promise<RequestError | Accepted> | undefined
+    let ready = this.#ready
     while (!signal.aborted) {
       await this.#reconnect?.promise // a lost session isn't a failure, it waits for the new one
       await this.#paused?.promise

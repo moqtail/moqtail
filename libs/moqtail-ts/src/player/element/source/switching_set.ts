@@ -29,7 +29,7 @@ import type { CatalogTrack, MediaSourceElement, MediaSourceOptions, Rendition } 
 import type { Packet, Pad, PadProperties } from '@/player/element/pad'
 import { PlayerError } from '@/player/error'
 import { bitrateOf, rendition, renditionId, trackKey } from '@/player/util/track'
-import { Delivery } from './delivery'
+import { Delivery, type ReadAhead } from './delivery'
 import { toSpans, type Span } from './ranges'
 import { closestBitrate, Recovery } from './recovery'
 import { ladderOf, Switcher } from './switch'
@@ -55,15 +55,19 @@ export interface Packaging {
   packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): Packet | undefined
 }
 
-/** What `planSource` worked out before the source starts: the URL ranges and their duration. */
-interface SourcePlan {
+/** What `planSource` worked out before the source starts: its tracks, the URL ranges and their duration. */
+export interface SourcePlan {
+  /** The switching set, at least one track. */
+  tracks: readonly CatalogTrack[]
   spans: readonly Span[]
   /** The end of the last range in seconds, when known. */
   duration?: number
+  /** The preroll's request, for the first play. */
+  readAhead?: ReadAhead
 }
 
 /**
- * Plays a switching set (`context.tracks`, at least one track) from its first track:
+ * Plays a switching set (`plan.tracks`) from its first track:
  * live with SUBSCRIBE from the next group, VOD with FETCH from the start, or the URL ranges.
  * In a fast switching set each GoP ladder is one rendition, named after its longest GoP:
  * `keyframeSpacing` stays internal (draft-ugur-moq-fast-switching).
@@ -82,11 +86,11 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
   constructor(
     context: ElementContext,
     readonly options: MediaSourceOptions,
-    plan: SourcePlan = { spans: [] },
+    plan: SourcePlan,
   ) {
     super(context)
-    this.#tracks = context.tracks
-    this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
+    this.#tracks = plan.tracks
+    this.#selected = new Set(plan.tracks.map((t) => this.#id(t)))
     const start = this.#start()
     this.pad = this.createPad('src', this.padCapabilities(start.role ?? 'video'))
     this.#delivery = new Delivery(this.pad, context, options.requests, this)
@@ -235,10 +239,15 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
   /** `track` is the head of its ladder. */
   #rendition(track: CatalogTrack): Rendition {
     return {
-      ...rendition(track, this.context.catalog, {
-        active: trackKey(track) === trackKey(this.#head(this.#recovery.active)),
-        selected: this.#selected.has(this.#id(track)),
-      }),
+      ...rendition(
+        track,
+        this.context.catalog,
+        {
+          active: trackKey(track) === trackKey(this.#head(this.#recovery.active)),
+          selected: this.#selected.has(this.#id(track)),
+        },
+        this.options.source?.url,
+      ),
       ladder: ladderOf(track, this.#tracks).map((t) => t.name),
     }
   }
@@ -249,21 +258,24 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
 }
 
 /**
- * The URL ranges of a switching set and their duration, from its first track's timeline.
+ * The plan of a switching set of `tracks`: the URL ranges and their duration, from its first
+ * track's timeline, and the preroll's request, which the source takes over.
  * @throws PlayerError `UNSUPPORTED_SOURCE` without tracks, or for ranges `toSpans` rejects.
  */
 export async function planSource(
   context: ElementContext,
-  options: MediaSourceOptions | undefined,
+  options: MediaSourceOptions,
   element: string,
+  tracks: readonly CatalogTrack[] = context.tracks,
 ): Promise<SourcePlan> {
-  const first = context.tracks[0]
+  const first = tracks[0]
   if (!first) throw new PlayerError('UNSUPPORTED_SOURCE', 'The source needs at least one track', { element })
   const timeline = await context.catalog?.timeline(first)
-  const spans = toSpans(options?.ranges, first, timeline)
+  const spans = toSpans(options.ranges, first, timeline)
   const end = spans.at(-1)?.end
   const endMs = end && timeline?.locationToTime(new Location(end.group + 1n, 0n))
-  return { spans, ...(endMs !== undefined && { duration: endMs / 1000 }) }
+  const readAhead = options.preroll?.handOff()
+  return { tracks, spans, ...(endMs !== undefined && { duration: endMs / 1000 }), ...(readAhead && { readAhead }) }
 }
 
 if (import.meta.vitest) {

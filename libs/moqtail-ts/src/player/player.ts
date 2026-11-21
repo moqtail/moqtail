@@ -22,6 +22,7 @@
 import type { MOQtailClient } from '@/client/client'
 import type { MOQtailClientOptions, ObjectOrdering } from '@/client/types'
 import type { SetupOptions } from '@/model/parameter/setup_option'
+import { DEFAULT_CATALOG_TIMEOUT_MS } from '@/player/constants'
 import type { SinkElement, SourceElement } from '@/player/element/base'
 import { Chain } from '@/player/element/chain'
 import {
@@ -42,6 +43,7 @@ import {
   type Rendition,
 } from '@/player/element/interfaces'
 import { selectSource } from '@/player/element/negotiation'
+import { Preroll } from '@/player/element/source/preroll'
 import { BUILT_IN_SOURCES, BUILT_IN_TRANSFORMS } from '@/player/elements'
 import type { CatalogElement } from '@/player/elements/catalog/element'
 import { spawnWorker, type PlayerWorker } from '@/player/element/worker/player_worker'
@@ -50,11 +52,12 @@ import { rangeAt } from '@/player/elements/mse/gaps'
 import type { MSEOptions } from '@/player/elements/mse/sink'
 import { Playout } from '@/player/elements/playout'
 import type { PlayoutOptions } from '@/player/elements/playout/sink'
+import { within } from '@/player/util/async'
 import { Emitter } from '@/util/emitter'
 import { logger } from '@/util/logger'
 import { acquire, check, clientKey, currentClient, release, type ClientOptions, type SlotMember } from './client_slot'
 import { PlayerError } from './error'
-import { parseMsfUrl } from './msf_url'
+import { parseMsfUrl, type MsfSource } from './msf_url'
 import {
   activePlugins,
   initPlugins,
@@ -144,6 +147,17 @@ const STATE_EVENTS: Partial<Record<PlayerState, 'playing' | 'pause' | 'stalled' 
 const STAGES = ['source', 'transform', 'sink'] as const
 type Stage = (typeof STAGES)[number]
 
+interface DeclaredSource {
+  source: MsfSource
+  options: object
+}
+
+interface SelectedSource {
+  definition: SourceElementDefinition
+  identifiers: Identifiers
+  options: object
+}
+
 /** @public */
 export class MOQtailPlayer extends Emitter<PlayerEvents> {
   readonly options: Readonly<MOQtailPlayerOptions>
@@ -153,7 +167,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   readonly #definitions: ElementDefinition[] = []
   readonly #plugins: readonly PluginInstance[]
   /** What `source()` adds; its element is picked in `init()`, once the active plugins are known. */
-  readonly #declaredSources: { identifiers: Identifiers; options: object }[] = []
+  readonly #declaredSources: DeclaredSource[] = []
   readonly #chain: Chain
   /** Aborted by `destroy()`; its reason is what every later call rejects with. */
   readonly #abort = new AbortController()
@@ -303,8 +317,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       throw new PlayerError('UNSUPPORTED_ORIGIN', `This player already uses ${this.#origin}`)
     }
     check(source.url, this.#clientKey)
-    const identifiers = { ...source } // a type literal, so it fits `Identifiers`' index signature
-    this.#declaredSources.push({ identifiers, options })
+    this.#declaredSources.push({ source, options })
     this.#origin = source.url
     return this
   }
@@ -341,7 +354,11 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return this
   }
 
-  /** Connects and negotiates the chain; rejects with `UNSUPPORTED_SOURCE` when no element accepts a source. Idempotent. */
+  /**
+   * Connects and negotiates the chain; rejects with `UNSUPPORTED_SOURCE` when no element accepts a
+   * source. A track URL no element accepts alone is requested, and probed again by its properties.
+   * Idempotent.
+   */
   init(): Promise<void> {
     if (this.#abort.signal.aborted) return Promise.reject(this.#abort.signal.reason)
     const origin = this.#origin
@@ -398,6 +415,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
 
   async #init(origin: string): Promise<void> {
     this.#setState('connecting')
+    const prerolls: Preroll[] = []
     try {
       const worker = this.options.preferWorker === false ? undefined : spawnWorker(this.options.worker)
       this.#worker = worker
@@ -409,10 +427,14 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       this.#abort.signal.throwIfAborted()
       this.#useClient(client)
       this.#features = resolveFeatures(activePlugins(this.#plugins, client.serverSetup))
-      for (const { identifiers, options } of this.#declaredSources) {
-        const definition = selectSource(this.#sourceDefinitions(), identifiers)
-        if (!definition) throw new PlayerError('UNSUPPORTED_SOURCE', `No element accepts track "${identifiers.track}"`)
+      const results = await Promise.allSettled(this.#declaredSources.map((d) => this.#select(d, client, prerolls)))
+      for (const result of results) {
+        if (result.status === 'rejected') throw result.reason
+        const { definition, identifiers, options } = result.value
         this.#chain.addSource(definition, identifiers, options)
+        // Only a preroll sets `isLive`: with a catalog, the catalog element emits the stream type
+        const type = identifiers.isLive === undefined ? undefined : identifiers.isLive ? 'live' : 'on-demand'
+        if (type && type !== this.#streamType) this.emit('streamtypechange', type)
       }
       const outcome = await this.#chain.init(this.#abort.signal)
       if (this.#worker && !this.#worker.used) this.#terminateWorker()
@@ -428,7 +450,46 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
           : new PlayerError('UNSUPPORTED_SOURCE', 'An element failed to initialise', { cause })
       this.#fail(error)
       throw error
+    } finally {
+      for (const preroll of prerolls) preroll.cancel()
     }
+  }
+
+  /**
+   * The element for a declared source, by its URL, or else by the track properties and the
+   * objects of a request for it (`Preroll`), which the element then reads on.
+   * @throws PlayerError `UNSUPPORTED_SOURCE` when no element accepts it, `CATALOG_TIMEOUT` when
+   * the track doesn't answer within `catalogTimeoutMs`.
+   */
+  async #select(
+    { source, options }: DeclaredSource,
+    client: MOQtailClient,
+    prerolls: Preroll[],
+  ): Promise<SelectedSource> {
+    const definitions = this.#sourceDefinitions()
+    const identifiers: Identifiers = { ...source }
+    const definition = selectSource(definitions, identifiers)
+    if (definition) return { definition, identifiers, options }
+    const preroll = new Preroll(client, source, this.options.objectOrdering)
+    prerolls.push(preroll)
+    const timeoutMs = this.options.catalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS
+    const timedOut = () =>
+      new PlayerError('CATALOG_TIMEOUT', `Track "${source.track}" sent nothing within ${timeoutMs} ms`)
+    const wait = <T>(promise: Promise<T>) => within(promise, timeoutMs, this.#abort.signal, timedOut)
+    const trackProperties = await wait(preroll.trackProperties())
+    let probed: Identifiers = { ...identifiers, isLive: preroll.isLive, trackProperties }
+    let accepted = selectSource(definitions, probed)
+    // The first group at most: each starts at a key frame (LOC 4.2), so a later one tells a probe nothing new
+    while (!accepted) {
+      const object = await wait(preroll.read())
+      if (!object || object.location.group !== preroll.objects[0]!.location.group) break
+      probed = { ...probed, objects: [...preroll.objects] }
+      accepted = selectSource(definitions, probed)
+    }
+    if (!accepted) throw new PlayerError('UNSUPPORTED_SOURCE', `No element accepts track "${source.track}"`)
+    const { locationRanges, mediaTimeRanges, wallclockRanges } = source
+    const ranges = { locationRanges, mediaTimeRanges, wallclockRanges }
+    return { definition: accepted, identifiers: probed, options: { ...options, ranges, preroll } }
   }
 
   async #destroy(): Promise<void> {
@@ -578,7 +639,11 @@ function isPinned(source: MediaSourceElement): boolean {
 
 if (import.meta.vitest) {
   const { describe, test, expect, beforeEach, afterEach, vi } = import.meta.vitest
-  const { fakeClients, testObject } = await import('@/player/testing/client')
+  const { fakeClients, mediaObject, testObject } = await import('@/player/testing/client')
+  type FakeClient = import('@/player/testing/client').FakeClient
+  const { UnknownTrackProperty } = await import('@/model/property/track_property')
+  const { VideoConfig } = await import('@/model/property/video_config')
+  const { CodecString } = await import('@/model/property/codec_string')
   const { inProcessWorker } = await import('@/player/testing/worker')
   const { abrPlugin, bufferPlugin, collectingSink, testSource, testTransform, fakeMediaSink, flush, settle } =
     await import('@/player/testing/elements')
@@ -706,11 +771,6 @@ if (import.meta.vitest) {
       empty.on('error', (e) => errors.push(e))
       await expect(empty.source(URL).sink(fakeMediaSink).init()).rejects.toMatchObject({ code: 'NO_MEDIA_SINK' })
       expect([empty.state, errors]).toEqual(['error', [code('NO_MEDIA_SINK')]])
-
-      // Picked once the plugins are known, so it's init() that rejects
-      const unplayable = new MOQtailPlayer().source('moqt://relay.example.com/app#msf:ns--video').sink(fakeMediaSink)
-      await expect(unplayable.init()).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE' })
-      await unplayable.destroy()
 
       const player = make()
       await player.init()
@@ -965,6 +1025,91 @@ if (import.meta.vitest) {
         expect(sink!.pads.map((p) => definitionOf(p.peers[0]!.element)!.name)).toEqual(['decoder', 'decoder'])
         expect(sink!.pads.map((p) => definitionOf(upstream(p.peers[0]!.element))!.name)).toEqual(['loc', 'loc'])
         expect(player.state).toBe('ready')
+      })
+    })
+
+    describe('a track URL without a catalog', () => {
+      const TRACK = 'moqt://relay.example.com/app#msf:ns--video'
+      const videoProperties = [new VideoConfig(new Uint8Array([1])), new CodecString('avc1.42C01F')].map(
+        (p) => new UnknownTrackProperty(p.toKeyValuePair()),
+      )
+
+      /** Initialises a player of `url` into a LOC sink, the client answering its request with `respond`. */
+      async function prerolled(url: string, respond: FakeClient['respond']) {
+        fakes.restore()
+        const opened = Promise.withResolvers<void>()
+        fakes = fakeClients(() => opened.promise)
+        let sink: CollectingSink | undefined
+        const player = new MOQtailPlayer()
+          .source(url)
+          .sink(collectingSink({ packaging: 'loc', setup: (k) => (sink = k) }))
+        const types: StreamType[] = []
+        player.on('streamtypechange', (type) => types.push(type))
+        const init = player.init()
+        await flush()
+        const client = fakes.clients[0]!
+        client.respond = respond
+        opened.resolve()
+        return { player, init, client, types, sink: () => sink! }
+      }
+
+      test('is played live by the source that accepts its track properties, on the probe’s SUBSCRIBE', async () => {
+        const c = await prerolled(TRACK, () => ({ trackProperties: videoProperties }))
+        await c.init
+        c.client.last.push(mediaObject(1, 0, null, 'video'))
+        await flush()
+        expect([
+          c.player.sources.map((s) => definitionOf(s)!.name),
+          c.client.sent('subscribe').length,
+          c.types,
+        ]).toEqual([['loc'], 1, ['live']])
+        expect(
+          c
+            .sink()
+            .items()
+            .map((i) => i.type),
+        ).toEqual(['properties', 'packet'])
+        expect(c.player.mediaSources[0]!.getRenditions()[0]!.src).toBe(TRACK)
+        await c.player.destroy()
+      })
+
+      test('with a location range, is fetched on demand', async () => {
+        const c = await prerolled(`${TRACK}&location-range=2-4`, () => ({ trackProperties: videoProperties }))
+        await c.init
+        const [fetch] = c.client.sent<import('@/client/types').FetchOptions>('fetch')
+        expect([c.client.sent('subscribe'), fetch?.locationFilter?.startGroup, c.types]).toEqual([
+          [],
+          2n,
+          ['on-demand'],
+        ])
+        await c.player.destroy()
+      })
+
+      test('is accepted by the objects of its first group, which reach the pad before the rest', async () => {
+        const c = await prerolled(TRACK, () => ({}))
+        await flush()
+        // The config on the first object, the codec on the second
+        const config = [new VideoConfig(new Uint8Array([1])).toKeyValuePair()]
+        const codec = [new CodecString('avc1.42C01F').toKeyValuePair()]
+        c.client.last.push(mediaObject(1, 0, config, 'video'), mediaObject(1, 1, codec, 'video'))
+        await c.init
+        c.client.last.push(mediaObject(1, 2, null, 'video'))
+        await flush()
+        const packets = c
+          .sink()
+          .items()
+          .flatMap((i) => (i.type === 'packet' ? [i.packet.location.object] : []))
+        expect([c.player.sources.map((s) => definitionOf(s)!.name), packets]).toEqual([['loc'], [0n, 1n, 2n]])
+        await c.player.destroy()
+      })
+
+      test('that no source accepts by its first group rejects init and cancels the request', async () => {
+        const c = await prerolled(TRACK, () => ({}))
+        await flush()
+        c.client.last.push(mediaObject(1, 0, null, 'video'), mediaObject(2, 0, null, 'video'))
+        await expect(c.init).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE' })
+        expect(c.client.sent('unsubscribe')).toEqual([0n])
+        await c.player.destroy()
       })
     })
   })

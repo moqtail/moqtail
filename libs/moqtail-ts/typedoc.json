@@ -24,6 +24,7 @@
   "intentionallyNotExported": [
     "src/player/elements/catalog/types.ts:CatalogSchema",
     "src/player/element/define.ts:UnionToIntersection",
+    "src/player/element/source/preroll.ts:Preroll",
     "src/player/elements/mse/sink.ts:MSESink",
     "src/player/elements/playout/sink.ts:PlayoutSink",
     "src/player/plugins/abr/policy.ts:Policy"

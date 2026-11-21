@@ -20,8 +20,16 @@
  */
 
 import type { MOQtailClient } from '@/client/client'
-import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult, SwitchOptions } from '@/client/types'
+import type {
+  FetchOptions,
+  FetchResult,
+  ObjectOrdering,
+  SubscribeOptions,
+  SubscribeResult,
+  SwitchOptions,
+} from '@/client/types'
 import { Location } from '@/model/common/location'
+import type { Tuple } from '@/model/common/tuple'
 import { GroupOrder, LocationFilterType, PublishDoneStatusCode } from '@/model/control/constant'
 import { RequestError } from '@/model/control/request_error'
 import { ObjectForwardingPreference, ObjectStatus } from '@/model/data/constant'
@@ -50,7 +58,14 @@ export const REPLACED = Symbol('replaced')
 export type Outcome = 'ended' | 'done' | 'failed' | 'rejected' | 'stopped'
 
 export type Accepted = SubscribeResult | FetchResult
-type TrackProperties = SubscribeResult['subscribeOk']['trackProperties']
+export type TrackProperties = SubscribeResult['subscribeOk']['trackProperties']
+
+/** A request that was read from before its source existed. */
+export interface ReadAhead {
+  accepted: Accepted
+  /** What was read from its stream, in order: the source's reader goes on after them. */
+  objects: readonly MoqtObject[]
+}
 
 /** What a request asks for. */
 export interface Target {
@@ -72,6 +87,25 @@ interface SoftSwitch {
   /** The old track was read through `end`: its drain can stop. */
   drained?: boolean
   accepted: Promise<RequestError | SubscribeResult>
+}
+
+/** What every media request of a track carries; the hooks may change it. */
+export function mediaRequest(namespace: Tuple, nameBytes: Uint8Array, ordering: ObjectOrdering | undefined) {
+  return {
+    fullTrackName: FullTrackName.tryNew(namespace, nameBytes),
+    priority: MEDIA_PRIORITY,
+    groupOrder: GroupOrder.Original,
+    ordering: ordering ?? DEFAULT_MEDIA_ORDERING,
+  }
+}
+
+/** The FETCH filter from `start`, through `end` or to the end of the track. */
+export function fetchFilter(start: Location, end: End | undefined): LocationFilter {
+  const { group, object } = start
+  if (!end) return new LocationFilter(LocationFilterType.AbsoluteStart, group, object)
+  if (end.object === undefined)
+    return new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, group, object, end.group)
+  return new LocationFilter(LocationFilterType.AbsoluteRange, group, object, end.group, end.object)
 }
 
 /** Sends a SUBSCRIBE through the hooks: they change the options last and hear the accepted result. */
@@ -127,6 +161,8 @@ export class Delivery {
   /** Where the request being read stops. */
   #stop: End | undefined
   #soft: SoftSwitch | undefined
+  /** An adopted request, until it's read. */
+  #readAhead: ReadAhead | undefined
   /** This source's accepted requests, each with the spans its `orderinggap`s skip, oldest first. */
   readonly #gaps = new Map<bigint, { from: Location; resume: Location }[]>()
   /** The client whose `orderinggap` reports are heard: the one `#gaps`' requests were sent on. */
@@ -217,23 +253,23 @@ export class Delivery {
     const client = this.#context.client
     let request: Promise<RequestError | Accepted>
     if (target.fetch) {
-      const { group, object } = target.start ?? this.#resumeAt(track)
-      const end = target.end
-      const locationFilter = !end
-        ? new LocationFilter(LocationFilterType.AbsoluteStart, group, object)
-        : end.object === undefined
-          ? new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, group, object, end.group)
-          : new LocationFilter(LocationFilterType.AbsoluteRange, group, object, end.group, end.object)
+      const locationFilter = fetchFilter(target.start ?? this.#resumeAt(track), target.end)
       request = sendFetch(client, this.#hooks, track, { ...this.#common(track), locationFilter })
     } else {
       request = sendSubscribe(client, this.#hooks, track, this.subscribeOptions(track, target))
     }
-    this.#hear(request)
+    this.hear(request)
     return request
   }
 
+  /** Takes over `readAhead`, for a `play` with its request: its read starts with the objects already read. */
+  adopt(readAhead: ReadAhead): void {
+    this.#readAhead = readAhead
+    this.hear(Promise.resolve(readAhead.accepted))
+  }
+
   /** Hears the `orderinggap` reports of `request` once it's accepted. */
-  #hear(request: Promise<RequestError | Accepted>): void {
+  hear(request: Promise<RequestError | Accepted>): void {
     const client = this.#context.client
     void request.then(
       (accepted) => {
@@ -277,7 +313,7 @@ export class Delivery {
   /** Expects `track` on the stream being read, after a `SWITCH_FROM` switch; the old track's objects after `end` are dropped. */
   expectSwitch(soft: SoftSwitch | undefined): void {
     this.#soft = soft
-    if (soft) this.#hear(soft.accepted)
+    if (soft) this.hear(soft.accepted)
   }
 
   /**
@@ -356,6 +392,8 @@ export class Delivery {
 
   async #read(track: CatalogTrack, accepted: Accepted, signal: AbortSignal): Promise<Outcome> {
     const reader = accepted.stream.getReader()
+    const ahead = this.#readAhead?.accepted === accepted ? [...this.#readAhead.objects] : []
+    this.#readAhead = undefined
     const stop = () => void reader.cancel().catch(() => {})
     signal.addEventListener('abort', stop, { once: true })
     let endOfTrack = false
@@ -364,7 +402,8 @@ export class Delivery {
     let retired: string | undefined
     try {
       for (;;) {
-        const { done, value } = await reader.read()
+        const next = ahead.shift()
+        const { done, value } = next ? ({ done: false, value: next } as const) : await reader.read()
         // An abort cancels the reader too, which also reads as done
         if (done && !signal.aborted) this.#closed = true
         if (done || signal.aborted) break
@@ -539,14 +578,8 @@ export class Delivery {
     await this.pad.write({ type: 'properties', properties: changed })
   }
 
-  /** What every request of `track` carries; the hooks may change it. */
   #common(track: CatalogTrack) {
-    return {
-      fullTrackName: FullTrackName.tryNew(track.namespace, track.nameBytes),
-      priority: MEDIA_PRIORITY,
-      groupOrder: GroupOrder.Original,
-      ordering: this.#context.player.options.objectOrdering ?? DEFAULT_MEDIA_ORDERING,
-    }
+    return mediaRequest(track.namespace, track.nameBytes, this.#context.player.options.objectOrdering)
   }
 
   /** The init data a request of `track` was accepted with, or `false` when it's invalid. */
@@ -565,7 +598,7 @@ export class Delivery {
   }
 }
 
-function trackPropertiesOf(accepted: Accepted): TrackProperties {
+export function trackPropertiesOf(accepted: Accepted): TrackProperties {
   return 'fetchOk' in accepted ? accepted.fetchOk.trackProperties : accepted.subscribeOk.trackProperties
 }
 

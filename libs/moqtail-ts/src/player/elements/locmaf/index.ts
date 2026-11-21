@@ -35,8 +35,10 @@ export const Locmaf = defineElement({
   capabilities: [cmafCapabilities('out', 'video'), cmafCapabilities('out', 'audio')],
   provides: [MEDIA_SOURCE],
   probe: probeLocmaf,
-  init: async (context, options?: MediaSourceOptions) =>
-    new LocmafSource(context, options ?? {}, await planSource(context, options, 'locmaf')),
+  init: async (context, options: MediaSourceOptions = {}) => {
+    const plan = await planSource(context, options, 'locmaf')
+    return new LocmafSource(context, options, plan)
+  },
 })
 
 /**

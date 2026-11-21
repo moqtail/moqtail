@@ -19,6 +19,8 @@
  * instance exists, and `defineElement`, which checks and returns one.
  */
 
+import type { MoqtObject } from '@/model/data/object'
+import type { TrackProperty } from '@/model/property/track_property'
 import type { ThreadEnvironment } from '@/player/element/worker/player_worker'
 import type { MsfSource } from '@/player/msf_url'
 import type { BaseElement, SinkElement, SourceElement, TransformElement } from './base'
@@ -64,9 +66,15 @@ export type Provided<P extends readonly InterfaceKey[]> = [P[number]] extends [n
 /**
  * @public
  * What identifies a track: `MsfSource` fields from the URI, plus catalog fields (MSF 5.2)
- * once a catalog exists.
+ * once a catalog exists. For a URI no element accepts alone, the player requests the track and
+ * probes again with `isLive` and `trackProperties`, then with each object it reads in `objects`.
  */
-export type Identifiers = Partial<MsfSource> & Partial<CatalogTrack>
+export interface Identifiers extends Partial<MsfSource>, Partial<CatalogTrack> {
+  /** The track properties of the SUBSCRIBE_OK or FETCH_OK. */
+  trackProperties?: TrackProperty[]
+  /** The track's objects read so far, from the start of its first group. */
+  objects?: readonly MoqtObject[]
+}
 
 /** @public Among the probes that accept a track, the lowest priority wins. */
 export const DEFAULT_PRIORITY = 100

@@ -188,6 +188,12 @@ describe('component', () => {
     await until(() => reloaded.state === 'destroyed', 'the old player destroyed')
   })
 
+  test('an empty config.plugins installs no plugins, not the defaults', () => {
+    const el = create({ preload: 'none' }, { plugins: [] })
+    el.src = ch07.uri()
+    expect(el.player?.options.plugins).toEqual([])
+  })
+
   test('SSTS through config.plugins: selectedIndex changes the switching set, without switch(), and -1 is automatic', async () => {
     const el = create({}, { plugins: [ssts(), abr()] })
     el.src = ch07.uri()

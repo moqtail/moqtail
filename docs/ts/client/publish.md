@@ -148,17 +148,15 @@ function write(obj: MoqtObject): void {
 Stop the encoder and close the stream, end the push, then withdraw the track and the namespace:
 
 ```ts
-import { PublishDoneStatusCode } from 'moqtail'
-
 encoder.close()
 controller.close()
-await client.publishDone(published.requestId, PublishDoneStatusCode.TrackEnded)
+await client.publishDone(published.requestId)
 client.removeTrack(track)
 await client.unpublishNamespace(namespace)
 await client.disconnect()
 ```
 
-Closing the stream ends every subscription the client answered for the track, with PUBLISH_DONE and `TRACK_ENDED`. A push needs `publishDone()` too. Give it the status code: without one it reports `INTERNAL_ERROR`. `removeTrack()` only stops the client from answering new requests for the track.
+Closing the stream ends every subscription the client answered for the track, with PUBLISH_DONE and `TRACK_ENDED`. A push needs `publishDone()` too. It reports `TRACK_ENDED` unless you give another status code. `removeTrack()` only stops the client from answering new requests for the track.
 
 ## More information
 

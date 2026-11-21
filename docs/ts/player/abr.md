@@ -137,7 +137,7 @@ video.videoRenditions.selectedIndex = -1
 
 ## Turn ABR off
 
-With `MOQtailPlayer`, leave `abr()` out of `plugins`. On `<moqtail-video>`, set `config.plugins` to a list without it, before `src`. An empty list gets the default plugins, so keep `liveBuffer()` in it:
+With `MOQtailPlayer`, leave `abr()` out of `plugins`. On `<moqtail-video>`, set `config.plugins` to a list without it, before `src`. Keep `liveBuffer()` in it:
 
 ```ts
 import { liveBuffer } from 'moqtail/player'

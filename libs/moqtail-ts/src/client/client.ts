@@ -40,6 +40,7 @@ import {
   ControlMessageType,
   SUPPORTED_VERSIONS,
   PublishDone,
+  PublishDoneStatusCode,
 } from '@/model/control'
 import {
   Datagram,
@@ -855,7 +856,11 @@ export class MOQtailClient extends Emitter<ClientEvents> {
     await Promise.allSettled(openStreams.map((requestStream) => requestStream.close()))
 
     // The session is over, so every subscription still open is too
-    for (const request of this.requests.values()) if (request instanceof SubscribeRequest) request.finish()
+    for (const request of this.requests.values()) {
+      if (!(request instanceof SubscribeRequest)) continue
+      ;(request.manager ?? request).objects.close()
+      request.finish()
+    }
 
     // close() does nothing on a session that is already closed or failed. A failed init()
     // may not have got as far as creating one.
@@ -1110,6 +1115,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
     } finally {
       for (const target of targets) this.#forgetSubscription(target)
       owner?.clear()
+      ;(owner ?? subscription).objects.close()
     }
   }
 
@@ -1613,7 +1619,11 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    * Signals the end of a published track to the peer/relay.
    * * @param publishRequestId - The original requestId used when `publish()` was called.
    */
-  async publishDone(publishRequestId: bigint | number, statusCode: number = 0, reasonPhrase: string = 'Track Ended') {
+  async publishDone(
+    publishRequestId: bigint | number,
+    statusCode: number = PublishDoneStatusCode.TrackEnded,
+    reasonPhrase: string = 'Track Ended',
+  ) {
     this.#ensureActive()
     try {
       if (typeof publishRequestId === 'number') publishRequestId = BigInt(publishRequestId)
@@ -2475,7 +2485,7 @@ if (import.meta.vitest) {
     await import('@/model/parameter/message/range_filter')
   const { DEFAULT_MAX_FILTER_RANGES } = await import('./types')
   const { MaxCacheDurationProperty, ObjectDeliveryTimeoutProperty } = await import('@/model/property/track_property')
-  const { PublishDoneStatusCode, PublishSkipped } = await import('@/model/control')
+  const { PublishSkipped } = await import('@/model/control')
   const { EndOfRangeKind } = await import('@/model/data')
   type FetchObjectContext = import('@/model/data/fetch_object').FetchObjectContext
   type PublishSkipped = import('@/model/control').PublishSkipped
@@ -3736,6 +3746,7 @@ if (import.meta.vitest) {
 
       await client.unsubscribe((subscribed as SubscribeResult).requestId)
       expect(await (subscribed as SubscribeResult).done).toBeUndefined()
+      expect((await (subscribed as SubscribeResult).stream.getReader().read()).done).toBe(true)
 
       // §3.3.2: UNSUBSCRIBE is gone. Nothing follows the SUBSCRIBE on the wire — the
       // publisher learns the subscription ended from the reset code.
@@ -3744,6 +3755,23 @@ if (import.meta.vitest) {
       expect(streamResetCodeOf(subscribeStream.cancelReason)).toBe(StreamResetCode.Cancelled)
 
       await client.disconnect()
+    })
+
+    it('ends a subscription stream when the session disconnects', async () => {
+      const { client, transport } = await connected()
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      ;(await openedStream(transport, 0)).respond(SubscribeOk.create(7n, [], []))
+      const subscribed = (await subscribing) as SubscribeResult
+
+      await client.disconnect()
+      expect((await subscribed.stream.getReader().read()).done).toBe(true)
     })
 
     it('cancels a fetch by resetting the FETCH stream with CANCELLED', async () => {

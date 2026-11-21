@@ -73,7 +73,7 @@ The element reads `config` when it loads a source, so set it before `src`, or ca
 
 ### Choose the plugins
 
-When `config.plugins` is unset or empty, the element installs two plugins: `liveBuffer()`, which holds the live latency, and `abr()`, which switches renditions. A list with plugins replaces both, so list the ones you want to keep:
+When `config.plugins` is unset, the element installs two plugins: `liveBuffer()`, which holds the live latency, and `abr()`, which switches renditions. A list replaces both, so list the ones you want to keep:
 
 ```ts
 import { abr, liveBuffer } from 'moqtail/player'
@@ -87,7 +87,7 @@ video.src = 'moqt://relay.moqtail.dev#msf:moqtail-ch07--catalog'
 document.body.append(video)
 ```
 
-To play without ABR, list `liveBuffer()` alone. An empty list gets the two defaults.
+To play without ABR, list `liveBuffer()` alone. An empty list plays with no plugins.
 
 ## Pick a rendition
 

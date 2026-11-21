@@ -63,7 +63,7 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
 
   /**
    * Player options, read on each load. Without plugins, `liveBuffer()` and `abr()` are the ones; a
-   * list is taken as written, so one without them plays without a buffer or ABR controller.
+   * list, even an empty one, is taken as written, so one without them plays without a buffer or ABR controller.
    * Changing it doesn't restart playback.
    */
   get config(): MOQtailPlayerOptions | undefined {
@@ -176,10 +176,10 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     await player.play()
   }
 
-  /** `config`, with `liveBuffer()` and `abr()` as the plugins when it lists none. */
+  /** `config`, with `liveBuffer()` and `abr()` as the plugins when it sets none. */
   #playerOptions(): MOQtailPlayerOptions {
     const config = this.#config ?? {}
-    if (config.plugins && config.plugins.length > 0) return config
+    if (config.plugins) return config
     return { ...config, plugins: [liveBuffer(), abr()] }
   }
 

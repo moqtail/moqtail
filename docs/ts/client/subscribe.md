@@ -48,7 +48,7 @@ The options:
 | Option               | What it does                                                                                                               |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `fullTrackName`      | The track.                                                                                                                 |
-| `priority`           | An integer from 0, the highest, to 255, the lowest.                                                                        |
+| `priority`           | An integer from 0, the highest, to 255, the lowest. Other values are rounded and clamped.                                  |
 | `groupOrder`         | `Original` keeps the publisher's order, `Ascending` and `Descending` ask for one.                                          |
 | `locationFilter`     | Which objects to deliver: see [Choose where to start](#choose-where-to-start). Without it, the subscription is unfiltered. |
 | `forward`            | `false` sets up the subscription without delivering objects yet. Left out, objects are delivered.                          |

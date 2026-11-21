@@ -29,7 +29,12 @@ import { Parameter } from '../parameter'
 export class SubscriberPriority implements Parameter {
   static readonly TYPE = MessageParameterType.SubscriberPriority
 
-  constructor(public readonly priority: number) {}
+  readonly priority: number
+
+  /** Rounds `priority` and clamps it to 0-255. */
+  constructor(priority: number) {
+    this.priority = Math.min(255, Math.max(0, Math.round(priority)))
+  }
 
   toKeyValuePair(): KeyValuePair {
     return KeyValuePair.tryNewVarInt(SubscriberPriority.TYPE, BigInt(this.priority))
@@ -60,6 +65,11 @@ if (import.meta.vitest) {
     test('accepts boundary values 0 and 255', () => {
       expect(SubscriberPriority.fromKeyValuePair(new SubscriberPriority(0).toKeyValuePair())?.priority).toBe(0)
       expect(SubscriberPriority.fromKeyValuePair(new SubscriberPriority(255).toKeyValuePair())?.priority).toBe(255)
+    })
+    test('rounds and clamps the priority it is given', () => {
+      expect(new SubscriberPriority(1.6).priority).toBe(2)
+      expect(new SubscriberPriority(-3).priority).toBe(0)
+      expect(new SubscriberPriority(300).priority).toBe(255)
     })
     test('fromKeyValuePair throws on value > 255', () => {
       const pair = KeyValuePair.tryNewVarInt(MessageParameterType.SubscriberPriority, 256n)

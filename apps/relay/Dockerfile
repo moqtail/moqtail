@@ -28,7 +28,8 @@ COPY libs ./libs
 COPY .git ./.git
 
 RUN cargo build -p relay --release \
-    && mkdir -p /workspace/rootfs/certs /workspace/rootfs/tmp
+    && mkdir -p /workspace/rootfs/certs /workspace/rootfs/tmp \
+    && chmod 1777 /workspace/rootfs/tmp
 
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 

@@ -314,8 +314,6 @@ async fn health() -> Json<serde_json::Value> {
   Json(json!({ "status": "ok" }))
 }
 
-/// Readiness: whether the relay takes new sessions. Load balancers stop sending
-/// clients while this is 503.
 /// `api.meta` from the relay's configuration, as written: whatever the operator
 /// wants apps to know, such as the relay's public host name.
 async fn meta(
@@ -324,6 +322,8 @@ async fn meta(
   Json(state.config.meta.clone())
 }
 
+/// Readiness: whether the relay takes new sessions. Load balancers stop sending
+/// clients while this is 503.
 async fn ready(State(state): State<Arc<ApiState>>) -> Response {
   let status = state.inspect.status();
   let reason = if status.draining {

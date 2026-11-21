@@ -8,9 +8,11 @@
 bind: '[::]:4433'
 cert_file: apps/relay/cert/cert.pem
 key_file: apps/relay/cert/key.pem
+# Folder for the object logs (enable_object_logging) and cache_eviction.log, which is always written.
 log_folder: /tmp
 
 # QUIC
+# A connection silent for max_idle_timeout is closed; keep-alives keep it open.
 max_idle_timeout: 7s
 keep_alive_interval: 3s
 # UDP sockets sharing the port via SO_REUSEPORT (Linux only).
@@ -21,14 +23,16 @@ socket_buffer_kib: 8192
 max_request_streams: 10000
 
 # Cache
-# Cached subgroups/fetches per track.
+# Groups cached per track.
 cache_size: 1000
-# ttl or tti
+# ttl drops an entry cache_expiration after it was cached; tti after it was last used.
 cache_expiration_type: ttl
 cache_expiration: 30m
 
 # Logging
+# Object logs in log_folder: track_<alias>.log, sub_<alias>_<connection>.log and one per FETCH.
 enable_object_logging: false
+# AUTHORIZATION_TOKEN registrations from SETUP, appended to token_log_path as CSV.
 enable_token_logging: false
 token_log_path: /tmp/tokens.csv
 # qlog traces of control messages, one .sqlog file per connection (unset = off)
@@ -57,12 +61,18 @@ track_alias_mode: per-subscription
 # redirect_uri: moqt://other-relay.example:4433
 
 # Upstream and timing
+# Cache gaps one FETCH may fill from upstream; later gaps are sent as missing.
 max_upstream_fetch_gaps: 10
 upstream_fetch_timeout: 10s
+# How long a publisher has to answer the relay's SUBSCRIBE before it counts as declined.
 upstream_subscribe_timeout: 10s
+# How long a data stream waits for the message that sets its track alias.
 track_alias_resolution_timeout: 2s
+# How long objects queue for a subscriber whose track alias is not sent yet.
 downstream_alias_timeout: 3s
+# How long PUBLISH_DONE waits for the data streams still in flight.
 publish_done_stream_timeout: 2s
+# PUBLISH_DONE on a datagram track waits until no datagram arrived for this long.
 publish_done_datagram_quiet: 100ms
 # Longest a SUBSCRIBE waits for a publisher; 0s never waits.
 max_rendezvous_timeout: 10s
@@ -76,6 +86,7 @@ max_filter_ranges: 32
 ssts_enable: false
 # Algorithm ids to run and advertise; decimal or 0x hex.
 ssts_algorithms: [0]
+# How long an SSTS subscriber's subgroup stream may take to finish before it is reset; 0s never resets.
 ssts_discard_timeout: 1600ms
 
 # Relay mesh; off unless hop_id is set. peers needs hop_id.
@@ -84,6 +95,7 @@ ssts_discard_timeout: 1600ms
 # relay_cost: 1
 # Relays to dial over raw QUIC; announcements flow both ways over each link.
 peers: []
+# Skip certificate checks when dialing peers (self-signed development certificates).
 peer_no_cert_validation: false
 
 # HTTP API under /api/v1 for observing and operating the relay, and the
@@ -97,8 +109,8 @@ api:
   # features: [health, state, metrics, latency, qlog]
   # Client ranges allowed when bind is a network address; unset means loopback
   # only. Ignored on a loopback bind, where only local programs can connect.
-  # allow: [127.0.0.1/32, ::1/128, 10.0.0.0/8]
-  # Bearer token for reads (health and ready never need it), and for writes.
+  # allow: [127.0.0.1/32, '::1/128', 10.0.0.0/8]
+  # Bearer token for reads (health, ready and meta never need it), and for writes.
   # read_token: ""
   # write_token: ""
   # Browser origins allowed to call the API, such as the dashboard's.

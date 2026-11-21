@@ -1,0 +1,81 @@
+name: Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/**
+      - .github/workflows/docs.yml
+      # Dependency bumps, the generated API reference and the embedded relay config.
+      - package.json
+      - package-lock.json
+      - libs/moqtail-ts/src/**
+      - libs/moqtail-ts/typedoc*
+      - apps/relay/relay.example.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: 'docs-page'
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: ${{ github.repository_owner == 'moqtail' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history, so each page's "last updated" date comes from its own commit.
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          cache: npm
+          node-version: lts/*
+
+      - run: npm clean-install
+      - run: npm audit signatures
+
+      - name: Build docs
+        run: npm run docs:build
+        env:
+          VITE_POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+          VITE_POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  check:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: lts/*
+
+      # Fails when llms.txt or a page it lists stops serving.
+      - name: Check llms.txt
+        run: npx --yes llms-txt-check@0.1.5 https://docs.moqtail.dev

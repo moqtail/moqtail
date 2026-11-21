@@ -30,7 +30,7 @@ api:
   features: [health, state, metrics, latency]
   metrics_bind: 0.0.0.0:4481
   metrics_token: '<a long random string>'
-  allow: [127.0.0.1/32, ::1/128, 10.0.0.0/8] # the networks Prometheus scrapes from
+  allow: [127.0.0.1/32, '::1/128', 10.0.0.0/8] # the networks Prometheus scrapes from
 ```
 
 ```yaml

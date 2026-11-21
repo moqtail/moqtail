@@ -1,4 +1,6 @@
 {
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "API reference",
   "entryPointStrategy": "resolve",
   "entryPoints": [
     "src/client/index.ts",
@@ -8,5 +10,22 @@
     "src/player/worker/index.ts",
     "src/util/index.ts"
   ],
-  "outputs": [{ "name": "html", "path": "docs" }]
+  "plugin": ["typedoc-plugin-markdown", "typedoc-vitepress-theme", "./typedoc-public.mjs"],
+  "out": "../../docs/ts/api",
+  "docsRoot": "../../docs",
+  "sidebar": {
+    "collapsed": true
+  },
+  "readme": "none",
+  "disableSources": true,
+  "hideBreadcrumbs": true,
+  "hidePageHeader": true,
+  "excludeExternals": true,
+  "intentionallyNotExported": [
+    "src/player/elements/catalog/types.ts:CatalogSchema",
+    "src/player/element/define.ts:UnionToIntersection",
+    "src/player/elements/mse/sink.ts:MSESink",
+    "src/player/elements/playout/sink.ts:PlayoutSink",
+    "src/player/plugins/abr/policy.ts:Policy"
+  ]
 }

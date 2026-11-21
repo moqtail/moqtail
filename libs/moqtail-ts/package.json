@@ -82,6 +82,8 @@
     "tsdown": "^0.23.7",
     "tslib": "^2.9.1",
     "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.14.1",
+    "typedoc-vitepress-theme": "^1.1.4",
     "typescript": "^6.0.3",
     "vitest": "^5.1.0"
   },

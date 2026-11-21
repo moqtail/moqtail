@@ -167,7 +167,7 @@ pub struct ListArgs {
   limit: Option<u64>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   offset: Option<u64>,
-  /// Only entries whose namespace starts with this, such as live/room1.
+  /// Only entries whose namespace starts with this, such as live-room1.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   prefix: Option<String>,
 }

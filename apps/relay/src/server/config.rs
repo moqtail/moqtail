@@ -107,7 +107,7 @@ pub struct AppConfig {
   #[default(Duration::from_secs(3))]
   #[serde(with = "humantime_serde")]
   pub keep_alive_interval: Duration,
-  /// Number of cached subgroups/fetches per track
+  /// Number of groups cached per track
   #[default(1000)]
   pub cache_size: u16,
   /// Folder for the optional object and cache-eviction logs
@@ -328,16 +328,6 @@ impl AppConfig {
     self
   }
 
-  /// Builds the relay's QUIC listeners. WebTransport and raw-QUIC clients share the
-  /// same port: the TLS config offers ALPN for both `h3` (WebTransport, added by
-  /// `build_default_tls_config`) and the MOQT versions (raw QUIC), and the accept
-  /// loops in `Server::start` demultiplex by the negotiated protocol before handing
-  /// the connection to either path.
-  ///
-  /// `io_sockets` decides how many are returned. They share one server config and
-  /// differ only in owning separate UDP sockets, which is the point: a socket's I/O
-  /// readiness state is behind a single lock, so every connection driver on one
-  /// socket contends with every other for it.
   /// The QUIC transport settings every connection uses.
   pub fn transport_config(&self) -> Result<TransportConfig> {
     // set up BBR congestion control
@@ -351,8 +341,19 @@ impl AppConfig {
     Ok(transport_config)
   }
 
-  /// The endpoints, and the server config they share, for connections accepted
-  /// with settings of their own.
+  /// Builds the relay's QUIC listeners. WebTransport and raw-QUIC clients share the
+  /// same port: the TLS config offers ALPN for both `h3` (WebTransport, added by
+  /// `server_tls_config`) and the MOQT versions (raw QUIC), and the accept
+  /// loops in `Server::start` demultiplex by the negotiated protocol before handing
+  /// the connection to either path.
+  ///
+  /// `io_sockets` decides how many are returned. They share one server config and
+  /// differ only in owning separate UDP sockets, which is the point: a socket's I/O
+  /// readiness state is behind a single lock, so every connection driver on one
+  /// socket contends with every other for it.
+  ///
+  /// The shared server config is returned too, for connections accepted with
+  /// settings of their own.
   pub async fn build_quic_endpoints(&self) -> Result<(Vec<quinn::Endpoint>, quinn::ServerConfig)> {
     let identity = match Identity::load_pemfiles(&self.cert_file, &self.key_file).await {
       Ok(identity) => identity,
@@ -432,13 +433,6 @@ impl AppConfig {
   }
 }
 
-/// Binds a UDP socket on `addr`. An IPv6 address gets dual-stack explicitly enabled,
-/// matching `wtransport`'s own `with_bind_default()` (`IpBindConfig::InAddrAnyDual`)
-/// semantics: `quinn::Endpoint::server`'s plain `UdpSocket::bind` leaves dual-stack to
-/// the OS default, which isn't guaranteed across platforms.
-///
-/// `reuse_port` lets several sockets share the port, which is how the relay listens on
-/// more than one; the kernel then hashes each connection onto one of them.
 /// TLS 1.3 with `h3` ALPN, like wtransport's default, but on aws-lc-rs: ring has no
 /// X25519MLKEM768, so a client offering only that key share (picoquic's default) would
 /// get a HelloRetryRequest instead of a handshake.
@@ -461,6 +455,13 @@ fn server_tls_config(identity: &Identity) -> Result<rustls::ServerConfig> {
   Ok(tls_config)
 }
 
+/// Binds a UDP socket on `addr`. An IPv6 address gets dual-stack explicitly enabled,
+/// matching `wtransport`'s own `with_bind_default()` (`IpBindConfig::InAddrAnyDual`)
+/// semantics: `quinn::Endpoint::server`'s plain `UdpSocket::bind` leaves dual-stack to
+/// the OS default, which isn't guaranteed across platforms.
+///
+/// `reuse_port` lets several sockets share the port, which is how the relay listens on
+/// more than one; the kernel then hashes each connection onto one of them.
 fn bind_udp_socket(addr: SocketAddr, reuse_port: bool, buffer_bytes: usize) -> Result<UdpSocket> {
   let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, None)?;
   if addr.is_ipv6() {

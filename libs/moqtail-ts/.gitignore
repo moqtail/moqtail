@@ -3,7 +3,6 @@
 
 # build output
 /dist/
-/docs/
 
 # TypeScript incremental build info
 /tsconfig.tsbuildinfo

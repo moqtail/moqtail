@@ -153,7 +153,7 @@ import { Emitter } from '@/util/emitter'
  * ```ts
  * const client = new MOQtailClient({ url });
  * await client.init();
- * const publishNamespaceResult = await client.publishNamespace(["camera", "main"]);
+ * const publishNamespaceResult = await client.publishNamespace(Tuple.fromUtf8Path('camera/main'));
  * if (!(publishNamespaceResult instanceof RequestError)) {
  *   // Ready to publish objects under this namespace
  * }
@@ -420,7 +420,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    *
    * @example
    * ```ts
-   * const client = new MOQtailClient({ url: 'https://relay.example.com/transport' })
+   * const client = new MOQtailClient({ url: 'moqt://relay.moqtail.dev' })
    * client.on('messagesent', (msg) => console.log('Sent:', msg))
    * await client.init()
    * ```
@@ -886,17 +886,16 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    *
    * // Register the track for live subscription
    * client.addOrUpdateTrack({
-   *   fullTrackName: { namespace: ["camera"], name: "main" },
-   *   trackSource: { live: liveReadableStream },
+   *   fullTrackName: FullTrackName.tryNew('camera', 'main'),
+   *   trackSource: { live: new LiveTrackSource(liveReadableStream) },
    *   publisherPriority: 0 // highest priority
    * });
    *
-   * // For a hybrid track (live + past):
-   * import { MemoryObjectCache } from '@/client/track/object_cache';
-   * const cache = new MemoryObjectCache(); // Caches are not yet fully supported
+   * // For a hybrid track (live + past), add each object to the cache as you write it:
+   * const cache = new RingBufferObjectCache(300);
    * client.addOrUpdateTrack({
-   *   fullTrackName: { namespace: ["camera"], name: "main" },
-   *   trackSource: { live: liveReadableStream, past: cache },
+   *   fullTrackName: FullTrackName.tryNew('camera', 'main'),
+   *   trackSource: new HybridTrackSource(cache, liveReadableStream),
    *   publisherPriority: 8
    * });
    * ```
@@ -1410,17 +1409,12 @@ export class MOQtailClient extends Emitter<ClientEvents> {
   }
 
   /**
-   * One-shot retrieval of a bounded object span, optionally anchored to an existing subscription, returning a stream of {@link MoqtObject}s.
-   *
-   * Choose a fetch type via `typeAndProps.type`:
-   * - Standalone: Historical slice of a specific {@link FullTrackName} independent of active subscriptions.
-   * - Relative: Range relative to the JOINING subscription's current (largest) location; use when you want "N groups back" from live.
-   * - Absolute: Absolute group/object offsets tied to an existing subscription (stable anchor) even if that subscription keeps forwarding.
+   * One-shot retrieval of a bounded object span of a track, returning a stream of {@link MoqtObject}s.
    *
    * Field highlights (in {@link FetchOptions}):
-   * - priority: 0 (highest) .. 255 (lowest); out-of-range rejected; non-integers rounded by caller expectation.
+   * - priority: 0 (highest) .. 255 (lowest); out-of-range rejected.
    * - groupOrder: `GroupOrder.Original` to preserve publisher order; or reorder ascending/descending if supported by server.
-   * - typeAndProps: Discriminated union carrying parameters specific to each fetch mode (see examples).
+   * - locationFilter: Which Objects to fetch. An absolute filter names groups; a relative one counts back from the Largest Object.
    * - parameters: Optional version-specific extension block.
    *
    * Returns either a {@link RequestError} (refusal / invalid request at protocol level) or `{ requestId, fetchOk, stream }` whose `stream`
@@ -1432,13 +1426,12 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    * - Analytics batch job pulling a fixed slice without subscribing long-term.
    *
    * @throws MOQtailError If client is destroyed.
-   * @throws ProtocolViolationError Priority out of [0-255] or missing/invalid joining subscription id for Relative/Absolute.
+   * @throws ProtocolViolationError Priority out of [0-255].
    * @throws InternalError Transport/control failure (the client disconnects first) then rethrows original error.
    *
    * @remarks
-   * - Relative / Absolute require an existing active SUBSCRIBE `joiningRequestId`; if not found a {@link ProtocolViolationError} is thrown.
    * - Result stream is finite; reader close occurs automatically when last object delivered.
-   * - Use {@link MOQtailClient.fetchCancel} only for early termination (not yet fully implemented: see TODO in code).
+   * - Use {@link MOQtailClient.fetchCancel} only for early termination; objects already in flight may still arrive.
    *
    * @example Groups 10 through 12, inclusive
    * ```ts
@@ -1449,7 +1442,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 10n, 0n, 12n)
    * })
    * if (!(r instanceof RequestError)) {
-   *   for await (const obj of r.stream as any) {
+   *   for await (const obj of r.stream) {
    *     // consume objects then stream ends automatically
    *   }
    * }
@@ -1702,8 +1695,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    * 3. Later, call {@link MOQtailClient.unpublishNamespace} when no longer publishing under that namespace.
    *
    * Parameter semantics:
-   * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
-   * - parameters: Optional `MessageParameters`; omitted =\> default instance.
+   * - trackNamespace: Tuple representing the namespace prefix (e.g. `Tuple.fromUtf8Path('camera/main')`). All tracks whose full names start with this tuple are considered within the announce scope.
+   * - parameters: Optional `MessageParameter[]` appended to the PUBLISH_NAMESPACE message.
    *
    * Returns: {@link RequestOk} on success (namespace added to `publishedNamespaces`) or {@link RequestError} explaining refusal.
    *
@@ -1722,16 +1715,16 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    *
    * @example Minimal announce
    * ```ts
-   * const res = await client.publishNamespace(["camera","main"])
+   * const res = await client.publishNamespace(Tuple.fromUtf8Path('camera/main'))
    * if (res instanceof RequestOk) {
    *   // ready to publish objects under tracks with this namespace prefix
    * }
    * ```
    *
-   * @example PublishNamespace with parameters block
+   * @example PublishNamespace with an authorization token
    * ```ts
-   * const params = new MessageParameters().setSomeExtensionFlag(true)
-   * const resp = await client.publishNamespace(["room","1234"], params)
+   * const token = AuthorizationToken.newUseValue(tokenType, tokenValue)
+   * const resp = await client.publishNamespace(Tuple.fromUtf8Path('room/1234'), [token])
    * ```
    */
   async publishNamespace(trackNamespace: Tuple, parameters?: MessageParameter[]) {
@@ -1787,13 +1780,13 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    *
    * @example Basic usage
    * ```ts
-   * await client.unpublishNamespace(["camera","main"])
+   * await client.unpublishNamespace(namespace)
    * ```
    *
    * @example Idempotent
    * ```ts
-   * await client.unpublishNamespace(["camera","main"]) // first time
-   * await client.unpublishNamespace(["camera","main"]) // no error, already removed
+   * await client.unpublishNamespace(namespace) // first time
+   * await client.unpublishNamespace(namespace) // no error, already removed
    * ```
    */
   async unpublishNamespace(trackNamespace: Tuple) {

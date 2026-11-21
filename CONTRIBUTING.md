@@ -10,6 +10,7 @@ MOQtail is a monorepo with Rust and TypeScript libraries and applications:
 - `libs/moqtail-rs/`: Rust MoQ protocol library
 - `libs/moqtail-ssts/`: Rust sender-side track switching library
 - `apps/`: Applications (`relay`, `client` in Rust; `client-js`, `meet` in TypeScript)
+- `docs/`: Documentation site (VitePress), preview with `npm run docs:dev`
 - `dev/conformance/`: Protocol conformance data (draft-22)
 - `scripts/`: Project automation, conformance and performance test scripts
 

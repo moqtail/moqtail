@@ -28,7 +28,7 @@ import { TrackProperty } from '../../model/property/track_property'
  * const liveStream: ReadableStream<MoqtObject> = buildCameraStream()
  * const track: Track = {
  *   fullTrackName,
- *   trackSource: { live: liveStream },
+ *   trackSource: { live: new LiveTrackSource(liveStream) },
  *   publisherPriority: 0
  * }
  * client.addOrUpdateTrack(track)
@@ -40,7 +40,7 @@ import { TrackProperty } from '../../model/property/track_property'
  * recording.forEach(obj => cache.add(obj))
  * const track: Track = {
  *   fullTrackName,
- *   trackSource: { past: cache },
+ *   trackSource: { past: new StaticTrackSource(cache) },
  *   publisherPriority: 64
  * }
  * client.addOrUpdateTrack(track)
@@ -52,7 +52,7 @@ import { TrackProperty } from '../../model/property/track_property'
  * const liveStream = buildLiveReadableStream()
  * const track: Track = {
  *   fullTrackName,
- *   trackSource: { past: cache, live: liveStream },
+ *   trackSource: new HybridTrackSource(cache, liveStream),
  *   publisherPriority: 8
  * }
  * client.addOrUpdateTrack(track)

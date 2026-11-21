@@ -1,0 +1,68 @@
+/* Tokens copied from moqtail.dev; brand-1 is darkened (light) or lightened (dark) to keep link text readable. */
+
+:root {
+  --vp-font-family-base: 'Source Sans 3 Variable', ui-sans-serif, system-ui, sans-serif;
+  --vp-font-family-mono: 'Geist Mono Variable', ui-monospace, monospace;
+
+  --vp-c-bg: hsl(210 20% 98%);
+  --vp-c-bg-alt: hsl(210 20% 96%);
+  --vp-c-bg-elv: hsl(210 20% 98%);
+  --vp-c-bg-soft: hsl(210 40% 96%);
+  --vp-c-divider: hsl(214.3 31.8% 91.4%);
+  --vp-c-text-1: hsl(222.2 84% 4.9%);
+  --vp-c-text-2: hsl(215.4 16.3% 46.9%);
+
+  --vp-c-brand-1: hsl(210 33% 40%);
+  --vp-c-brand-2: hsl(210 33% 50%);
+  --vp-c-brand-3: hsl(210 33% 60%);
+  --vp-c-brand-soft: hsl(210 33% 60% / 0.14);
+
+  --vp-button-brand-text: hsl(210 13% 10%);
+  --vp-button-brand-hover-text: hsl(210 13% 10%);
+  --vp-button-brand-active-text: hsl(210 13% 10%);
+  --vp-button-brand-hover-bg: hsl(210 33% 60% / 0.9);
+  --vp-button-brand-active-bg: hsl(210 33% 60% / 0.9);
+
+  --vp-nav-height: 3rem;
+  --vp-nav-bg-color: hsl(210 20% 98% / 0.6);
+  --vp-nav-backdrop-filter: blur(8px);
+
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, hsl(270 100% 63%) 50%, hsl(195 100% 63%) 50%);
+  --vp-home-hero-image-filter: blur(44px);
+}
+
+@media (min-width: 640px) {
+  :root {
+    --vp-home-hero-image-filter: blur(56px);
+  }
+}
+
+@media (min-width: 960px) {
+  :root {
+    --vp-home-hero-image-filter: blur(68px);
+  }
+}
+
+.dark {
+  --vp-c-bg: hsl(225 15% 6%);
+  --vp-c-bg-alt: hsl(225 15% 10%);
+  --vp-c-bg-elv: hsl(225 15% 10%);
+  --vp-c-bg-soft: hsl(225 10% 12%);
+  --vp-c-divider: hsl(225 10% 18%);
+  --vp-c-text-1: hsl(210 40% 98%);
+  --vp-c-text-2: hsl(225 10% 70%);
+
+  --vp-c-brand-1: hsl(210 33% 65%);
+  --vp-c-brand-2: hsl(210 33% 59%);
+  --vp-c-brand-3: hsl(210 33% 53%);
+  --vp-c-brand-soft: hsl(210 33% 53% / 0.16);
+
+  --vp-button-brand-hover-bg: hsl(210 33% 53% / 0.9);
+  --vp-button-brand-active-bg: hsl(210 33% 53% / 0.9);
+
+  --vp-nav-bg-color: hsl(225 15% 6% / 0.6);
+}
+
+.VPFeature .icon {
+  color: var(--vp-c-brand-1);
+}

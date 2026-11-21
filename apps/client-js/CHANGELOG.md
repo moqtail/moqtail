@@ -1,5 +1,11 @@
 # client-js
 
+## 0.2.4
+
+### Patch Changes
+
+- [#506](https://github.com/moqtail/moqtail/pull/506) [`3a43083`](https://github.com/moqtail/moqtail/commit/3a43083a7f10063612e8374358684d785b580791) Thanks [@DenizUgur](https://github.com/DenizUgur)! - add canvas rendering option to support LOC until it is integrated in the web component
+
 ## 0.2.3
 
 ### Patch Changes

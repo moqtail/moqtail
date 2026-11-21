@@ -1,5 +1,41 @@
 # moqtail-ts
 
+## 0.18.0
+
+### Minor Changes
+
+- [#498](https://github.com/moqtail/moqtail/pull/498) [`587a808`](https://github.com/moqtail/moqtail/commit/587a8088c48a3c4d2af419c32f02ce639beebf75) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Add the CODEC_STRING (0x11) LOC property from draft-ietf-moq-loc-05, and `Timestamp.toMicros()`, which applies the draft's Timescale rule (µs since the Unix epoch when no Timescale is present).
+
+- [`65261cb`](https://github.com/moqtail/moqtail/commit/65261cbec2ae56677fc1a05d74fbcba1c10100ea) Thanks [@DenizUgur](https://github.com/DenizUgur)! - `liveBuffer()` takes `tolerance`, `stallThreshold`, `minRate`, `jumpFactor` and `jumpTolerance` alongside `catchupRate` and `targetLatency`, so every value the controller tunes with is configurable. The defaults are unchanged.
+
+  The playout sink takes a `preroll` option, `player.sink(canvas, { preroll })`: the media seconds it queues before playback starts or restarts after a stall (default 0.5). Lower it together with `stallThreshold` to hold a forward buffer under 0.5 s.
+
+- [#499](https://github.com/moqtail/moqtail/pull/499) [`0910636`](https://github.com/moqtail/moqtail/commit/091063621ebbc4d897d16eec7765b72556e0b772) Thanks [@DenizUgur](https://github.com/DenizUgur)! - A built-in `loc` source reads LOC switching sets (draft-ietf-moq-loc-05). Its pads carry `loc` packets, with the WebCodecs decoder config (`decoderConfig`), the init data and the track's Timescale (`timescale`) as pad properties.
+
+- [#502](https://github.com/moqtail/moqtail/pull/502) [`fd2f2e5`](https://github.com/moqtail/moqtail/commit/fd2f2e563b4761bd7727a23a1e05342b300fbfd0) Thanks [@DenizUgur](https://github.com/DenizUgur)! - The chain loads the transforms a pad needs to reach a sink, after the declared elements and in the fewest steps, so LOC catalogs play with `player.sink(canvas)`. The catalog keeps only the switching sets a declared sink can reach, and an element definition's optional `supports(track)` drops renditions it can't handle: `mse` and `webcodecs` ask the browser. Element contexts gain `cost(track)`.
+
+  Breaking: `player.transform()` takes a transform element definition and its options, like `sink()`, instead of an instance. The package is pre-1.0, so there is no compatibility overload.
+
+- [#497](https://github.com/moqtail/moqtail/pull/497) [`d5ca91f`](https://github.com/moqtail/moqtail/commit/d5ca91f4c722e59e505ca8a5f1fe649191e4f69b) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Pads carry a `Packet` (the track's rendition id, location, object properties and payload) instead of a `MoqtObject`: custom elements read `item.packet` in `receive()` and write `{ type: 'packet', packet }`.
+
+- [#501](https://github.com/moqtail/moqtail/pull/501) [`5b2a82a`](https://github.com/moqtail/moqtail/commit/5b2a82a518bd551ca3392397f7f1826da827b4de) Thanks [@DenizUgur](https://github.com/DenizUgur)! - A `playout` sink, through `player.sink(canvas)`, plays `raw` audio through an AudioWorklet and draws `raw` video on a canvas in sync with it. It keeps three decoded frames, and its `buffered` counts what the decoder holds encoded, so `liveBuffer()` holds the configured buffer through its playback rate, on WebKit too, and its forward seeks. It dispatches `waiting` when video or audio arrives later than its frame rate or sample rate allows, and `playing` once it's back. It refuses non-live streams, and a seek back throws.
+
+- [`c87a3a3`](https://github.com/moqtail/moqtail/commit/c87a3a3a965aeab22241e838510134d539efd433) Thanks [@DenizUgur](https://github.com/DenizUgur)! - `MediaSinkElement` has a `preciseRate` flag: whether `setPlaybackRate()` keeps the clock running. `liveBuffer()` holds latency with jumps only on a sink without one, which the `mse` sink is on WebKit. A custom media sink sets it.
+
+- [#500](https://github.com/moqtail/moqtail/pull/500) [`963a45d`](https://github.com/moqtail/moqtail/commit/963a45da15aa27f92c33285b7da16070b2295581) Thanks [@DenizUgur](https://github.com/DenizUgur)! - A built-in `webcodecs` transform decodes a `loc` pad into a `raw` pad of `VideoFrame`s or `AudioData`, one pad per instance. Pads carry these as `{ type: 'frame', frame }` items: a `Frame` has the `track`, `location` and `properties` of the object it was decoded from, and the receiver closes its `payload`. It decodes only once the consumer took the frame before: a frame's write resolves once it's taken, so packets wait encoded in the transform rather than as frames pinning decoder buffers. It sends the seconds it holds downstream as a `{ type: 'held', seconds }` pad signal whenever they change, and holds the source back past 10 s.
+
+- [#504](https://github.com/moqtail/moqtail/pull/504) [`f8ba3c5`](https://github.com/moqtail/moqtail/commit/f8ba3c511715cc6522151a75c947d6a1f070ca34) Thanks [@DenizUgur](https://github.com/DenizUgur)! - The player runs `webcodecs` decoding and `playout` canvas rendering in a worker of its own where the browser allows it, linking them inside the worker so decoded frames stay off the main thread. `preferWorker: false` keeps them on the main thread. `serveWorker` from `moqtail/player/worker`, with the `worker` player option, runs your own elements' engines in that worker: an element's `threads` probe gives it `context.worker`. `ElementContext.fail` reports an element's fatal error from outside `receive()`.
+
+### Patch Changes
+
+- [`51e404e`](https://github.com/moqtail/moqtail/commit/51e404e3f3c519c90b8bbd10b1c8a7d13e9b190c) Thanks [@DenizUgur](https://github.com/DenizUgur)! - `publishDone()` reports `TRACK_ENDED` when no status code is given, matching its default reason phrase. It reported `INTERNAL_ERROR`.
+
+- [`51e404e`](https://github.com/moqtail/moqtail/commit/51e404e3f3c519c90b8bbd10b1c8a7d13e9b190c) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Subscriber priority is rounded and clamped to 0-255. A fractional value no longer disconnects the session.
+
+- [`51e404e`](https://github.com/moqtail/moqtail/commit/51e404e3f3c519c90b8bbd10b1c8a7d13e9b190c) Thanks [@DenizUgur](https://github.com/DenizUgur)! - A subscription's stream ends on `unsubscribe()` and when the session ends, so a loop reading it finishes instead of waiting forever.
+
+- [`51e404e`](https://github.com/moqtail/moqtail/commit/51e404e3f3c519c90b8bbd10b1c8a7d13e9b190c) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Setting `config.plugins = []` on `<moqtail-video>` installs no plugins. It installed `liveBuffer()` and `abr()`, which are now installed only when `config.plugins` is unset.
+
 ## 0.17.0
 
 ### Minor Changes

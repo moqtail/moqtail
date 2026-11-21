@@ -1,5 +1,11 @@
 # moqtail-rs
 
+## 0.20.0
+
+### Minor Changes
+
+- [#498](https://github.com/moqtail/moqtail/pull/498) [`587a808`](https://github.com/moqtail/moqtail/commit/587a8088c48a3c4d2af419c32f02ce639beebf75) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Add the CODEC_STRING (0x11) LOC property from draft-ietf-moq-loc-05, and `Timestamp.toMicros()`, which applies the draft's Timescale rule (µs since the Unix epoch when no Timescale is present).
+
 ## 0.19.0
 
 ### Minor Changes

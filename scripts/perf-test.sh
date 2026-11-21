@@ -100,8 +100,7 @@ REMOTE_SKIP_BUILD="${REMOTE_SKIP_BUILD:-false}"
 REMOTE_PERF="${REMOTE_PERF:-0}"
 
 ENDPOINT="/moq-relay"
-# MOQtail's only supported draft; all three parties are pinned to it.
-DRAFT=18
+DRAFT=22
 
 # ── Arg parsing ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do

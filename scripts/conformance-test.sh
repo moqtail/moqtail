@@ -57,7 +57,7 @@ CERT_FILE=""
 KEY_FILE=""
 
 ENDPOINT="/moq-relay"
-DRAFT=18
+DRAFT=22
 
 # ── Arg parsing ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do

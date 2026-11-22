@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import { ControlMessage } from '@/model/control/control_message'
-import { ControlMessageType } from '@/model/control/constant'
+import { decodeMessage, encodeMessage, isFirst } from '@/model/messages'
+import type { Message, MessageKind } from '@/model/messages'
 import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
 import { NotEnoughBytesError, ProtocolViolationError, TerminationError } from '@/model/error/error'
 import { TerminationCode } from '@/model/error/constant'
@@ -33,26 +33,26 @@ import type { ClientEvents } from './types'
  * request id.
  */
 export class RequestStream {
-  readonly stream: ReadableStream<ControlMessage>
+  readonly stream: ReadableStream<Message>
   /**
    * The message this side opened the stream with, kept so the request can be re-issued
    * on a fresh stream when the peer migrates it with a GOAWAY (§10.4). Undefined on a
    * peer-opened stream, which is the peer's request to re-issue, not ours.
    */
-  first?: ControlMessage
+  first?: Message
   /**
    * The type of the message that opened this stream, whichever side opened it. It is
    * what the request on this stream *is*, which decides what may follow — a
    * REQUEST_UPDATE is only valid for the types §10.9 lists.
    */
-  openingType?: ControlMessageType
+  openingType?: MessageKind
   /** Set when the request this stream carried has been re-issued on a new stream. */
   migrated = false
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   #receiveBuffer: ByteBuffer
   /** Held for the stream's lifetime once {@link next} is first called. */
-  #messageReader?: ReadableStreamDefaultReader<ControlMessage>
+  #messageReader?: ReadableStreamDefaultReader<Message>
   readonly #events: Emitter<ClientEvents> | undefined
 
   /** @param events - Receives `messagesent` and `messagereceived` for every message on this stream. */
@@ -61,7 +61,7 @@ export class RequestStream {
     this.#receiveBuffer = new ByteBuffer()
     this.#reader = biStream.readable.getReader()
     this.#writer = biStream.writable.getWriter()
-    this.stream = new ReadableStream<ControlMessage>({
+    this.stream = new ReadableStream<Message>({
       start: (controller) => this.#ingestLoop(controller),
       cancel: () => this.close(),
     })
@@ -76,19 +76,21 @@ export class RequestStream {
    */
   static async open(
     webTransport: WebTransport,
-    first: ControlMessage,
+    first: Message,
     events?: Emitter<ClientEvents>,
   ): Promise<RequestStream> {
-    if (!ControlMessageType.isFirst(first.getType()))
+    if (!isFirst(first.kind))
       throw new ProtocolViolationError(
         'RequestStream.open',
-        `${first.constructor.name} may not open a request stream: only First-marked types can`,
+        `${first.kind} may not open a request stream: only First-marked types can`,
       )
+
     const biStream = await webTransport.createBidirectionalStream()
     const requestStream = new RequestStream(biStream, events)
     requestStream.first = first
-    requestStream.openingType = first.getType()
+    requestStream.openingType = first.kind
     await requestStream.send(first)
+
     return requestStream
   }
 
@@ -99,23 +101,27 @@ export class RequestStream {
    * Takes ownership of {@link RequestStream.stream}'s reader on first use, so callers
    * must not mix `next()` with `stream.getReader()`.
    */
-  async next(): Promise<ControlMessage | undefined> {
+  async next(): Promise<Message | undefined> {
     this.#messageReader ??= this.stream.getReader()
+
     const { value, done } = await this.#messageReader.read()
+
     return done ? undefined : value
   }
 
-  async send(message: ControlMessage): Promise<void> {
+  async send(message: Message): Promise<void> {
     try {
-      const serialized = ControlMessage.serialize(message)
+      const serialized = encodeMessage(message)
       await this.#writer.ready
-      await this.#writer.write(serialized.toUint8Array())
-      logger.debug('request_stream', `sent ${message.constructor.name}`)
+      await this.#writer.write(serialized)
+      logger.debug('request_stream', `sent ${message.kind}`)
       this.#events?.emit('messagesent', message)
     } catch (error: any) {
       await this.close()
+
       const msg = errorMessage(error)
       logger.error('request_stream', `send failed: ${msg}`)
+
       throw new TerminationError(`RequestStream.send: Failed to write message: ${msg}`, TerminationCode.INTERNAL_ERROR)
     }
   }
@@ -134,15 +140,18 @@ export class RequestStream {
     await Promise.allSettled([this.#writer.abort(reason).catch(() => {}), this.#reader.cancel(reason).catch(() => {})])
   }
 
-  async #ingestLoop(controller: ReadableStreamDefaultController<ControlMessage>) {
+  async #ingestLoop(controller: ReadableStreamDefaultController<Message>) {
     try {
       while (true) {
         if (this.#receiveBuffer.length === 0) {
           const readResult = await this.#reader.read()
           this.#handleReadResult(readResult)
+
           if (readResult.done) break
+
           continue
         }
+
         try {
           this.#receiveBuffer.checkpoint()
           const startOffset = this.#receiveBuffer.offset
@@ -150,22 +159,29 @@ export class RequestStream {
           const payloadLength = this.#receiveBuffer.getU16()
           const headerSize = this.#receiveBuffer.offset - startOffset
           const totalMessageSize = headerSize + payloadLength
+
           this.#receiveBuffer.restore()
+
           if (this.#receiveBuffer.length >= totalMessageSize) {
             const messageBytes = this.#receiveBuffer.getBytes(totalMessageSize)
             this.#receiveBuffer.commit()
-            const msg = ControlMessage.deserialize(new FrozenByteBuffer(messageBytes))
+
+            const msg = decodeMessage(new FrozenByteBuffer(messageBytes))
             controller.enqueue(msg)
             this.#events?.emit('messagereceived', msg)
+
             continue
           }
+
           const readResult = await this.#reader.read()
           this.#handleReadResult(readResult)
+
           if (readResult.done) break
         } catch (error: any) {
           if (error instanceof NotEnoughBytesError) {
             const readResult = await this.#reader.read()
             this.#handleReadResult(readResult)
+
             if (readResult.done) break
           } else {
             logger.error('request_stream', `deserialization error: ${error.message}`)
@@ -176,6 +192,7 @@ export class RequestStream {
               ),
             )
             await this.close()
+
             break
           }
         }
@@ -200,8 +217,8 @@ export class RequestStream {
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { RequestOk } = await import('@/model/control/request_ok')
   const { Emitter } = await import('@/util/emitter')
+  const requestOk: Message = { kind: 'requestOk', parameters: {}, trackProperties: [] }
 
   /** A bidi stream whose readable side yields `incoming` and whose writes are dropped. */
   function fakeBiStream(incoming: Uint8Array[]): WebTransportBidirectionalStream {
@@ -220,21 +237,24 @@ if (import.meta.vitest) {
 
   describe('RequestStream events', () => {
     it('reports each message it sends', async () => {
-      const sent: ControlMessage[] = []
+      const sent: Message[] = []
       const events = new Emitter<ClientEvents>()
       events.on('messagesent', (m) => sent.push(m))
+
       const stream = new RequestStream(fakeBiStream([]), events)
-      const msg = new RequestOk()
+      const msg = requestOk
       await stream.send(msg)
       expect(sent).toEqual([msg])
     })
 
     it('reports each message it receives', async () => {
-      const received: ControlMessage[] = []
-      const msg = new RequestOk()
+      const received: Message[] = []
+      const msg = requestOk
       const events = new Emitter<ClientEvents>()
       events.on('messagereceived', (m) => received.push(m))
-      const stream = new RequestStream(fakeBiStream([ControlMessage.serialize(msg).toUint8Array()]), events)
+
+      const stream = new RequestStream(fakeBiStream([encodeMessage(msg)]), events)
+
       expect(await stream.next()).toEqual(msg)
       expect(received).toEqual([msg])
     })

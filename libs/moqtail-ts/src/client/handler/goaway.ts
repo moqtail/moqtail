@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import { GoAway } from '@/model/control'
+import type { GoAway } from '@/model/messages'
 import { ProtocolViolationError } from '@/model/error/error'
-import { ControlMessageHandler, RequestStreamMessageHandler } from './handler'
+import type { ControlMessageHandler, RequestStreamMessageHandler } from './handler'
 import { logger } from '@/util/logger'
 
 export const handlerGoAway: ControlMessageHandler<GoAway> = async (client, msg) => {

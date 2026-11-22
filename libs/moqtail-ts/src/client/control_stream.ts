@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-import { ControlMessage } from '@/model/control/control_message'
+import { decodeMessage, encodeMessage } from '@/model/messages'
+import type { Message } from '@/model/messages'
 import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
 import { NotEnoughBytesError, TerminationError, TimeoutError } from '@/model/error/error'
 import { TerminationCode } from '@/model/error/constant'
-import { SetupOptions, Setup } from '@/model'
 import type { Emitter } from '@/util/emitter'
 import { errorMessage } from '@/util/error'
 import { logger } from '@/util/logger'
@@ -41,20 +41,22 @@ export class ControlSendStream {
     this.#events = events
   }
 
-  async send(message: ControlMessage): Promise<void> {
-    const msgName = message.constructor.name
+  async send(message: Message): Promise<void> {
+    const msgName = message.kind
+
     try {
-      const serializedMessage = ControlMessage.serialize(message)
+      const serializedMessage = encodeMessage(message)
       logger.debug('control_stream', `send: waiting for writer.ready — ${msgName} (${serializedMessage.length}B)`)
       await this.#writer.ready
       logger.debug('control_stream', `send: writer ready, writing — ${msgName}`)
-      await this.#writer.write(serializedMessage.toUint8Array())
+      await this.#writer.write(serializedMessage)
       logger.debug('control_stream', `send: write complete — ${msgName}`)
       this.#events?.emit('messagesent', message)
     } catch (error: any) {
       const reason = errorMessage(error)
       logger.error('control_stream', `send: failed to write ${msgName} — ${reason}`)
       await this.close()
+
       throw new TerminationError(
         `ControlStream.send: Failed to write message: ${reason}`,
         TerminationCode.INTERNAL_ERROR,
@@ -74,7 +76,7 @@ export class ControlSendStream {
  * whose first message must be SETUP.
  */
 export class ControlRecvStream {
-  readonly stream: ReadableStream<ControlMessage>
+  readonly stream: ReadableStream<Message>
   #receiveBuffer: ByteBuffer
   #expectedPayloadLength: number | null = null
   #partialMessageTimeoutMs: number | undefined
@@ -91,7 +93,7 @@ export class ControlRecvStream {
     this.#partialMessageTimeoutMs = partialMessageTimeoutMs
     this.#reader = readStream.getReader()
     this.#events = events
-    this.stream = new ReadableStream<ControlMessage>({
+    this.stream = new ReadableStream<Message>({
       start: (controller) => this.#ingestLoop(controller),
       cancel: () => this.close(),
     })
@@ -102,21 +104,27 @@ export class ControlRecvStream {
     await this.#reader.cancel().catch(() => {})
   }
 
-  async #ingestLoop(controller: ReadableStreamDefaultController<ControlMessage>) {
+  async #ingestLoop(controller: ReadableStreamDefaultController<Message>) {
     logger.debug('control_stream', 'ingestLoop: started')
+
     try {
       while (true) {
         if (this.#receiveBuffer.length === 0) {
           logger.debug('control_stream', 'ingestLoop: buffer empty, awaiting reader.read()')
+
           const readResult = await this.#reader.read()
           this.#handleReadResult(readResult)
+
           if (readResult.done) {
             logger.debug('control_stream', 'ingestLoop: reader done (stream closed by peer)')
             break
           }
+
           logger.debug('control_stream', `ingestLoop: received ${readResult.value?.byteLength ?? 0}B chunk`)
+
           continue
         }
+
         try {
           this.#receiveBuffer.checkpoint()
           const startOffset = this.#receiveBuffer.offset
@@ -124,30 +132,39 @@ export class ControlRecvStream {
           const payloadLength = this.#receiveBuffer.getU16()
           const headerSize = this.#receiveBuffer.offset - startOffset
           const totalMessageSize = headerSize + payloadLength
+
           this.#receiveBuffer.restore()
+
           if (this.#receiveBuffer.length >= totalMessageSize) {
             const messageBytes = this.#receiveBuffer.getBytes(totalMessageSize)
             this.#receiveBuffer.commit()
             this.#expectedPayloadLength = null
-            const msg = ControlMessage.deserialize(new FrozenByteBuffer(messageBytes))
-            logger.debug('control_stream', `ingestLoop: deserialized ${msg.constructor.name} (${totalMessageSize}B)`)
+
+            const msg = decodeMessage(new FrozenByteBuffer(messageBytes))
+            logger.debug('control_stream', `ingestLoop: deserialized ${msg.kind} (${totalMessageSize}B)`)
             controller.enqueue(msg)
             this.#events?.emit('messagereceived', msg)
+
             continue
           }
+
           this.#expectedPayloadLength = payloadLength
           logger.debug(
             'control_stream',
             `ingestLoop: partial message — have ${this.#receiveBuffer.length}B, need ${totalMessageSize}B, awaiting more data`,
           )
+
           const timeoutMessage = `ControlStream: Timeout waiting for partial message data (expected ${payloadLength} bytes)`
           let readResult
+
           if (this.#partialMessageTimeoutMs !== undefined) {
             readResult = await withTimeout(this.#reader.read(), this.#partialMessageTimeoutMs, timeoutMessage)
           } else {
             readResult = await this.#reader.read()
           }
+
           this.#handleReadResult(readResult as ReadableStreamReadResult<Uint8Array>)
+
           if ((readResult as ReadableStreamReadResult<Uint8Array>).done) {
             logger.debug('control_stream', 'ingestLoop: reader done while waiting for partial message')
             break
@@ -155,7 +172,9 @@ export class ControlRecvStream {
         } catch (error: any) {
           if (error instanceof NotEnoughBytesError) {
             logger.debug('control_stream', 'ingestLoop: not enough bytes for header, awaiting more data')
+
             let readResult
+
             if (this.#partialMessageTimeoutMs !== undefined) {
               readResult = await withTimeout(
                 this.#reader.read(),
@@ -165,7 +184,9 @@ export class ControlRecvStream {
             } else {
               readResult = await this.#reader.read()
             }
+
             this.#handleReadResult(readResult as ReadableStreamReadResult<Uint8Array>)
+
             if ((readResult as ReadableStreamReadResult<Uint8Array>).done) {
               logger.debug('control_stream', 'ingestLoop: reader done while waiting for header')
               break
@@ -179,6 +200,7 @@ export class ControlRecvStream {
               ),
             )
             await this.close()
+
             break
           }
         }
@@ -225,7 +247,7 @@ export class ControlRecvStream {
  * each endpoint.
  */
 export class ControlStream {
-  readonly stream: ReadableStream<ControlMessage>
+  readonly stream: ReadableStream<Message>
   #sendHalf: ControlSendStream
   #recvHalf: ControlRecvStream
 
@@ -235,7 +257,7 @@ export class ControlStream {
     this.stream = recvHalf.stream
   }
 
-  async send(message: ControlMessage): Promise<void> {
+  async send(message: Message): Promise<void> {
     try {
       await this.#sendHalf.send(message)
     } catch (error) {
@@ -250,7 +272,9 @@ export class ControlStream {
 }
 
 if (import.meta.vitest) {
-  const { describe, it, expect, vi, beforeEach } = import.meta.vitest
+  const { describe, it, expect, beforeEach, vi } = import.meta.vitest
+  type Setup = import('@/model/messages').Setup
+  const setup = (options: Setup['options']): Setup => ({ kind: 'setup', options })
 
   interface MockReadableStreamReader {
     read(): Promise<ReadableStreamReadResult<Uint8Array>>
@@ -362,33 +386,31 @@ if (import.meta.vitest) {
         vi.clearAllMocks()
       })
       it('should handle full message roundtrip', async () => {
-        const setupParams = new SetupOptions().addPath('/test/path').addMaxAuthTokenCacheSize(500n).build()
-
-        const originalMessage = new Setup(setupParams)
-        const messageBytes = originalMessage.serialize().toUint8Array()
+        const originalMessage = setup({ path: '/test/path', maxAuthTokenCacheSize: 500n })
+        const messageBytes = encodeMessage(originalMessage)
         const { controlStream } = createMockControlStream([messageBytes])
 
         await controlStream.send(originalMessage)
+
         const reader = controlStream.stream.getReader()
         const { value: receivedMessage } = await reader.read()
-        expect(receivedMessage).toBeInstanceOf(Setup)
+
         expect(receivedMessage).toEqual(originalMessage)
         reader.releaseLock()
       })
       it('should send SETUP as the first message on the send half', async () => {
-        const originalMessage = new Setup(new SetupOptions().addPath('/first/message').build())
+        const originalMessage = setup({ path: '/first/message' })
         const { controlStream, writable } = createMockControlStream()
 
         await controlStream.send(originalMessage)
+
         const written = writable.getWrittenData()
         expect(written).toHaveLength(1)
-        expect(ControlMessage.deserialize(new FrozenByteBuffer(written[0]!))).toEqual(originalMessage)
+        expect(decodeMessage(new FrozenByteBuffer(written[0]!))).toEqual(originalMessage)
       })
       it('should handle excess bytes successful roundtrip then timeout', async () => {
-        const setupParams = new SetupOptions().addPath('/excess/test').build()
-
-        const originalMessage = new Setup(setupParams)
-        const messageBytes = originalMessage.serialize().toUint8Array()
+        const originalMessage = setup({ path: '/excess/test' })
+        const messageBytes = encodeMessage(originalMessage)
         const excessBytes = new Uint8Array([0xff, 0x13, 0x25])
 
         const combinedBytes = new Uint8Array(messageBytes.length + excessBytes.length)
@@ -398,20 +420,21 @@ if (import.meta.vitest) {
         const { controlStream } = createMockControlStream([combinedBytes], 250)
         const reader = controlStream.stream.getReader()
         const { value: receivedMessage } = await reader.read()
+
         expect(receivedMessage).toEqual(originalMessage)
         await expect(reader.read()).rejects.toThrow(TimeoutError)
         reader.releaseLock()
       })
       it('should timeout on partial message', async () => {
-        const setupParams = new SetupOptions().addPath('/partial/test').addMaxAuthTokenCacheSize(42n).build()
-        const originalMessage = new Setup(setupParams)
-        const completeMessageBytes = originalMessage.serialize().toUint8Array()
+        const originalMessage = setup({ path: '/partial/test', maxAuthTokenCacheSize: 42n })
+        const completeMessageBytes = encodeMessage(originalMessage)
 
         // Send only partial message (first 10 bytes)
         const partialBytes = completeMessageBytes.slice(0, Math.min(10, completeMessageBytes.length))
 
         const { controlStream } = createMockControlStream([partialBytes], 250)
         const reader = controlStream.stream.getReader()
+
         await expect(reader.read()).rejects.toThrow(TerminationError)
         reader.releaseLock()
       })

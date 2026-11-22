@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 
-import { Publish, RequestUpdate } from '@/model/control'
-import { MOQtailClient } from '@/client/client'
-import { Track } from '@/client/track/track'
-import { InternalError, Location, MessageParameter, applyMessageParameterUpdate } from '@/model'
-import { CombinedFilter } from '@/model/parameter/message/combined_filter'
+import type { MOQtailClient } from '@/client/client'
+import type { Track } from '@/client/track/track'
+import { InternalError, Location } from '@/model'
+import type { Publish, RequestUpdate } from '@/model/messages'
+import { applyParameterUpdate } from '@/model/parameters'
+import type { MessageParameters } from '@/model/parameters'
+import { CombinedFilter } from './filter'
 import { SendStream } from '@/client/data_stream'
 import { MoqtObject } from '@/model/data/object'
 import { SubgroupIds, subgroupHeaderFor } from './subgroup'
@@ -89,13 +91,13 @@ export class PublishPublication {
    * The parameters this publication currently holds. An update amends them rather than
    * replacing them, so a parameter the update leaves out keeps the value it had.
    */
-  #parameters: MessageParameter[]
+  #parameters: MessageParameters
 
   /**
    * What the subscriber's Range Filters let through. A PUBLISH carries none, so this
    * passes everything until a REQUEST_UPDATE says otherwise.
    */
-  #filter: CombinedFilter = new CombinedFilter([])
+  #filter: CombinedFilter = new CombinedFilter({})
 
   /**
    * The Subgroup ID of each Object, which the filter and the stream header need.
@@ -121,10 +123,10 @@ export class PublishPublication {
   ) {
     this.#trackAlias = track.trackAlias!
     this.#publisherPriority = track.publisherPriority
-    this.#parameters = [...publishMsg.parameters]
+    this.#parameters = publishMsg.parameters
     // An omitted FORWARD means the publisher sends immediately; FORWARD=0 means it
     // holds off until told otherwise.
-    this.#forward = publishMsg.parameters.find(MessageParameter.isForward)?.forward ?? true
+    this.#forward = publishMsg.parameters.forward ?? true
 
     // Attaches to the track source. Whether anything is written from here is the
     // Forward State's call, which may move for as long as the publication lives.
@@ -167,14 +169,14 @@ export class PublishPublication {
    * left with cannot be applied; nothing is updated.
    */
   update(msg: RequestUpdate): void {
-    const parameters = [...this.#parameters]
-    applyMessageParameterUpdate(parameters, msg.parameters)
+    const parameters = applyParameterUpdate(this.#parameters, msg.parameters)
+
     assertWithinFilterRangeLimit(parameters, this.client.maxFilterRanges, 'REQUEST_UPDATE')
     this.#filter = new CombinedFilter(parameters)
     this.#parameters = parameters
 
-    const forward = msg.parameters.find(MessageParameter.isForward)
-    if (forward) this.setForwardState(forward.forward)
+    const { forward } = msg.parameters
+    if (forward !== undefined) this.setForwardState(forward)
   }
 
   /**
@@ -342,11 +344,11 @@ export class PublishPublication {
 
 if (import.meta.vitest) {
   const { describe, test, expect, vi } = import.meta.vitest
-  const { FullTrackName, Forward, ObjectForwardingPreference, SubgroupHeaderType } = await import('@/model')
-  const { RequestUpdate } = await import('@/model/control')
   const { LiveTrackSource } = await import('@/client/track/content_source')
-  const { SubgroupHeader: Header } = await import('@/model/data/subgroup_header')
   const { FrozenByteBuffer } = await import('@/model/common/byte_buffer')
+  const { ObjectForwardingPreference, SubgroupHeaderType } = await import('@/model/data/constant')
+  const { FullTrackName } = await import('@/model/data/full_track_name')
+  const { SubgroupHeader: Header } = await import('@/model/data/subgroup_header')
 
   describe('PublishPublication FIRST_OBJECT', () => {
     const ftn = FullTrackName.tryNew('room/alice', 'video')
@@ -552,7 +554,7 @@ if (import.meta.vitest) {
       } as unknown as MOQtailClient
       const publication = new PublishPublication(client, track, {
         requestId: 7n,
-        parameters: [new Forward(forward)],
+        parameters: { forward: forward },
       } as unknown as Publish)
 
       const push = (group: number, object: number) =>
@@ -567,6 +569,7 @@ if (import.meta.vitest) {
             new Uint8Array([1]),
           ),
         )
+
       return { publication, live, chunks, push, moves }
     }
 
@@ -581,10 +584,11 @@ if (import.meta.vitest) {
 
     test('starts sending when the peer raises the Forward State', async () => {
       const { publication, live, chunks, push, moves } = publishing(false)
+
       push(0, 0)
       await vi.waitFor(() => expect(live.largestLocation?.group).toBe(0n))
 
-      publication.update(new RequestUpdate(0n, [new Forward(true)]))
+      publication.update({ kind: 'requestUpdate', requestId: 0n, parameters: { forward: true } })
       expect(publication.forwarding).toBe(true)
       expect(moves).toEqual([{ requestId: 7n, forward: true }])
 
@@ -597,11 +601,13 @@ if (import.meta.vitest) {
 
     test('parks the publication when the peer drops the Forward State', async () => {
       const { publication, live, chunks, push, moves } = publishing(true)
+
       push(0, 0)
       await vi.waitFor(() => expect(chunks.length).toBeGreaterThan(0))
+
       const sent = chunks.length
 
-      publication.update(new RequestUpdate(0n, [new Forward(false)]))
+      publication.update({ kind: 'requestUpdate', requestId: 0n, parameters: { forward: false } })
       expect(publication.forwarding).toBe(false)
       expect(moves).toEqual([{ requestId: 7n, forward: false }])
 
@@ -613,7 +619,7 @@ if (import.meta.vitest) {
     test('leaves the Forward State alone when an update does not name it', async () => {
       const { publication, moves } = publishing(true)
 
-      publication.update(new RequestUpdate(0n, []))
+      publication.update({ kind: 'requestUpdate', requestId: 0n, parameters: {} })
       expect(publication.forwarding).toBe(true)
       expect(moves).toHaveLength(0)
     })

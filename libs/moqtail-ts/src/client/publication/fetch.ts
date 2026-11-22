@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,9 @@
  * limitations under the License.
  */
 
-import {
-  Fetch,
-  FetchHeader,
-  FetchHeaderType,
-  InternalError,
-  Location,
-  MOQtailError,
-  MessageParameter,
-  MoqtObject,
-} from '@/model'
-import { CombinedFilter } from '@/model/parameter/message/combined_filter'
+import { FetchHeader, FetchHeaderType, GroupOrder, InternalError, Location, MOQtailError, MoqtObject } from '@/model'
+import type { Fetch } from '@/model/messages'
+import { CombinedFilter } from './filter'
 import { StreamResetCode } from '@/model/error/stream_reset'
 import { SendStream } from '@/client/data_stream'
 import { MOQtailClient } from '@/client/client'
@@ -82,6 +74,7 @@ export class FetchPublication {
   async publish(): Promise<void> {
     if (this.#isCanceled) return
     if (!this.#track.trackSource.past) throw new MOQtailError('FetchPublication.publish, Track does not support fetch')
+
     logger.debug(
       'publication/fetch',
       `publishing requestId=${this.#requestId} start=${this.#startLocation} end=${this.#endLocation}`,
@@ -91,9 +84,11 @@ export class FetchPublication {
       // the end is applied here.
       const objects = await this.#track.trackSource.past.getRange(this.#startLocation)
       this.#objects = objects.filter((obj) => obj.location.compare(this.#endLocation) <= 0)
+
       // TODO: Calculate and use stream priority from subscriber priority from the msg + publisher priority from the track
       const writeStream = await this.#client.webTransport.createUnidirectionalStream()
       const header = new FetchHeader(FetchHeaderType.Type0x05, this.#requestId)
+
       // The Group Order signs the Group ID deltas SendStream writes. Note the objects are
       // not yet reordered to match (see the TODO above), so a Descending request is
       // rejected by the encoder.
@@ -101,13 +96,16 @@ export class FetchPublication {
         writeStream,
         header,
         this.#client,
-        MessageParameter.groupOrderOf(this.#msg.parameters),
+        this.#msg.parameters.groupOrder ?? GroupOrder.Original,
         () => this.#track.fullTrackName,
       )
+
       const subgroupIds = new SubgroupIds()
       let sent = 0
+
       for (const obj of this.#objects) {
         subgroupIds.note(obj)
+
         // A filtered Object is skipped without reaching SendStream, so the next one
         // written is delta-encoded against the last one written.
         if (!this.#filter.matches(obj, subgroupIds.of(obj))) continue
@@ -117,9 +115,11 @@ export class FetchPublication {
           this.#client.publications.delete(this.#requestId)
           return
         }
+
         await this.#sendStream.write(obj.tryIntoFetchObject())
         sent++
       }
+
       await this.#sendStream.close()
       logger.debug(
         'publication/fetch',
@@ -129,9 +129,12 @@ export class FetchPublication {
     } catch (error: unknown) {
       // A write that fails because the stream was reset on purpose is not a failure.
       if (this.#isCanceled) return
+
       await this.#sendStream?.reset(StreamResetCode.InternalError)
+
       const message = errorMessage(error)
       logger.error('publication/fetch', `publish failed requestId=${this.#requestId}`, message)
+
       throw new InternalError('FetchPublication.publish', `Failed to publish: ${message}`)
     }
   }

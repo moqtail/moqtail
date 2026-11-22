@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 import { ByteBuffer } from '@/model/common/byte_buffer'
 import { FetchHeaderType, FetchObject, SubgroupHeaderType, SubgroupObject } from '@/model/data'
 import { FetchObjectContext } from '@/model/data/fetch_object'
-import { GroupOrder } from '@/model/control/constant'
+import { GroupOrder } from '@/model/constants'
 import { ObjectForwardingPreference } from '@/model/data/constant'
 import { Header } from '@/model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError } from '@/model/error/error'

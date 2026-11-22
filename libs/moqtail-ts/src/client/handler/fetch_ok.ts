@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,30 +14,26 @@
  * limitations under the License.
  */
 
-import { ProtocolViolationError } from '@/model/error'
-import { FetchOk } from '../../model/control'
-import { FetchRequest } from '../request/fetch'
-import { SubscribeRequest } from '../request/subscribe'
-import { RequestStreamMessageHandler } from './handler'
-import { logger } from '../../util/logger'
+import { FetchRequest } from '@/client/request/fetch'
+import { ProtocolViolationError } from '@/model/error/error'
+import type { FetchOk } from '@/model/messages'
+import type { RequestStreamMessageHandler } from './handler'
 
 export const handlerFetchOk: RequestStreamMessageHandler<FetchOk> = async (client, msg, _stream, requestId) => {
-  logger.log('handler/fetch_ok', 'requestId', requestId)
   // FETCH_OK carries no request id of its own: the stream it arrived on names the FETCH
   // it answers (§10.1).
   const request = client.requests.get(requestId)
-  if (request instanceof FetchRequest) {
-    if (msg.trackProperties.length > 0) {
-      const track = client.trackSources.get(request.message.fullTrackName.toString())
-      if (track !== undefined) {
-        track.trackProperties = msg.trackProperties
-      }
-    }
-    request.resolve(msg)
-  } else {
+  if (!(request instanceof FetchRequest)) {
     throw new ProtocolViolationError(
       'handlerFetchOk',
-      `FETCH_OK on a stream with no pending fetch request (request id ${requestId})`,
+      `FETCH_OK on a stream with no pending fetch (request id ${requestId})`,
     )
   }
+
+  if (msg.trackProperties.length > 0) {
+    const track = client.trackSources.get(request.message.fullTrackName.toString())
+    if (track) track.trackProperties = msg.trackProperties
+  }
+
+  request.resolve(msg)
 }

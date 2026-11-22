@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,11 @@
  * limitations under the License.
  */
 
-import { PublishNamespace, RequestOk } from '@/model/control'
-import { RequestStreamMessageHandler } from './handler'
-import { logger } from '@/util/logger'
+import { requestOk } from '@/model/messages'
+import type { PublishNamespace } from '@/model/messages'
+import type { RequestStreamMessageHandler } from './handler'
 
 export const handlerPublishNamespace: RequestStreamMessageHandler<PublishNamespace> = async (client, msg, stream) => {
-  logger.log('handler/publish_namespace', 'namespace', msg.trackNamespace.toUtf8Path())
   client.emit('namespacepublished', msg)
-  await stream.send(new RequestOk())
+  await stream.send(requestOk())
 }

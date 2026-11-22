@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,44 +14,24 @@
  * limitations under the License.
  */
 
-import {
-  handlerPublishDone,
-  handlerPublishNamespace,
-  handlerSubscribe,
-  handlerSubscribeOk,
-  handlerRequestUpdate,
-  handlerTrackStatus,
-  handlerRequestOk,
-  handlerRequestError,
-  handlerFetch,
-  handlerFetchOk,
-  handlerGoAway,
-  handlerGoAwayOnRequestStream,
-  handlerPublish,
-  handlerPublishSkipped,
-  handlerSubscribeNamespace,
-  handlerSubscribeTracks,
-} from '.'
-import {
-  Publish,
-  PublishSkipped,
-  PublishNamespace,
-  Fetch,
-  FetchOk,
-  GoAway,
-  Subscribe,
-  PublishDone,
-  SubscribeOk,
-  RequestUpdate,
-  TrackStatus,
-  RequestOk,
-  RequestError,
-  SubscribeNamespace,
-  SubscribeTracks,
-} from '@/model/control'
-import { MOQtailClient } from '@/client/client'
-import { ControlMessage } from '@/model/control'
-import { RequestStream } from '@/client/request_stream'
+import type { MOQtailClient } from '@/client/client'
+import type { RequestStream } from '@/client/request_stream'
+import type { GoAway, Message, MessageKind } from '@/model/messages'
+import { handlerFetch } from './fetch'
+import { handlerFetchOk } from './fetch_ok'
+import { handlerGoAway, handlerGoAwayOnRequestStream } from './goaway'
+import { handlerPublish } from './publish'
+import { handlerPublishDone } from './publish_done'
+import { handlerPublishNamespace } from './publish_namespace'
+import { handlerPublishSkipped } from './publish_skipped'
+import { handlerRequestError } from './request_error'
+import { handlerRequestOk } from './request_ok'
+import { handlerRequestUpdate } from './request_update'
+import { handlerSubscribe } from './subscribe'
+import { handlerSubscribeNamespace } from './subscribe_namespace'
+import { handlerSubscribeOk } from './subscribe_ok'
+import { handlerSubscribeTracks } from './subscribe_tracks'
+import { handlerTrackStatus } from './track_status'
 
 /** A message on the shared control stream. Nothing here has a stream to reply on. */
 export type ControlMessageHandler<T> = (client: MOQtailClient, msg: T) => Promise<void>
@@ -69,42 +49,39 @@ export type RequestStreamMessageHandler<T> = (
   openingRequestId: bigint,
 ) => Promise<void>
 
+type RequestStreamHandlers = { [K in MessageKind]?: RequestStreamMessageHandler<Extract<Message, { kind: K }>> }
+
 /**
- * The control stream carries SETUP and GOAWAY, nothing else. SETUP is
- * consumed by the handshake in {@link MOQtailClient.init}, so GOAWAY is all that reaches
- * the read loop. Every request type has moved to its own bidi stream — see
- * {@link getHandlerForRequestStreamMessage}.
+ * Everything that travels on a bidirectional request stream: the seven `First`-marked
+ * types that open one, the responses that come back on it, and the follow-ups either side
+ * may send while it is open. REQUEST_OK also answers PUBLISH: PUBLISH_OK is its alias.
  */
-export function getHandlerForControlMessage(msg: ControlMessage): ControlMessageHandler<any> | undefined {
-  if (msg instanceof GoAway) return handlerGoAway
-  return undefined
+const REQUEST_STREAM_HANDLERS: RequestStreamHandlers = {
+  subscribe: handlerSubscribe,
+  fetch: handlerFetch,
+  publish: handlerPublish,
+  publishNamespace: handlerPublishNamespace,
+  trackStatus: handlerTrackStatus,
+  subscribeNamespace: handlerSubscribeNamespace,
+  subscribeTracks: handlerSubscribeTracks,
+  subscribeOk: handlerSubscribeOk,
+  fetchOk: handlerFetchOk,
+  requestOk: handlerRequestOk,
+  requestError: handlerRequestError,
+  goAway: handlerGoAwayOnRequestStream,
+  requestUpdate: handlerRequestUpdate,
+  publishDone: handlerPublishDone,
+  publishSkipped: handlerPublishSkipped,
 }
 
 /**
- * Handlers for everything that travels on a bidirectional request stream: the seven
- * `First`-marked types that open one, the responses that come back on it, and the
- * follow-ups either side may send while it is open.
+ * The control stream carries SETUP and GOAWAY, nothing else. SETUP is consumed by the
+ * handshake in {@link MOQtailClient.init}, so GOAWAY is all that reaches the read loop.
  */
-export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestStreamMessageHandler<any> | undefined {
-  // Types that open a request stream (Table 5, `First`).
-  if (msg instanceof Subscribe) return handlerSubscribe
-  if (msg instanceof Fetch) return handlerFetch
-  if (msg instanceof Publish) return handlerPublish
-  if (msg instanceof PublishNamespace) return handlerPublishNamespace
-  if (msg instanceof TrackStatus) return handlerTrackStatus
-  if (msg instanceof SubscribeNamespace) return handlerSubscribeNamespace
-  if (msg instanceof SubscribeTracks) return handlerSubscribeTracks
-  // Responses, correlated by the stream they arrive on.
-  if (msg instanceof SubscribeOk) return handlerSubscribeOk
-  if (msg instanceof FetchOk) return handlerFetchOk
-  // RequestOk also answers PUBLISH: PUBLISH_OK (0x1E) is an alias of REQUEST_OK, so
-  // both codepoints arrive here as a RequestOk.
-  if (msg instanceof RequestOk) return handlerRequestOk
-  if (msg instanceof RequestError) return handlerRequestError
-  // Follow-ups on an open request stream.
-  if (msg instanceof GoAway) return handlerGoAwayOnRequestStream
-  if (msg instanceof RequestUpdate) return handlerRequestUpdate
-  if (msg instanceof PublishDone) return handlerPublishDone
-  if (msg instanceof PublishSkipped) return handlerPublishSkipped
-  return undefined
+export function getHandlerForControlMessage(msg: Message): ControlMessageHandler<GoAway> | undefined {
+  return msg.kind === 'goAway' ? handlerGoAway : undefined
+}
+
+export function getHandlerForRequestStreamMessage(msg: Message): RequestStreamMessageHandler<Message> | undefined {
+  return REQUEST_STREAM_HANDLERS[msg.kind] as RequestStreamMessageHandler<Message> | undefined
 }

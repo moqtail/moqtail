@@ -98,5 +98,5 @@ Grep before writing one. A helper moves to a shared home only when two modules n
 
 - Pure logic in-source; MediaSource and custom elements in `test/browser`.
 - Reuse `@/player/testing`: `FakeClient`, `testObject`, `mediaObject`, `gzip` (`testing/client`); `testChain`, `testSource`, `collectingSink`, `flush`, `settle` (`testing/elements`); `timeRanges` (`testing/media`).
-- Client tests: `connected(serverOptions, clientOptions)` gives a post-handshake client.
+- Client tests: `connected(serverOptions, clientOptions)` from `@/client/testing` gives a post-handshake client over `MockWebTransport`; `restoreWebTransport()` puts the real one back after each test.
 - Few, meaningful tests; names state the behaviour.

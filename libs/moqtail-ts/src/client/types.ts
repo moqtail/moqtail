@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,10 +19,10 @@ import type {
   FullTrackName,
   GroupOrder,
   LocationFilter,
-  MessageParameter,
+  MessageParameters,
   Location,
   SetupOptions,
-  ControlMessage,
+  Message,
   Datagram,
   SwitchMode,
   GoAway,
@@ -44,11 +44,8 @@ import type {
 import type { MOQtailClient } from './client'
 import type { DataEvent } from './data_event'
 import type { FetchRequest } from '@/client/request/fetch'
-import type { PublishRequest } from '@/client/request/publish'
-import type { PublishNamespaceRequest } from '@/client/request/publish_namespace'
+import type { PendingRequest } from '@/client/request/pending'
 import type { SubscribeRequest } from '@/client/request/subscribe'
-import type { SubscribeNamespaceRequest } from '@/client/request/subscribe_namespace'
-import type { TrackStatusRequest } from '@/client/request/track_status'
 
 /**
  * @public
@@ -62,10 +59,9 @@ import type { TrackStatusRequest } from '@/client/request/track_status'
  * multiple heterogeneous collections.
  *
  * Variants:
- * - {@link PublishNamespaceRequest} – pending PUBLISH_NAMESPACE / PUBLISH_NAMESPACE_OK / PUBLISH_NAMESPACE_ERROR.
- * - {@link SubscribeNamespaceRequest} – pending SUBSCRIBE_NAMESPACE sequence.
  * - {@link FetchRequest} – pending FETCH handshake producing a data stream.
  * - {@link SubscribeRequest} – pending SUBSCRIBE producing subgroup object streams.
+ * - {@link PendingRequest} – any other request, told apart by `message.kind`.
  *
  * @example Looking up a request by id
  * ```ts
@@ -80,13 +76,7 @@ import type { TrackStatusRequest } from '@/client/request/track_status'
  * }
  * ```
  */
-export type MOQtailRequest =
-  | PublishRequest
-  | PublishNamespaceRequest
-  | SubscribeNamespaceRequest
-  | FetchRequest
-  | SubscribeRequest
-  | TrackStatusRequest
+export type MOQtailRequest = PendingRequest | FetchRequest | SubscribeRequest
 
 /**
  * Whatever holds a track alias in the client's routing table: a {@link SubscribeRequest},
@@ -217,9 +207,9 @@ export interface ClientEvents {
   /** The session ended, normally or on error. Fires once, with the reason given to `disconnect`. */
   sessionterminated: (reason?: unknown) => void
   /** A control message was written, on the control stream or a request stream. */
-  messagesent: (msg: ControlMessage) => void
+  messagesent: (msg: Message) => void
   /** A control message arrived, before it is handled. */
-  messagereceived: (msg: ControlMessage) => void
+  messagereceived: (msg: Message) => void
   /** A data stream header or object was decoded. */
   datareceived: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
   /** A data stream header or object was written. */
@@ -262,9 +252,8 @@ export interface ClientEvents {
   peersubscribenamespace: (msg: SubscribeNamespace) => void
   /**
    * A SUBSCRIBE_TRACKS arrived. The PUBLISH sent for each matching track states the
-   * request's settings from `MessageParameter.publishParametersFor(msg.parameters)`, and
-   * goes without Track Properties when `MessageParameter.includesProperties(msg.parameters)`
-   * is false.
+   * request's `forward`, `groupOrder` and `locationFilter` parameters, and goes without
+   * Track Properties when its `includeProperties` is false.
    */
   peersubscribetracks: (msg: SubscribeTracks) => void
   /** A NAMESPACE arrived on a SUBSCRIBE_NAMESPACE stream. */
@@ -320,7 +309,7 @@ export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => vo
  *   priority: 0,
  *   groupOrder: GroupOrder.Original,
  *   forward: true,
- *   locationFilter: new LocationFilter(LocationFilterType.NextObject)
+ *   locationFilter: locationFilter(LocationFilterType.NextObject)
  * })
  * ```
  * @example Groups 100 through 120
@@ -330,7 +319,7 @@ export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => vo
  *   priority: 32,
  *   groupOrder: GroupOrder.Original,
  *   forward: true,
- *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 100n, 0n, 120n)
+ *   locationFilter: locationFilter(LocationFilterType.AbsoluteStartGroupEnd, 100n, 0n, 120n)
  * })
  * ```
  * @example From the next object, filling the current group from its start
@@ -339,8 +328,8 @@ export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => vo
  *   fullTrackName,
  *   priority: 0,
  *   groupOrder: GroupOrder.Original,
- *   locationFilter: new LocationFilter(LocationFilterType.NextObject),
- *   parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 1n)])]
+ *   locationFilter: locationFilter(LocationFilterType.NextObject),
+ *   parameters: { fillParameters: { locationFilter: locationFilter(LocationFilterType.RelativeStart, 1n) } }
  * })
  * ```
  */
@@ -359,7 +348,7 @@ export type SubscribeOptions = {
    * Optional extension parameters appended to the SUBSCRIBE control message. A
    * FILL_PARAMETERS here also retrieves already-published Objects on a fill fetch stream.
    */
-  parameters?: MessageParameter[]
+  parameters?: MessageParameters
   /** Per-subscription early discard policy. Overrides the client-level default set via {@link MOQtailClient.setEarlyDiscardPolicy}. */
   earlyDiscardPolicy?: EarlyDiscardPolicyConfig
   /** Called for each End of Range marker on the subscription's fill fetch streams. */
@@ -376,7 +365,7 @@ export type SubscribeOptions = {
  * ```ts
  * await client.subscribeUpdate({
  *   subscriptionRequestId,
- *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 200n, 0n, 210n),
+ *   locationFilter: locationFilter(LocationFilterType.AbsoluteStartGroupEnd, 200n, 0n, 210n),
  *   priority: 16,
  *   forward: true
  * })
@@ -392,7 +381,7 @@ export type SubscribeUpdateOptions = {
   /** Updated direction flag. Omitted, it's not sent and stays unchanged. */
   forward?: boolean
   /** Optional additional parameters; existing parameters persist if omitted. */
-  parameters?: MessageParameter[]
+  parameters?: MessageParameters
 }
 
 /**
@@ -408,7 +397,7 @@ export type SubscribeUpdateOptions = {
  *     fullTrackName: newFullTrackName,
  *     priority: 0,
  *     groupOrder: GroupOrder.Original,
- *     locationFilter: new LocationFilter(LocationFilterType.NextObject)
+ *     locationFilter: locationFilter(LocationFilterType.NextObject)
  *   }
  * })
  * ```
@@ -447,7 +436,7 @@ export type EarlyDiscardPolicyConfig = {
  *   fullTrackName,
  *   priority: 64,
  *   groupOrder: GroupOrder.Original,
- *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 10n, 0n, 12n)
+ *   locationFilter: locationFilter(LocationFilterType.AbsoluteStartGroupEnd, 10n, 0n, 12n)
  * })
  * ```
  * @example The current group and the one before it
@@ -456,7 +445,7 @@ export type EarlyDiscardPolicyConfig = {
  *   fullTrackName,
  *   priority: 32,
  *   groupOrder: GroupOrder.Original,
- *   locationFilter: new LocationFilter(LocationFilterType.RelativeStart, 2n)
+ *   locationFilter: locationFilter(LocationFilterType.RelativeStart, 2n)
  * })
  * ```
  */
@@ -474,7 +463,7 @@ export type FetchOptions = {
    */
   locationFilter?: LocationFilter
   /** Optional parameters block. */
-  parameters?: MessageParameter[]
+  parameters?: MessageParameters
   /** Called for each End of Range marker in the response. */
   onEndOfRange?: EndOfRangeHandler
   /** Orders this fetch's objects. Overrides {@link MOQtailClientOptions.ordering}. */

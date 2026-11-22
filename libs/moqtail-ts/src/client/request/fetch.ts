@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,70 +14,17 @@
  * limitations under the License.
  */
 
-import type { EndOfRangeHandler } from '@/client/types'
-import { Fetch, FetchOk, RequestError } from '@/model'
-import { ObjectStream } from '@/client/util/object_stream'
-import { logger } from '@/util/logger'
-import { isSessionClosed } from '@/client/util/stream_reset'
 import type { ObjectOrderer } from '@/client/ordering'
+import type { EndOfRangeHandler } from '@/client/types'
+import { ObjectStream } from '@/client/util/object_stream'
+import type { Fetch, FetchOk, RequestError } from '@/model/messages'
+import { PendingRequest } from './pending'
 
 // TODO: add timeout mechanism for cancelled requests
 // (we cant know how many in-flight objects there are)
-/** @public */
-export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
-  public readonly requestId: bigint
-  public readonly message: Fetch
-  private _resolve!: (value: FetchOk | RequestError | PromiseLike<FetchOk | RequestError>) => void
-  private _reject!: (reason?: any) => void
-  private promise: Promise<FetchOk | RequestError>
-  public readonly objects = new ObjectStream()
-  public readonly stream = this.objects.readable
-  public onEndOfRange: EndOfRangeHandler | undefined
-  public orderer: ObjectOrderer | undefined
-  public isActive: boolean = true
-  public isResolved: boolean = false
-
-  constructor(message: Fetch) {
-    this.requestId = message.requestId
-    this.message = message
-    this.promise = new Promise<FetchOk | RequestError>((resolve, reject) => {
-      this._resolve = resolve
-      this._reject = reject
-    })
-    logger.debug('request/fetch', `created requestId=${this.requestId}`)
-  }
-
-  public resolve(value: FetchOk | RequestError | PromiseLike<FetchOk | RequestError>): void {
-    if (value instanceof RequestError) {
-      logger.error(
-        'request/fetch',
-        `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
-      )
-    } else if (value instanceof FetchOk) {
-      logger.debug('request/fetch', `resolved with OK requestId=${this.requestId}`)
-    }
-    this._resolve(value)
-  }
-
-  public reject(reason?: any): void {
-    if (!isSessionClosed(reason)) logger.error('request/fetch', `rejected requestId=${this.requestId}`, reason)
-    this._reject(reason)
-  }
-
-  public then<TResult1 = FetchOk | RequestError, TResult2 = never>(
-    onfulfilled?: ((value: FetchOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
-    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
-  ): PromiseLike<TResult1 | TResult2> {
-    return this.promise.then(onfulfilled, onrejected)
-  }
-
-  public catch<TResult = never>(
-    onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<FetchOk | RequestError | TResult> {
-    return this.promise.catch(onrejected)
-  }
-
-  public finally(onfinally?: (() => void) | undefined | null): Promise<FetchOk | RequestError> {
-    return this.promise.finally(onfinally)
-  }
+export class FetchRequest extends PendingRequest<Fetch, FetchOk | RequestError> {
+  readonly objects = new ObjectStream()
+  readonly stream = this.objects.readable
+  onEndOfRange: EndOfRangeHandler | undefined
+  orderer: ObjectOrderer | undefined
 }

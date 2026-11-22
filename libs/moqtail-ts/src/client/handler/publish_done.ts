@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
  */
 
 import { SubscribeRequest } from '@/client/request/subscribe'
-import { PublishDone } from '@/model/control'
-import { RequestStreamMessageHandler } from './handler'
+import type { PublishDone } from '@/model/messages'
+import type { RequestStreamMessageHandler } from './handler'
 
 export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = async (
   client,
@@ -25,6 +25,7 @@ export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = asyn
   openingRequestId,
 ) => {
   client.emit('peerpublishdone', msg, openingRequestId)
+
   // A track the peer pushed with PUBLISH has no request of ours; its receiver is held under its alias
   const alias = client.subscriptionAliasMap.get(openingRequestId)
   const found = client.requests.get(openingRequestId)
@@ -34,14 +35,12 @@ export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = asyn
       : found === undefined && alias !== undefined
         ? client.subscriptions.get(alias)
         : undefined
-  if (request) {
-    request.expectedStreams = msg.streamCount
-    request.publishDone = msg
-    // The streams it accounts for may all have arrived already, in which case this
-    // message is the last thing the subscription was waiting for.
-    client.completeSubscription(request)
-  } else {
-    // TODO: Throw this error when the check is fixed. For now it crashes valid cases
-    // throw new ProtocolViolationError('handlerPublishDone', 'No publish request was found with the given request id')
-  }
+  // TODO: a PUBLISH_DONE for no request is a protocol violation, once the relay stops sending them
+  if (!request) return
+
+  request.expectedStreams = msg.streamCount
+  request.publishDone = msg
+  // The streams it accounts for may all have arrived already, in which case this
+  // message is the last thing the subscription was waiting for.
+  client.completeSubscription(request)
 }

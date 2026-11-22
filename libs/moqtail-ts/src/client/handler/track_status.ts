@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,12 @@
  * limitations under the License.
  */
 
-import { RequestOk, TrackStatus } from '../../model/control'
-import { RequestStreamMessageHandler } from './handler'
-import { logger } from '../../util/logger'
+import { requestOk } from '@/model/messages'
+import type { TrackStatus } from '@/model/messages'
+import type { RequestStreamMessageHandler } from './handler'
 
-export const handlerTrackStatus: RequestStreamMessageHandler<TrackStatus> = async (_client, msg, stream) => {
-  logger.debug('handler/track_status', `requestId=${msg.requestId} ftn="${msg.fullTrackName}"`)
-  // TODO (#273): report the real track status. REQUEST_OK now carries the Track
-  // Properties that would hold it, but nothing populates them yet, so this stays a bare
-  // acknowledgement.
-  await stream.send(new RequestOk())
+export const handlerTrackStatus: RequestStreamMessageHandler<TrackStatus> = async (_client, _msg, stream) => {
+  // TODO (#273): report the real track status. REQUEST_OK carries the Track Properties
+  // that would hold it, but nothing populates them yet, so this stays a bare acknowledgement.
+  await stream.send(requestOk())
 }

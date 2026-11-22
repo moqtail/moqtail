@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,15 +14,9 @@
  * limitations under the License.
  */
 
-import { RequestError } from '../../model/control'
-import { RequestStreamMessageHandler } from './handler'
-import { logger } from '../../util/logger'
-import { SubscribeRequest } from '../request/subscribe'
-import { PublishRequest } from '../request/publish'
-import { PublishNamespaceRequest } from '../request/publish_namespace'
-import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
-import { TrackStatusRequest } from '../request/track_status'
-import { FetchRequest } from '../request/fetch'
+import type { RequestError } from '@/model/messages'
+import { logger } from '@/util/logger'
+import type { RequestStreamMessageHandler } from './handler'
 
 export const handlerRequestError: RequestStreamMessageHandler<RequestError> = async (
   client,
@@ -30,32 +24,13 @@ export const handlerRequestError: RequestStreamMessageHandler<RequestError> = as
   _stream,
   requestId,
 ) => {
-  logger.error(
-    'handler/request_error',
-    `received requestId=${requestId} code=${msg.errorCode} reason="${msg.reasonPhrase.phrase}"`,
-  )
+  logger.error('handler/request_error', `request ${requestId} refused: ${msg.errorCode} "${msg.reasonPhrase}"`)
 
   // REQUEST_ERROR carries no request id of its own: the stream it arrived on names the
   // request it refuses (§10.1).
   const request = client.requests.get(requestId)
-  if (!request) {
-    logger.warn(
-      'handler/request_error',
-      `requestId=${requestId} — no pending request found (already resolved or unknown)`,
-    )
-    return
-  }
+  if (!request) return
 
-  logger.debug('handler/request_error', `requestId=${requestId} — resolving ${request.constructor.name} with error`)
-  if (
-    request instanceof SubscribeRequest ||
-    request instanceof PublishRequest ||
-    request instanceof PublishNamespaceRequest ||
-    request instanceof SubscribeNamespaceRequest ||
-    request instanceof TrackStatusRequest ||
-    request instanceof FetchRequest
-  ) {
-    request.resolve(msg)
-    client.requests.delete(requestId)
-  }
+  request.resolve(msg)
+  client.requests.delete(requestId)
 }

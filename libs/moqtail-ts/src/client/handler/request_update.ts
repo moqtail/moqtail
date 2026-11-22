@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,20 @@
  * limitations under the License.
  */
 
-import { ReasonPhrase } from '@/model'
-import {
-  ControlMessageType,
-  PublishDone,
-  PublishDoneStatusCode,
-  RequestError,
-  RequestErrorCode,
-  RequestOk,
-  RequestUpdate,
-} from '../../model/control'
-import { StreamResetCode } from '../../model/error/stream_reset'
-import { ProtocolViolationError } from '../../model/error/error'
-import { RequestStreamMessageHandler } from './handler'
-import { RequestStream } from '../request_stream'
-import { MOQtailClient } from '../client'
-import { FetchPublication } from '../publication/fetch'
-import { PublishPublication } from '../publication/publish'
-import { SubscribePublication } from '../publication/subscribe'
-import { logger } from '../../util/logger'
-import { rangeFilterRejection } from '../util/validators'
-import { InvalidFilterError } from '../../model/parameter/message/range_filter'
+import type { MOQtailClient } from '@/client/client'
+import { FetchPublication } from '@/client/publication/fetch'
+import { PublishPublication } from '@/client/publication/publish'
+import { SubscribePublication } from '@/client/publication/subscribe'
+import type { RequestStream } from '@/client/request_stream'
+import { rangeFilterRejection } from '@/client/util/validators'
+import { PublishDoneStatusCode, RequestErrorCode } from '@/model/constants'
+import { ProtocolViolationError } from '@/model/error/error'
+import { StreamResetCode } from '@/model/error/stream_reset'
+import { isUpdatable, requestError, requestOk } from '@/model/messages'
+import type { RequestUpdate } from '@/model/messages'
+import { InvalidFilterError } from '@/model/parameters'
+import { logger } from '@/util/logger'
+import type { RequestStreamMessageHandler } from './handler'
 
 /**
  * A REQUEST_UPDATE modifies the request whose stream it arrived on, and §10.9 requires
@@ -48,75 +41,66 @@ export const handlerRequestUpdate: RequestStreamMessageHandler<RequestUpdate> = 
   stream,
   requestId,
 ) => {
-  logger.log('handler/request_update', 'requestId', requestId)
-
   if (!isExpectedUpdate(stream)) {
-    await client.disconnect(
-      new ProtocolViolationError(
-        'handler/request_update',
-        `Unexpected REQUEST_UPDATE on a ${stream.first ? 'locally' : 'peer'} opened ${describe(stream.openingType)} stream`,
-      ),
-    )
+    const opener = stream.first ? 'locally' : 'peer'
+    const reason = `Unexpected REQUEST_UPDATE on a ${opener} opened ${stream.openingType ?? 'unknown'} stream`
+
+    await client.disconnect(new ProtocolViolationError('handler/request_update', reason))
+
     return
   }
 
   const filterRejection = rangeFilterRejection(msg.parameters, client.maxFilterRanges)
   if (filterRejection) {
-    const reason = filterRejection.reasonPhrase.phrase
-    logger.warn('handler/request_update', `requestId=${requestId} has filters this client cannot take: ${reason}`)
-    await failUpdate(client, stream, requestId, RequestErrorCode.InvalidFilter, reason)
+    await failUpdate(client, stream, requestId, RequestErrorCode.InvalidFilter, filterRejection.reasonPhrase)
     return
   }
 
-  // A subscription, or a PUBLISH this side is making. The update moves its filters
-  // and Forward State, which for a PUBLISH parks or resumes the push. A publication
-  // checks the filters it would be left with before taking any of it.
+  // A subscription, or a PUBLISH this side is making. The update moves its filters and
+  // Forward State, which for a PUBLISH parks or resumes the push. A publication checks the
+  // filters it would be left with before taking any of it.
   const publication = client.publications.get(requestId)
   if (publication instanceof SubscribePublication || publication instanceof PublishPublication) {
     try {
       publication.update(msg)
     } catch (error) {
       const invalid = error instanceof InvalidFilterError
+
       logger.error('handler/request_update', `update failed for requestId=${requestId}`, error)
-      await failUpdate(
-        client,
-        stream,
-        requestId,
-        invalid ? RequestErrorCode.InvalidFilter : RequestErrorCode.InternalError,
-        invalid ? error.details : 'REQUEST_UPDATE failed',
-      )
+
+      const code = invalid ? RequestErrorCode.InvalidFilter : RequestErrorCode.InternalError
+      await failUpdate(client, stream, requestId, code, invalid ? error.details : 'REQUEST_UPDATE failed')
+
       return
     }
-    await stream.send(new RequestOk())
+
+    await stream.send(requestOk())
+
     return
   }
 
   // A FETCH, a PUBLISH-established subscription and a namespace request all lack the
   // state to update here, so the update fails and takes the request with it.
-  logger.warn('handler/request_update', `no updatable request for requestId=${requestId}`)
   await failUpdate(client, stream, requestId, RequestErrorCode.NotSupported, 'REQUEST_UPDATE cannot be applied')
 }
 
 /**
- * Whether the peer may send a REQUEST_UPDATE on this stream. On a stream the peer
- * opened, it is the requester and may update any of the updatable request types. On a
- * stream this side opened, it may only update a PUBLISH, as that PUBLISH's subscriber.
+ * Whether the peer may send a REQUEST_UPDATE on this stream. On a stream the peer opened,
+ * it is the requester and may update any of the updatable request types. On a stream this
+ * side opened, it may only update a PUBLISH, as that PUBLISH's subscriber.
  */
 function isExpectedUpdate(stream: RequestStream): boolean {
-  const openingType = stream.openingType
+  const { openingType } = stream
   if (openingType === undefined) return false
-  if (stream.first) return openingType === ControlMessageType.Publish
-  return ControlMessageType.isUpdatable(openingType)
-}
+  if (stream.first) return openingType === 'publish'
 
-function describe(openingType: ControlMessageType | undefined): string {
-  return openingType === undefined ? 'unknown' : ControlMessageType[openingType]
+  return isUpdatable(openingType)
 }
 
 /**
  * Refuses the update, then ends the request the way §10.9.1 requires for its type: a
- * subscription is terminated with PUBLISH_DONE(UPDATE_FAILED), a FETCH has its data
- * stream reset, and a namespace request has its bidi stream closed.
+ * subscription is terminated with PUBLISH_DONE(UPDATE_FAILED), a FETCH has its data stream
+ * reset, and a namespace request has its bidi stream closed.
  */
 async function failUpdate(
   client: MOQtailClient,
@@ -125,32 +109,41 @@ async function failUpdate(
   errorCode: RequestErrorCode,
   reason: string,
 ): Promise<void> {
-  await stream.send(new RequestError(errorCode, 0n, new ReasonPhrase(reason)))
+  await stream.send(requestError(errorCode, reason))
 
   const publication = client.publications.get(requestId)
+
   switch (stream.openingType) {
-    case ControlMessageType.Subscribe:
-    case ControlMessageType.Publish:
+    case 'subscribe':
+    case 'publish':
       if (publication instanceof SubscribePublication) {
         await publication.done(PublishDoneStatusCode.UpdateFailed)
       } else {
         const streamCount = publication instanceof PublishPublication ? publication.streamsOpened : 0n
-        await stream.send(
-          new PublishDone(PublishDoneStatusCode.UpdateFailed, streamCount, new ReasonPhrase('REQUEST_UPDATE failed')),
-        )
+
+        await stream.send({
+          kind: 'publishDone',
+          statusCode: PublishDoneStatusCode.UpdateFailed,
+          streamCount,
+          errorReason: 'REQUEST_UPDATE failed',
+        })
       }
+
       publication?.cancel()
       client.publications.delete(requestId)
+
       break
 
-    case ControlMessageType.Fetch:
+    case 'fetch':
       if (publication instanceof FetchPublication) await publication.resetDataStream(StreamResetCode.Cancelled)
+
       client.publications.delete(requestId)
+
       break
 
-    case ControlMessageType.PublishNamespace:
-    case ControlMessageType.SubscribeNamespace:
-    case ControlMessageType.SubscribeTracks:
+    case 'publishNamespace':
+    case 'subscribeNamespace':
+    case 'subscribeTracks':
       await stream.close()
       break
   }

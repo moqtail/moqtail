@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,15 @@
  * limitations under the License.
  */
 
-import { Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
-import { MOQtailClient } from '@/client/client'
-import { Track } from '@/client/track/track'
-import { InternalError, Location, ReasonPhrase, MessageParameter, applyMessageParameterUpdate } from '@/model'
-import { CombinedFilter } from '@/model/parameter/message/combined_filter'
+import type { MOQtailClient } from '@/client/client'
+import type { Track } from '@/client/track/track'
+import { Location } from '@/model/common/location'
+import { PublishDoneStatusCode } from '@/model/constants'
+import { InternalError } from '@/model/error/error'
+import type { RequestUpdate, Subscribe } from '@/model/messages'
+import { applyParameterUpdate, endLocation, startLocation } from '@/model/parameters'
+import type { MessageParameters } from '@/model/parameters'
+import { CombinedFilter } from './filter'
 import { SendStream } from '@/client/data_stream'
 import { RequestStream } from '@/client/request_stream'
 import { MoqtObject } from '@/model/data/object'
@@ -72,7 +76,7 @@ export class SubscribePublication {
   /**
    * The subscription parameters for this publication.
    */
-  #parameters: MessageParameter[]
+  #parameters: MessageParameters
 
   /**
    * What the subscription's Range Filters let through.
@@ -144,17 +148,16 @@ export class SubscribePublication {
   ) {
     this.#trackAlias = track.trackAlias!
     this.#publisherPriority = track.publisherPriority
-    const subPriority = subscribeMsg.parameters.find(MessageParameter.isSubscriberPriority)
-    const fwd = subscribeMsg.parameters.find(MessageParameter.isForward)
-    const filter = subscribeMsg.parameters.find(MessageParameter.isLocationFilter)
-    this.#subscriberPriority = subPriority?.priority ?? 128
-    this.#forward = fwd?.forward ?? true
-    this.#parameters = [...subscribeMsg.parameters]
+
+    const { subscriberPriority, forward, locationFilter } = subscribeMsg.parameters
+    this.#subscriberPriority = subscriberPriority ?? 128
+    this.#forward = forward ?? true
+    this.#parameters = subscribeMsg.parameters
     // The handler has already refused a SUBSCRIBE with filters that cannot be applied.
     this.#filter = new CombinedFilter(this.#parameters)
     // No filter starts at the beginning and never ends.
-    this.#startLocation = filter?.startLocation(largestLocation) ?? new Location(0n, 0n)
-    this.#endLocation = filter?.endLocation()
+    this.#startLocation = (locationFilter && startLocation(locationFilter, largestLocation)) ?? new Location(0n, 0n)
+    this.#endLocation = locationFilter && endLocation(locationFilter)
     this.publish()
   }
 
@@ -184,9 +187,10 @@ export class SubscribePublication {
    */
   async done(statusCode: PublishDoneStatusCode): Promise<void> {
     this.#isCompleted = true
-    const publishDone = new PublishDone(statusCode, BigInt(this.#streamsOpened), new ReasonPhrase('Subscription ended'))
+
+    const streamCount = BigInt(this.#streamsOpened)
     // TODO: Handle track completion, there might be ongoing streams. Wait for all to finish before cleaning the state
-    await this.requestStream.send(publishDone)
+    await this.requestStream.send({ kind: 'publishDone', statusCode, streamCount, errorReason: 'Subscription ended' })
   }
 
   /**
@@ -198,26 +202,21 @@ export class SubscribePublication {
   update(msg: RequestUpdate): void {
     // The filters are checked as they would stand afterwards, before any of the update
     // is taken: a refused update leaves the subscription as it was.
-    const parameters = [...this.#parameters]
-    applyMessageParameterUpdate(parameters, msg.parameters)
+    const parameters = applyParameterUpdate(this.#parameters, msg.parameters)
+
     assertWithinFilterRangeLimit(parameters, this.client.maxFilterRanges, 'REQUEST_UPDATE')
     this.#filter = new CombinedFilter(parameters)
 
     // An update changes the filter only when it carries one.
-    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
-    if (filter) {
-      this.#startLocation = filter.startLocation(this.latestLocation) ?? new Location(0n, 0n)
-      this.#endLocation = filter.endLocation()
+    const { locationFilter, subscriberPriority, forward } = msg.parameters
+
+    if (locationFilter) {
+      this.#startLocation = startLocation(locationFilter, this.latestLocation) ?? new Location(0n, 0n)
+      this.#endLocation = endLocation(locationFilter)
     }
 
-    for (const param of msg.parameters) {
-      if (MessageParameter.isSubscriberPriority?.(param)) {
-        this.#subscriberPriority = (param as any).priority
-      } else if (MessageParameter.isForward?.(param)) {
-        this.#forward = (param as any).forward
-      }
-    }
-
+    if (subscriberPriority !== undefined) this.#subscriberPriority = subscriberPriority
+    if (forward !== undefined) this.#forward = forward
     this.#parameters = parameters
   }
 

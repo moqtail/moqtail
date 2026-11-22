@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,68 +14,47 @@
  * limitations under the License.
  */
 
-import { MessageParameter, ReasonPhrase } from '@/model'
-import { Subscribe, RequestError, RequestErrorCode, SubscribeOk } from '../../model/control'
-import { RequestStreamMessageHandler } from './handler'
-import { SubscribePublication } from '../publication/subscribe'
-import { logger } from '../../util/logger'
-import { LargestObject } from '../../model/parameter/message/largest_object'
-import { isValidTrackAlias, rangeFilterRejection } from '../util/validators'
+import { SubscribePublication } from '@/client/publication/subscribe'
+import { isValidTrackAlias, rangeFilterRejection } from '@/client/util/validators'
+import { RequestErrorCode } from '@/model/constants'
+import { requestError } from '@/model/messages'
+import type { Subscribe, SubscribeOk } from '@/model/messages'
+import { logger } from '@/util/logger'
+import type { RequestStreamMessageHandler } from './handler'
 
 export const handlerSubscribe: RequestStreamMessageHandler<Subscribe> = async (client, msg, stream) => {
-  logger.debug('handler/subscribe', `received requestId=${msg.requestId} ftn="${msg.fullTrackName}"`)
-
   const filterRejection = rangeFilterRejection(msg.parameters, client.maxFilterRanges)
   if (filterRejection) {
-    logger.warn(
-      'handler/subscribe',
-      `requestId=${msg.requestId} has filters this client cannot take: ${filterRejection.reasonPhrase.phrase}`,
-    )
+    logger.warn('handler/subscribe', `requestId=${msg.requestId} has filters this client cannot take`)
     await stream.send(filterRejection)
     return
   }
 
   const track = client.trackSources.get(msg.fullTrackName.toString())
   if (!track) {
-    logger.error(
-      'handler/subscribe',
-      `requestId=${msg.requestId} ftn="${msg.fullTrackName}" — track not found, sending REQUEST_ERROR`,
-    )
-    const subscribeError = new RequestError(RequestErrorCode.DoesNotExist, 0n, new ReasonPhrase('Track does not exist'))
-    await stream.send(subscribeError)
+    await stream.send(requestError(RequestErrorCode.DoesNotExist, 'Track does not exist'))
     return
   }
   if (!track.trackSource.live) {
-    logger.error(
-      'handler/subscribe',
-      `requestId=${msg.requestId} ftn="${msg.fullTrackName}" — track has no live source, sending REQUEST_ERROR`,
-    )
-    const response = new RequestError(
-      RequestErrorCode.NotSupported,
-      0n,
-      new ReasonPhrase('Requested track does not support subscribe'),
-    )
-    await stream.send(response)
+    await stream.send(requestError(RequestErrorCode.NotSupported, 'Requested track does not support subscribe'))
     return
   }
-
   if (!isValidTrackAlias(track.trackAlias)) throw new Error('Expected track alias to be set')
 
   // The request's own parameters are not echoed: SUBSCRIBE_OK carries only what the
   // publisher has to say, and a request parameter is not allowed in it.
   const largestLocation = track.trackSource.live.largestLocation
-  const parameters = largestLocation ? [new LargestObject(largestLocation)] : []
-  const trackProperties = MessageParameter.includesProperties(msg.parameters) ? (track.trackProperties ?? []) : []
+  const subscribeOk: SubscribeOk = {
+    kind: 'subscribeOk',
+    trackAlias: track.trackAlias,
+    parameters: largestLocation ? { largestObject: largestLocation } : {},
+    trackProperties: msg.parameters.includeProperties === false ? [] : (track.trackProperties ?? []),
+  }
 
-  logger.debug(
-    'handler/subscribe',
-    `requestId=${msg.requestId} ftn="${msg.fullTrackName}" trackAlias=${track.trackAlias} largestLocation=${largestLocation ? `${largestLocation.group}:${largestLocation.object}` : 'none'} — sending SUBSCRIBE_OK`,
-  )
-  const subscribeOk = SubscribeOk.create(track.trackAlias, parameters, trackProperties)
   // The publication keeps the stream: PUBLISH_DONE and any later response for this
   // subscription must go back on the stream the SUBSCRIBE arrived on.
   const publication = new SubscribePublication(client, track, msg, stream, largestLocation)
   client.publications.set(msg.requestId, publication)
+
   await stream.send(subscribeOk)
-  logger.debug('handler/subscribe', `requestId=${msg.requestId} — SUBSCRIBE_OK sent, publication registered`)
 }

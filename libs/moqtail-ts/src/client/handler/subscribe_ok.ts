@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,31 +14,20 @@
  * limitations under the License.
  */
 
-import { ProtocolViolationError } from '@/model'
-import { SubscribeOk } from '../../model/control'
-import { SubscribeRequest } from '../request/subscribe'
-import { RequestStreamMessageHandler } from './handler'
-import { logger } from '../../util/logger'
+import { SubscribeRequest } from '@/client/request/subscribe'
+import { ProtocolViolationError } from '@/model/error/error'
+import type { SubscribeOk } from '@/model/messages'
+import type { RequestStreamMessageHandler } from './handler'
 import { applySubscriptionResponse } from './subscription_response'
 
 export const handlerSubscribeOk: RequestStreamMessageHandler<SubscribeOk> = async (client, msg, _stream, requestId) => {
-  logger.debug('handler/subscribe_ok', `received requestId=${requestId} trackAlias=${msg.trackAlias}`)
-
   // SUBSCRIBE_OK carries no request id of its own: the stream it arrived on names the
   // SUBSCRIBE it answers (§10.1).
   const request = client.requests.get(requestId)
-  if (request instanceof SubscribeRequest) {
-    applySubscriptionResponse(client, request, msg.parameters, msg.trackProperties)
-    logger.debug(
-      'handler/subscribe_ok',
-      `requestId=${requestId} — resolving SubscribeRequest ftn="${request.fullTrackName}"`,
-    )
-    request.resolve(msg)
-  } else {
-    logger.error(
-      'handler/subscribe_ok',
-      `requestId=${requestId} — no pending SubscribeRequest found (got ${request?.constructor.name ?? 'undefined'})`,
-    )
+  if (!(request instanceof SubscribeRequest)) {
     throw new ProtocolViolationError('handlerSubscribeOk', 'SUBSCRIBE_OK on a stream with no pending subscribe request')
   }
+
+  applySubscriptionResponse(client, request, msg)
+  request.resolve(msg)
 }

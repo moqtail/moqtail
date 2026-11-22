@@ -14,190 +14,112 @@
  * limitations under the License.
  */
 
-import type { EndOfRangeHandler } from '@/client/types'
-import {
-  FullTrackName,
-  Location,
-  MessageParameter,
-  MoqtObject,
-  Subscribe,
-  RequestError,
-  SubscribeOk,
-  RequestUpdate,
-  PublishDone,
-  applyMessageParameterUpdate,
-} from '@/model'
-import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS, type EarlyDiscardPolicyConfig } from '@/client/types'
-import { logger } from '@/util/logger'
-import { isSessionClosed } from '@/client/util/stream_reset'
 import type { ObjectOrderer } from '@/client/ordering'
+import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS } from '@/client/types'
+import type { EarlyDiscardPolicyConfig, EndOfRangeHandler } from '@/client/types'
 import { ObjectStream } from '@/client/util/object_stream'
+import type { Location } from '@/model/common/location'
+import type { FullTrackName } from '@/model/data/full_track_name'
+import type { MoqtObject } from '@/model/data/object'
+import type { PublishDone, RequestError, RequestUpdate, Subscribe, SubscribeOk } from '@/model/messages'
+import { absoluteStart, applyParameterUpdate, endLocation } from '@/model/parameters'
+import type { MessageParameters } from '@/model/parameters'
+import { logger } from '@/util/logger'
+import { PendingRequest } from './pending'
 
 // TODO: Add timeout mechanism for unsubscribing
 
 /**
  * @public
- * Represents an active subscription request in MOQT, implementing `PromiseLike`
- * for convenient async resolution when subscription setup succeeds or fails.
+ * An active subscription request in MOQT; awaiting it gives its SUBSCRIBE_OK, or the
+ * REQUEST_ERROR that refused it.
  */
-export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError> {
-  public requestId: bigint
-  public fullTrackName: FullTrackName
-  public isCanceled: boolean = false
-  public startLocation: Location | undefined
-  public endGroup: bigint | undefined
-  public priority: number
-  public forward: boolean
-  public subscribeParameters: MessageParameter[]
-  public earlyDiscardPolicy: EarlyDiscardPolicyConfig | undefined
-  public onEndOfRange: EndOfRangeHandler | undefined
-
-  public largestLocation: Location | undefined // Updated on each received object
+export class SubscribeRequest extends PendingRequest<Subscribe, SubscribeOk | RequestError> {
+  readonly fullTrackName: FullTrackName
+  readonly objects = new ObjectStream()
+  readonly stream = this.objects.readable
+  /** Resolves once this request is over, with {@link SubscribeRequest.publishDone}. Never rejects. */
+  readonly done: Promise<PublishDone | undefined>
+  readonly #finished = Promise.withResolvers<PublishDone | undefined>()
+  isCanceled = false
+  startLocation: Location | undefined
+  endGroup: bigint | undefined
+  priority: number
+  forward: boolean
+  subscribeParameters: MessageParameters
+  earlyDiscardPolicy: EarlyDiscardPolicyConfig | undefined
+  onEndOfRange: EndOfRangeHandler | undefined
+  /** Updated on each received object. */
+  largestLocation: Location | undefined
   /**
    * The publisher's Largest Object as of the last SUBSCRIBE_OK or REQUEST_UPDATE_OK,
    * which is where a fill fetch stream stops.
    */
-  public fillBoundary: Location | undefined
+  fillBoundary: Location | undefined
   /** A fill fetch stream opened for this subscription. */
-  public fillOpened = false
+  fillOpened = false
   /** Fill fetch streams still delivering. */
-  public openFills = 0
+  openFills = 0
   /** EXPIRES from the last SUBSCRIBE_OK or REQUEST_UPDATE_OK, in milliseconds. */
-  public expires: bigint | undefined
-  public streamsAccepted: bigint = 0n
-  public expectedStreams: bigint | undefined // Defined upon SUBSCRIBE_DONE
+  expires: bigint | undefined
+  streamsAccepted = 0n
+  /** Set by PUBLISH_DONE. */
+  expectedStreams: bigint | undefined
   /** The last PUBLISH_DONE received for this request. */
-  public publishDone: PublishDone | undefined
-  readonly #finished = Promise.withResolvers<PublishDone | undefined>()
-  /** Resolves once this request is over, with {@link SubscribeRequest.publishDone}. Never rejects. */
-  public readonly done = this.#finished.promise
-
+  publishDone: PublishDone | undefined
   /** The Subscription that owns this request's consumer stream; it sets itself on construction. */
-  public manager!: Subscription
-
-  public readonly objects = new ObjectStream()
-  public readonly stream = this.objects.readable
-  public orderer: ObjectOrderer | undefined
-
-  #promise: Promise<SubscribeOk | RequestError>
-  #resolve!: (value: SubscribeOk | RequestError | PromiseLike<SubscribeOk | RequestError>) => void
-  #reject!: (reason?: any) => void
+  manager!: Subscription
+  orderer: ObjectOrderer | undefined
 
   constructor(msg: Subscribe) {
-    this.requestId = msg.requestId
+    super(msg)
     this.fullTrackName = msg.fullTrackName
+    this.done = this.#finished.promise
 
-    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
-    this.startLocation = filter?.absoluteStart
-    this.endGroup = filter?.endLocation()?.group
+    const params = msg.parameters
 
-    const subPriority = msg.parameters.find(MessageParameter.isSubscriberPriority)
-    this.priority = subPriority?.priority ?? 128
-
-    const fwd = msg.parameters.find(MessageParameter.isForward)
-    this.forward = fwd?.forward ?? true
-
-    this.subscribeParameters = msg.parameters
-
-    this.#promise = new Promise<SubscribeOk | RequestError>((resolve, reject) => {
-      this.#resolve = resolve
-      this.#reject = reject
-    })
-
-    logger.debug(
-      'request/subscribe',
-      `created requestId=${this.requestId} ftn="${this.fullTrackName}" priority=${this.priority} forward=${this.forward}`,
-    )
+    this.startLocation = params.locationFilter && absoluteStart(params.locationFilter)
+    this.endGroup = params.locationFilter && endLocation(params.locationFilter)?.group
+    this.priority = params.subscriberPriority ?? 128
+    this.forward = params.forward ?? true
+    this.subscribeParameters = params
   }
 
-  /**
-   * Updates subscription parameters in-place when a `RequestUpdate` message is received.
-   */
-  public update(msg: RequestUpdate): void {
-    // An update changes the filter only when it carries one.
-    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
-    if (filter) {
-      this.startLocation = filter.absoluteStart
-      this.endGroup = filter.endLocation()?.group
+  /** Applies a REQUEST_UPDATE: an update changes the filter only when it carries one. */
+  update(msg: RequestUpdate): void {
+    const { locationFilter, subscriberPriority, forward } = msg.parameters
+
+    if (locationFilter) {
+      this.startLocation = absoluteStart(locationFilter)
+      this.endGroup = endLocation(locationFilter)?.group
     }
 
-    for (const param of msg.parameters) {
-      if (MessageParameter.isSubscriberPriority?.(param)) {
-        this.priority = (param as any).priority
-      } else if (MessageParameter.isForward?.(param)) {
-        this.forward = (param as any).forward
-      }
-    }
-
-    if (typeof applyMessageParameterUpdate === 'function') {
-      applyMessageParameterUpdate(this.subscribeParameters, msg.parameters)
-    }
+    if (subscriberPriority !== undefined) this.priority = subscriberPriority
+    if (forward !== undefined) this.forward = forward
+    this.subscribeParameters = applyParameterUpdate(this.subscribeParameters, msg.parameters)
   }
 
   /**
    * Puts an object on the consumer stream, through {@link SubscribeRequest.orderer} when
    * there is one. `previous` is the object before it on the same fill fetch stream.
    */
-  public enqueue(obj: MoqtObject, previous?: Location): void {
+  enqueue(obj: MoqtObject, previous?: Location): void {
     if (this.orderer) this.orderer.push(obj, previous)
     else this.output(obj)
   }
 
   /** Writes an object the orderer released, or an unordered one, through the manager. */
-  public output(obj: MoqtObject): void {
+  output(obj: MoqtObject): void {
     this.manager.output(this, obj)
   }
 
   /** Ends the request: resolves {@link SubscribeRequest.done}. Later calls do nothing. */
-  public finish(): void {
+  finish(): void {
     this.#finished.resolve(this.publishDone)
   }
 
-  /**
-   * Marks this subscription request as canceled.
-   */
-  public unsubscribe(): void {
+  unsubscribe(): void {
     this.isCanceled = true
-  }
-
-  /**
-   * Resolves the internal promise with a `SubscribeOk` or `RequestError`.
-   */
-  public resolve(value: SubscribeOk | RequestError | PromiseLike<SubscribeOk | RequestError>): void {
-    if (value instanceof RequestError) {
-      logger.error(
-        'request/subscribe',
-        `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
-      )
-    } else if (value instanceof SubscribeOk) {
-      logger.debug('request/subscribe', `resolved with OK requestId=${this.requestId} trackAlias=${value.trackAlias}`)
-    }
-    this.#resolve(value)
-  }
-
-  /**
-   * Rejects the internal promise with an error/reason.
-   */
-  public reject(reason?: any): void {
-    if (!isSessionClosed(reason)) logger.error('request/subscribe', `rejected requestId=${this.requestId}`, reason)
-    this.#reject(reason)
-  }
-
-  public then<TResult1 = SubscribeOk | RequestError, TResult2 = never>(
-    onfulfilled?: ((value: SubscribeOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
-    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
-  ): PromiseLike<TResult1 | TResult2> {
-    return this.#promise.then(onfulfilled, onrejected)
-  }
-
-  public catch<TResult = never>(
-    onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<SubscribeOk | RequestError | TResult> {
-    return this.#promise.catch(onrejected)
-  }
-
-  public finally(onfinally?: (() => void) | undefined | null): Promise<SubscribeOk | RequestError> {
-    return this.#promise.finally(onfinally)
   }
 }
 
@@ -418,16 +340,21 @@ export class Subscription {
 if (import.meta.vitest) {
   const { test, expect, vi } = import.meta.vitest
   const { ObjectOrderer } = await import('@/client/ordering')
+  const { Location } = await import('@/model/common/location')
   const { ObjectForwardingPreference } = await import('@/model/data/constant')
+  const { FullTrackName } = await import('@/model/data/full_track_name')
+  const { MoqtObject } = await import('@/model/data/object')
 
   const ftn = FullTrackName.tryNew('room', 'video')
   function orderedRequest(id: bigint): SubscribeRequest {
-    const request = new SubscribeRequest(new Subscribe(id, ftn, []))
+    const request = new SubscribeRequest({ kind: 'subscribe', requestId: id, fullTrackName: ftn, parameters: {} })
+
     request.orderer = new ObjectOrderer(
       { window: { durationMs: 150 } },
       (obj) => request.output(obj),
       () => {},
     )
+
     return request
   }
   const object = (group: bigint, id: bigint) =>

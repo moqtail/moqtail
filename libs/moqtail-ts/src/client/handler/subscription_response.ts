@@ -14,39 +14,30 @@
  * limitations under the License.
  */
 
-import { MessageParameter, TrackProperty } from '@/model'
-import { MOQtailClient } from '../client'
-import { SubscribeRequest } from '../request/subscribe'
-import { logger } from '../../util/logger'
+import type { MOQtailClient } from '@/client/client'
+import type { SubscribeRequest } from '@/client/request/subscribe'
+import type { RequestOk, SubscribeOk } from '@/model/messages'
 
 /**
- * Records what a SUBSCRIBE_OK or REQUEST_UPDATE_OK says about a subscription.
- * Both carry the same things, so both are read the same way.
+ * Records what a SUBSCRIBE_OK or REQUEST_UPDATE_OK says about a subscription. Both carry
+ * the same things, so both are read the same way.
  *
- * LARGEST_OBJECT is where a fill fetch stream stops, which is how a subscriber
- * tells a fill that finished from one that was cut short. Track properties, such
- * as whether the track supports dynamic groups, belong to the track rather than
- * to this subscription and are recorded there. EXPIRES is kept for callers to
- * read but nothing acts on it: no subscription expires on a timer here yet.
+ * LARGEST_OBJECT is where a fill fetch stream stops, which is how a subscriber tells a
+ * fill that finished from one that was cut short. Track properties, such as whether the
+ * track supports dynamic groups, belong to the track rather than to this subscription
+ * and are recorded there. EXPIRES is kept for callers to read but nothing acts on it: no
+ * subscription expires on a timer here yet.
  */
 export function applySubscriptionResponse(
   client: MOQtailClient,
   request: SubscribeRequest,
-  parameters: MessageParameter[],
-  trackProperties: TrackProperty[],
+  { parameters, trackProperties }: SubscribeOk | RequestOk,
 ): void {
-  const largest = parameters.find(MessageParameter.isLargestObject)
-  if (largest) request.fillBoundary = largest.location
+  if (parameters.largestObject) request.fillBoundary = parameters.largestObject
+  if (parameters.expires !== undefined) request.expires = parameters.expires
 
-  const expires = parameters.find(MessageParameter.isExpires)
-  if (expires) request.expires = expires.expires
+  if (trackProperties.length === 0) return
 
-  if (trackProperties.length > 0) {
-    logger.debug(
-      'handler/subscription_response',
-      `requestId=${request.requestId} — applying ${trackProperties.length} track propert(ies)`,
-    )
-    const track = client.trackSources.get(request.fullTrackName.toString())
-    if (track !== undefined) track.trackProperties = trackProperties
-  }
+  const track = client.trackSources.get(request.fullTrackName.toString())
+  if (track) track.trackProperties = trackProperties
 }

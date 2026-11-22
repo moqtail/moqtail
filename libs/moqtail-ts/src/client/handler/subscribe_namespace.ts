@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,17 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, RequestOk } from '@/model/control'
-import { RequestStreamMessageHandler } from './handler'
-import { logger } from '@/util/logger'
+import { requestOk } from '@/model/messages'
+import type { SubscribeNamespace } from '@/model/messages'
+import type { RequestStreamMessageHandler } from './handler'
 
 export const handlerSubscribeNamespace: RequestStreamMessageHandler<SubscribeNamespace> = async (
   client,
   msg,
   stream,
 ) => {
-  logger.log('handler/subscribe_namespace', 'namespace', msg.trackNamespacePrefix.toUtf8Path())
   client.emit('peersubscribenamespace', msg)
-
   // The peer holds this stream open for the subscription's lifetime; NAMESPACE and
   // NAMESPACE_DONE for matching announcements are written to it.
-  await stream.send(new RequestOk())
+  await stream.send(requestOk())
 }

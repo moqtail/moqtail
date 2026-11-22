@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,65 +14,49 @@
  * limitations under the License.
  */
 
-import { InternalError, MessageParameter, ReasonPhrase } from '@/model'
-import { Fetch, FetchOk, RequestError, RequestErrorCode } from '../../model/control'
-import { RequestStreamMessageHandler } from './handler'
-import { SubscribePublication } from '../publication/subscribe'
-import { FetchPublication } from '../publication/fetch'
-import { PublishPublication } from '../publication'
-import { logger } from '../../util/logger'
-import { rangeFilterRejection } from '../util/validators'
+import { FetchPublication } from '@/client/publication/fetch'
+import { rangeFilterRejection } from '@/client/util/validators'
+import { RequestErrorCode } from '@/model/constants'
+import { requestError } from '@/model/messages'
+import type { Fetch } from '@/model/messages'
+import { fetchRange, locationFilter } from '@/model/parameters'
+import { LocationFilterType } from '@/model/constants'
+import { logger } from '@/util/logger'
+import type { RequestStreamMessageHandler } from './handler'
 
 export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, msg, stream) => {
-  logger.log('handler/fetch', 'requestId', msg.requestId)
   const filterRejection = rangeFilterRejection(msg.parameters, client.maxFilterRanges)
   if (filterRejection) {
-    logger.warn(
-      'handler/fetch',
-      `requestId=${msg.requestId} has filters this client cannot take: ${filterRejection.reasonPhrase.phrase}`,
-    )
+    logger.warn('handler/fetch', `requestId=${msg.requestId} has filters this client cannot take`)
     await stream.send(filterRejection)
     return
   }
 
   // TODO: Use fetch parameters and handle authorization
-  const fullTrackName = msg.fullTrackName
-  const track = client.trackSources.get(fullTrackName.toString())
+  const track = client.trackSources.get(msg.fullTrackName.toString())
   if (!track) {
-    const response = new RequestError(RequestErrorCode.DoesNotExist, 0n, new ReasonPhrase('Track does not exists'))
-    await stream.send(response)
+    await stream.send(requestError(RequestErrorCode.DoesNotExist, 'Track does not exists'))
     return
   }
-
   if (!track.trackSource.past) {
-    const response = new RequestError(
-      RequestErrorCode.NotSupported,
-      0n,
-      new ReasonPhrase('Requested track does not support fetch'),
-    )
-    await stream.send(response)
-    return
-  }
-  const largest = track.trackSource.live?.largestLocation ?? (await track.trackSource.past.getRange()).at(-1)?.location
-  const range = msg.locationFilter.fetchRange(largest)
-  if (!range) {
-    logger.warn('handler/fetch', `requestId=${msg.requestId} selects nothing published (largest=${largest})`)
-    const response = new RequestError(
-      RequestErrorCode.InvalidRange,
-      0n,
-      new ReasonPhrase('Nothing published in the requested range'),
-    )
-    await stream.send(response)
+    await stream.send(requestError(RequestErrorCode.NotSupported, 'Requested track does not support fetch'))
     return
   }
 
-  // TODO: Add support for descending group order
-  // TODO: Handle parameter checking and parameter selection.
-  // TODO: Figure out what to do with endOfTrack
+  const largest = track.trackSource.live?.largestLocation ?? (await track.trackSource.past.getRange()).at(-1)?.location
+  const filter = msg.parameters.locationFilter ?? locationFilter(LocationFilterType.None)
+  const range = fetchRange(filter, largest)
+  if (!range) {
+    await stream.send(requestError(RequestErrorCode.InvalidRange, 'Nothing published in the requested range'))
+    return
+  }
+
+  // TODO: Add support for descending group order, and decide what endOfTrack says
   const publication = new FetchPublication(client, track, msg, range.start, range.end)
   client.publications.set(msg.requestId, publication)
+
   // No parameters are defined for FETCH_OK, so the request's are not echoed.
-  const trackProperties = MessageParameter.includesProperties(msg.parameters) ? (track.trackProperties ?? []) : []
-  const response = new FetchOk(false, range.end, [], trackProperties)
-  await stream.send(response)
+  const trackProperties = msg.parameters.includeProperties === false ? [] : (track.trackProperties ?? [])
+
+  await stream.send({ kind: 'fetchOk', endOfTrack: false, endLocation: range.end, parameters: {}, trackProperties })
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,18 +14,4 @@
  * limitations under the License.
  */
 
-export * from './publish'
-export * from './publish_namespace'
-export * from './publish_skipped'
-export * from './fetch'
-export * from './fetch_ok'
-export * from './goaway'
-export * from './subscribe'
-export * from './subscribe_namespace'
-export * from './subscribe_tracks'
-export * from './request_ok'
-export * from './request_error'
-export * from './publish_done'
-export * from './subscribe_ok'
-export * from './request_update'
-export * from './track_status'
+export { MOQtailClient } from './client'

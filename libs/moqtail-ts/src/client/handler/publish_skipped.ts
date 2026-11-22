@@ -14,27 +14,18 @@
  * limitations under the License.
  */
 
-import { ProtocolViolationError } from '@/model/error'
-import { PublishSkipped, SubscribeTracks } from '@/model/control'
-import { RequestStreamMessageHandler } from './handler'
-import { logger } from '@/util/logger'
+import { ProtocolViolationError } from '@/model/error/error'
+import type { PublishSkipped } from '@/model/messages'
+import type { RequestStreamMessageHandler } from './handler'
 
 export const handlerPublishSkipped: RequestStreamMessageHandler<PublishSkipped> = async (client, msg, stream) => {
-  const first = stream.first
-  if (!(first instanceof SubscribeTracks)) {
+  const { first } = stream
+  if (first?.kind !== 'subscribeTracks') {
     throw new ProtocolViolationError(
       'handlerPublishSkipped',
       'PUBLISH_SKIPPED on a stream this side did not open with SUBSCRIBE_TRACKS',
     )
   }
-
-  logger.log(
-    'handler/publish_skipped',
-    'prefix',
-    first.trackNamespacePrefix.toUtf8Path(),
-    'suffix',
-    msg.trackNamespaceSuffix.toUtf8Path(),
-  )
 
   client.emit('peerpublishskipped', first.trackNamespacePrefix, msg)
 }

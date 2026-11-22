@@ -23,8 +23,8 @@ import {
   LOCProperties,
   ObjectForwardingPreference,
   PublishDoneStatusCode,
-  RequestError,
   Tuple,
+  isRequestError,
 } from 'moqtail';
 import type { CatalogJson } from 'moqtail/player';
 import { CMAFMuxer } from './cmaf-muxer';
@@ -275,8 +275,8 @@ export class Publisher {
     });
     const track = this.client!.trackSources.get(ftn.toString())!;
     const published = await this.client!.publish(ftn, true, track.trackAlias!);
-    if (published instanceof RequestError) {
-      throw new Error(`The relay refused track ${trackName}: ${published.reasonPhrase.phrase}`);
+    if (isRequestError(published)) {
+      throw new Error(`The relay refused track ${trackName}: ${published.reasonPhrase}`);
     }
     logger.info('publisher', `track published: ${trackName} (alias=${track.trackAlias})`);
 

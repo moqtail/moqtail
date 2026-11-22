@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 import { useRef, useState } from 'react';
 import { Mic, MicOff, PhoneOff, ScrollText, Settings, Video, VideoOff } from 'lucide-react';
 import { MOQtailClient } from 'moqtail/client';
-import { RequestError } from 'moqtail/model';
+import { isRequestError } from 'moqtail/model';
 import {
   FullTrackName,
   Tuple,
@@ -29,7 +29,7 @@ import { createMOQtailClient } from './moq/client';
 import { SettingsPane } from './SettingsPane';
 import { MessageLogPane } from './MessageLogPane';
 import { LogEntry, MessageDirection, toLogEntry, toSignalEntry } from './moq/describe';
-import { ControlMessage, Publish } from 'moqtail/model';
+import type { Message } from 'moqtail/model';
 import { DataStats } from './moq/dataStats';
 import { setupSignalling } from './moq/signalling';
 import {
@@ -181,7 +181,7 @@ export default function App() {
     subscribedTracksRef.current.add(key);
     const { response } = await client.subscribeTracks(ns);
     console.log('subscribeTracksOnce: response for ns %s: %o', key, response);
-    if (response instanceof RequestError) {
+    if (isRequestError(response)) {
       console.warn('subscribeTracks failed for', key, ':', response);
       subscribedTracksRef.current.delete(key);
     }
@@ -193,10 +193,10 @@ export default function App() {
     );
   }
 
-  function logControlMessage(msg: ControlMessage, direction: MessageDirection) {
+  function logControlMessage(msg: Message, direction: MessageDirection) {
     appendToMessageLog(toLogEntry(msg, direction));
     // A PUBLISH names the alias its data streams will carry, in the direction it went.
-    if (msg instanceof Publish)
+    if (msg.kind === 'publish')
       dataStats.nameAlias(direction === 'sent' ? 'out' : 'in', msg.trackAlias, msg.fullTrackName);
   }
 
@@ -353,7 +353,7 @@ export default function App() {
     const video = await client.publish(videoFTN, false, videoTrack.trackAlias!, undefined, [
       new DefaultPublisherPriorityProperty(128),
     ]);
-    if (video instanceof RequestError) {
+    if (isRequestError(video)) {
       console.error('publish rejected for the video track', video);
       setError('The relay rejected the video track.');
       await client.unpublishNamespace(namespace);
@@ -363,7 +363,7 @@ export default function App() {
     const audio = await client.publish(audioFTN, false, audioTrack.trackAlias!, undefined, [
       new DefaultPublisherPriorityProperty(0),
     ]);
-    if (audio instanceof RequestError) {
+    if (isRequestError(audio)) {
       console.error('publish rejected for the audio track', audio);
       setError('The relay rejected the audio track.');
       // Leave nothing half-published: end the video track we just opened.

@@ -11,12 +11,12 @@ You need a connected client: see [Connect to a relay](/ts/client/connect). The e
 ## Announce the namespace
 
 ```ts
-import { RequestError, Tuple } from 'moqtail'
+import { isRequestError, Tuple } from 'moqtail'
 
 const namespace = Tuple.fromUtf8Path('my-app/camera')
 const announced = await client.publishNamespace(namespace)
-if (announced instanceof RequestError) {
-  throw new Error(`Namespace refused: ${announced.reasonPhrase.phrase}`)
+if (isRequestError(announced)) {
+  throw new Error(`Namespace refused: ${announced.reasonPhrase}`)
 }
 ```
 
@@ -56,8 +56,8 @@ To have the relay take the track before anyone asks for it, publish it:
 
 ```ts
 const published = await client.publish(fullTrackName, true, track.trackAlias!)
-if (published instanceof RequestError) {
-  throw new Error(`Track refused: ${published.reasonPhrase.phrase}`)
+if (isRequestError(published)) {
+  throw new Error(`Track refused: ${published.reasonPhrase}`)
 }
 ```
 

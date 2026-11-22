@@ -21,16 +21,16 @@ The namespace is a `/`-separated string or a `Tuple`, the name a string or bytes
 ## Subscribe
 
 ```ts
-import { GroupOrder, LocationFilter, LocationFilterType, RequestError } from 'moqtail'
+import { GroupOrder, LocationFilterType, isRequestError, locationFilter } from 'moqtail'
 
 const subscription = await client.subscribe({
   fullTrackName,
   priority: 128,
   groupOrder: GroupOrder.Original,
-  locationFilter: new LocationFilter(LocationFilterType.NextObject),
+  locationFilter: locationFilter(LocationFilterType.NextObject),
 })
-if (subscription instanceof RequestError) {
-  throw new Error(`Subscribe refused: ${subscription.reasonPhrase.phrase}`)
+if (isRequestError(subscription)) {
+  throw new Error(`Subscribe refused: ${subscription.reasonPhrase}`)
 }
 ```
 
@@ -60,10 +60,7 @@ The options:
 To see where the track is now, read the Largest Object from the SUBSCRIBE_OK:
 
 ```ts
-import { MessageParameter } from 'moqtail'
-
-const largest = subscription.subscribeOk.parameters.find(MessageParameter.isLargestObject)
-console.log('Track is at', largest?.location)
+console.log('Track is at', subscription.subscribeOk.parameters.largestObject)
 ```
 
 ## Read the objects
@@ -98,15 +95,15 @@ void subscription.done.then((publishDone) => {
 
 ## Choose where to start
 
-`locationFilter` takes a `LocationFilter`. Its type says which fields follow:
+`locationFilter` takes a `LocationFilter`, which `locationFilter()` builds and checks. Its type says which fields follow:
 
-| Filter                                                                         | Delivers                                                             |
-| ------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| `new LocationFilter(LocationFilterType.NextObject)`                            | From the object after the Largest Object                             |
-| `new LocationFilter(LocationFilterType.RelativeStart, 0n)`                     | From the next group. `1n` is the current group, `2n` the one before. |
-| `new LocationFilter(LocationFilterType.AbsoluteStart, 100n, 0n)`               | From group 100, object 0                                             |
-| `new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 100n, 0n, 120n)` | From group 100, object 0, to the end of group 120                    |
-| `new LocationFilter(LocationFilterType.AbsoluteRange, 100n, 0n, 120n, 4n)`     | From group 100, object 0, to group 120, object 4, inclusive          |
+| Filter                                                                     | Delivers                                                             |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `locationFilter(LocationFilterType.NextObject)`                            | From the object after the Largest Object                             |
+| `locationFilter(LocationFilterType.RelativeStart, 0n)`                     | From the next group. `1n` is the current group, `2n` the one before. |
+| `locationFilter(LocationFilterType.AbsoluteStart, 100n, 0n)`               | From group 100, object 0                                             |
+| `locationFilter(LocationFilterType.AbsoluteStartGroupEnd, 100n, 0n, 120n)` | From group 100, object 0, to the end of group 120                    |
+| `locationFilter(LocationFilterType.AbsoluteRange, 100n, 0n, 120n, 4n)`     | From group 100, object 0, to group 120, object 4, inclusive          |
 
 A start in the future waits for that object. The constructor throws a `ProtocolViolationError` when a field is missing or the end is before the start.
 
@@ -115,14 +112,12 @@ A start in the future waits for that object. The constructor throws a `ProtocolV
 A decoder usually needs a group from its first object, but `NextObject` starts in the middle of one. To also get the objects of the current group that are already published, add a fill:
 
 ```ts
-import { FillParameters } from 'moqtail'
-
 const subscription = await client.subscribe({
   fullTrackName,
   priority: 128,
   groupOrder: GroupOrder.Original,
-  locationFilter: new LocationFilter(LocationFilterType.NextObject),
-  parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 1n)])],
+  locationFilter: locationFilter(LocationFilterType.NextObject),
+  parameters: { fillParameters: { locationFilter: locationFilter(LocationFilterType.RelativeStart, 1n) } },
 })
 ```
 
@@ -157,10 +152,10 @@ const fetched = await client.fetch({
   fullTrackName,
   priority: 128,
   groupOrder: GroupOrder.Original,
-  locationFilter: new LocationFilter(LocationFilterType.RelativeStart, 2n),
+  locationFilter: locationFilter(LocationFilterType.RelativeStart, 2n),
 })
-if (fetched instanceof RequestError) {
-  throw new Error(`Fetch refused: ${fetched.reasonPhrase.phrase}`)
+if (isRequestError(fetched)) {
+  throw new Error(`Fetch refused: ${fetched.reasonPhrase}`)
 }
 console.log('Fetch ends at', fetched.fetchOk.endLocation, 'end of track:', fetched.fetchOk.endOfTrack)
 
@@ -217,7 +212,7 @@ const switched = await client.switch({
     fullTrackName: FullTrackName.tryNew('my-app/live', 'video-1080p'),
     priority: 128,
     groupOrder: GroupOrder.Original,
-    locationFilter: new LocationFilter(LocationFilterType.NextObject),
+    locationFilter: locationFilter(LocationFilterType.NextObject),
   },
 })
 ```
@@ -231,7 +226,7 @@ The result is a `RequestError` or a new `SubscribeResult`, whose `stream` and `d
 - [`FetchOptions`](/ts/api/client/type-aliases/FetchOptions) and [`FetchResult`](/ts/api/client/interfaces/FetchResult)
 - [`SwitchOptions`](/ts/api/client/type-aliases/SwitchOptions)
 - [`ObjectOrdering`](/ts/api/client/interfaces/ObjectOrdering)
-- [`FullTrackName`](/ts/api/model/classes/FullTrackName), [`LocationFilter`](/ts/api/model/classes/LocationFilter) and [`LocationFilterType`](/ts/api/model/enumerations/LocationFilterType)
+- [`FullTrackName`](/ts/api/model/classes/FullTrackName), [`LocationFilter`](/ts/api/model/interfaces/LocationFilter) and [`LocationFilterType`](/ts/api/model/enumerations/LocationFilterType)
 - [`MoqtObject`](/ts/api/model/classes/MoqtObject)
-- [`FillParameters`](/ts/api/model/classes/FillParameters)
-- [`RequestError`](/ts/api/model/classes/RequestError)
+- [`MessageParameters`](/ts/api/model/interfaces/MessageParameters)
+- [`RequestError`](/ts/api/model/interfaces/RequestError)

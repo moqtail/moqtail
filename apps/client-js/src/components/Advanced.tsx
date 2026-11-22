@@ -22,8 +22,7 @@
 
 import { Fragment, type ComponentChildren, type RefObject } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import { ControlMessageType, MessageParameterType } from 'moqtail';
-import type { ControlMessage, DataEvent } from 'moqtail';
+import type { DataEvent, Message } from 'moqtail';
 import type { CatalogElement, MOQtailPlayer, PlayerEvents } from 'moqtail/player';
 import type { MOQtailVideoElement } from 'moqtail/player/component';
 import { followData, followMessages } from '@/lib/data';
@@ -43,7 +42,7 @@ interface MessageLine {
   id: number;
   at: number;
   direction: 'in' | 'out';
-  message: ControlMessage;
+  message: Message;
 }
 
 interface Column {
@@ -564,14 +563,14 @@ function describeDataEvent(event: DataEvent): string {
   return `${prefix} END ${event.reason}${code}`;
 }
 
-/** `SubscribeOk` → `SUBSCRIBE_OK`. */
-function messageName(message: ControlMessage): string {
-  const name = ControlMessageType[message.getType()] ?? `0x${message.getType().toString(16)}`;
-  return name.replace(/(?<=[a-z])(?=[A-Z])/g, '_').toUpperCase();
+/** `subscribeOk` → `SUBSCRIBE_OK`. */
+function messageName(message: Message): string {
+  if (message.kind === 'goAway') return 'GOAWAY';
+  return message.kind.replace(/(?<=[a-z])(?=[A-Z])/g, '_').toUpperCase();
 }
 
 /** The request ID and track a message is about, when it carries them. */
-function messageBrief(message: ControlMessage): string {
+function messageBrief(message: Message): string {
   const parts: string[] = [];
   if ('requestId' in message) parts.push(`req ${message.requestId}`);
   if ('fullTrackName' in message) {
@@ -583,21 +582,16 @@ function messageBrief(message: ControlMessage): string {
 
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
-/** A message as JSON-friendly data: bytes as text (or hex), tuples as paths, parameters named. */
-function plain(value: unknown, key?: string): unknown {
+/** A message as JSON-friendly data: bytes as text (or hex), tuples as paths. */
+function plain(value: unknown): unknown {
   if (typeof value === 'bigint')
     return Number.isSafeInteger(Number(value)) ? Number(value) : `${value}`;
   if (value instanceof Uint8Array) return bytes(value);
-  if (Array.isArray(value)) return value.map(v => plain(v, key));
+  if (Array.isArray(value)) return value.map(v => plain(v));
   if (!value || typeof value !== 'object') return value;
   const object = value as Record<string, unknown>;
   if (typeof object.toUtf8Path === 'function') return (object.toUtf8Path as () => string)();
-  const entries = Object.entries(object).map(([k, v]) => [k, plain(v, k)]);
-  // Parameter classes carry their wire type as a static TYPE; other classes reuse the name
-  const type = (value.constructor as { TYPE?: number }).TYPE;
-  if (key === 'parameters' && type !== undefined)
-    entries.unshift(['type', MessageParameterType[type] ?? `0x${type.toString(16)}`]);
-  return Object.fromEntries(entries);
+  return Object.fromEntries(Object.entries(object).map(([k, v]) => [k, plain(v)]));
 }
 
 function bytes(value: Uint8Array): string {

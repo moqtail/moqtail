@@ -106,10 +106,11 @@ const TEXT_EXTENSION = 0x7f00n
 export const textTracks = definePlugin({
   name: 'text-tracks',
   setup: (_, clientSetup) => {
-    clientSetup.addRaw(KeyValuePair.tryNewVarInt(TEXT_EXTENSION, 1))
+    clientSetup.extensions = [KeyValuePair.tryNewVarInt(TEXT_EXTENSION, 1)]
     return true
   },
-  negotiated: (_, serverSetup) => serverSetup.setupOptions.some((option) => option.typeValue === TEXT_EXTENSION),
+  negotiated: (_, serverSetup) =>
+    serverSetup.options.extensions?.some((option) => option.typeValue === TEXT_EXTENSION) ?? false,
   features: () => [{ type: 'element', item: textSource }],
 })
 ```

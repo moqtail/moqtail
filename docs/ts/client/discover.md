@@ -11,7 +11,7 @@ Use these requests when you don't know the names in advance: list the namespaces
 `subscribeNamespace()` asks the relay for the namespaces that start with a prefix, now and later. They arrive as events, so attach the listeners first:
 
 ```ts
-import { RequestError, Tuple } from 'moqtail'
+import { isRequestError, Tuple } from 'moqtail'
 
 client.on('peernamespace', (prefix, suffix) => {
   console.log('Found', prefix.toUtf8Path() + suffix.toUtf8Path())
@@ -21,8 +21,8 @@ client.on('peernamespacedone', (prefix, suffix) => {
 })
 
 const namespaces = await client.subscribeNamespace(Tuple.fromUtf8Path('moqtail'))
-if (namespaces.response instanceof RequestError) {
-  throw new Error(`Refused: ${namespaces.response.reasonPhrase.phrase}`)
+if (isRequestError(namespaces.response)) {
+  throw new Error(`Refused: ${namespaces.response.reasonPhrase}`)
 }
 ```
 
@@ -66,8 +66,8 @@ client.on('peerpublishdone', (publishDone, requestId) => {
 })
 
 const tracks = await client.subscribeTracks(Tuple.fromUtf8Path('my-app/room-1'))
-if (tracks.response instanceof RequestError) {
-  throw new Error(`Refused: ${tracks.response.reasonPhrase.phrase}`)
+if (isRequestError(tracks.response)) {
+  throw new Error(`Refused: ${tracks.response.reasonPhrase}`)
 }
 ```
 
@@ -88,5 +88,5 @@ The relay refuses a second `subscribeNamespace()` whose prefix overlaps one you 
 - [`MOQtailClient`](/ts/api/client/classes/MOQtailClient)
 - [`ClientEvents`](/ts/api/client/interfaces/ClientEvents)
 - [`Tuple`](/ts/api/model/classes/Tuple) and [`FullTrackName`](/ts/api/model/classes/FullTrackName)
-- [`Publish`](/ts/api/model/classes/Publish), [`PublishDone`](/ts/api/model/classes/PublishDone) and [`PublishSkipped`](/ts/api/model/classes/PublishSkipped)
-- [`RequestOk`](/ts/api/model/classes/RequestOk) and [`RequestError`](/ts/api/model/classes/RequestError)
+- [`Publish`](/ts/api/model/interfaces/Publish), [`PublishDone`](/ts/api/model/interfaces/PublishDone) and [`PublishSkipped`](/ts/api/model/interfaces/PublishSkipped)
+- [`RequestOk`](/ts/api/model/interfaces/RequestOk) and [`RequestError`](/ts/api/model/interfaces/RequestError)

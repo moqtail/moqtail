@@ -54,20 +54,25 @@ The browser must trust the relay's certificate, or `init()` fails without asking
 
 ## Send setup options
 
-`setupOptions` takes a `SetupOptions` builder. Its options go into the client's SETUP message. For example, to send an authorization token and name your application:
+`setupOptions` takes a `SetupOptions` object. Its options go into the client's SETUP message. For example, to send an authorization token and name your application:
 
 ```ts
-import { AuthorizationToken, MOQtailClient, SetupOptions } from 'moqtail'
+import { MOQtailClient, TokenAliasType } from 'moqtail'
+import type { SetupOptions } from 'moqtail'
 
 const token = 'your token'
-const setupOptions = new SetupOptions()
-  .addAuthorizationToken(AuthorizationToken.newUseValue(0, new TextEncoder().encode(token)))
-  .addMoqtImplementation('my-app/1.0')
+const setupOptions: SetupOptions = {
+  authorizationToken: [
+    { aliasType: TokenAliasType.UseValue, tokenType: 0n, tokenValue: new TextEncoder().encode(token) },
+  ],
+  moqtImplementation: 'my-app/1.0',
+}
 
 const client = new MOQtailClient({ url: 'moqt://localhost:4433', setupOptions })
 ```
 
-- You don't need `addPath()`: over WebTransport the path travels in the URL.
+- You don't need `path`: over WebTransport the path travels in the URL.
+- An option of a type MOQtail doesn't name goes in `extensions`, as a `KeyValuePair`.
 - Don't add an AUTHORITY option. It is not allowed over WebTransport, and `init()` rejects it.
 - The client tells the relay it accepts 32 filter ranges per request. `addMaxFilterRanges()` sets another number.
 
@@ -158,7 +163,7 @@ await client.disconnect()
 - [`MOQtailClient`](/ts/api/client/classes/MOQtailClient)
 - [`MOQtailClientOptions`](/ts/api/client/type-aliases/MOQtailClientOptions)
 - [`ClientEvents`](/ts/api/client/interfaces/ClientEvents)
-- [`SetupOptions`](/ts/api/model/classes/SetupOptions)
-- [`AuthorizationToken`](/ts/api/model/classes/AuthorizationToken)
-- [`GoAway`](/ts/api/model/classes/GoAway)
+- [`SetupOptions`](/ts/api/model/interfaces/SetupOptions)
+- [`AuthorizationToken`](/ts/api/model/type-aliases/AuthorizationToken)
+- [`GoAway`](/ts/api/model/interfaces/GoAway)
 - [`LogLevel`](/ts/api/util/enumerations/LogLevel)

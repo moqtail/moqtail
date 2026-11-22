@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,10 @@ import {
   MoqtObject,
   Location,
   ObjectForwardingPreference,
-  LocationFilter,
+  locationFilter,
   LocationFilterType,
   GroupOrder,
-  RequestError,
+  isRequestError,
 } from 'moqtail/model';
 
 const SIGNALLING_TRACK_NAME = 'signalling';
@@ -126,13 +126,13 @@ export async function setupSignalling(
   const subResponse = await moqClient.subscribe({
     fullTrackName: signalFTN,
     groupOrder: GroupOrder.Original,
-    locationFilter: new LocationFilter(LocationFilterType.NextObject),
+    locationFilter: locationFilter(LocationFilterType.NextObject),
     forward: true,
     priority: 1,
   });
 
   console.log('signalling: subscribe response', subResponse);
-  if (subResponse instanceof RequestError) {
+  if (isRequestError(subResponse)) {
     console.warn('signalling: subscribe failed', subResponse);
   } else {
     const { stream } = subResponse;

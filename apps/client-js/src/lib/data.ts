@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ControlMessage } from 'moqtail';
+import type { Message } from 'moqtail';
 import { eachClient, type MOQtailPlayer } from 'moqtail/player';
 
 export { followData } from 'moqtail/player';
@@ -26,10 +26,10 @@ export { followData } from 'moqtail/player';
  */
 export function followMessages(
   player: MOQtailPlayer,
-  listener: (message: ControlMessage, direction: 'in' | 'out') => void,
+  listener: (message: Message, direction: 'in' | 'out') => void,
 ): () => void {
-  const onIn = (message: ControlMessage) => listener(message, 'in');
-  const onOut = (message: ControlMessage) => listener(message, 'out');
+  const onIn = (message: Message) => listener(message, 'in');
+  const onOut = (message: Message) => listener(message, 'out');
   return eachClient(player, client => {
     // The handshake finishes before the player hands out its client, so replay it
     if (client.clientSetup) onOut(client.clientSetup);

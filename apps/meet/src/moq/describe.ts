@@ -14,15 +14,8 @@
  * limitations under the License.
  */
 
-import {
-  ControlMessage,
-  ControlMessageType,
-  FullTrackName,
-  KeyValuePair,
-  MessageParameterType,
-  SetupOptionType,
-  Tuple,
-} from 'moqtail/model';
+import { FullTrackName, KeyValuePair, Tuple } from 'moqtail/model';
+import type { Message } from 'moqtail/model';
 
 export type MessageDirection = 'sent' | 'received';
 
@@ -45,12 +38,10 @@ const MAX_DEPTH = 4;
 const MAX_HEX_BYTES = 32;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
-/** The wire name of a message type: `SubscribeOk` → `SUBSCRIBE_OK`. */
-function messageName(msg: ControlMessage): string {
-  const type = msg.getType();
-  if (type === ControlMessageType.GoAway) return 'GOAWAY';
-  const name = ControlMessageType[type] ?? `0x${type.toString(16)}`;
-  return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
+/** The wire name of a message kind: `subscribeOk` → `SUBSCRIBE_OK`. */
+function messageName(msg: Message): string {
+  if (msg.kind === 'goAway') return 'GOAWAY';
+  return msg.kind.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
 }
 
 /** Bytes as a quoted string when they are printable text, hex otherwise. */
@@ -79,29 +70,23 @@ function formatValue(value: unknown, depth = 0): string {
   if (value instanceof Tuple) return value.toUtf8Path() || '/';
   if (value instanceof FullTrackName) return trackLabel(value);
   if (value instanceof KeyValuePair) {
-    const type = Number(value.typeValue);
-    return `${SetupOptionType[type] ?? `0x${type.toString(16)}`}=${formatValue(value.value, depth + 1)}`;
+    return `0x${value.typeValue.toString(16)}=${formatValue(value.value, depth + 1)}`;
   }
   if (depth >= MAX_DEPTH) return '…';
   if (Array.isArray(value)) return `[${value.map(v => formatValue(v, depth + 1)).join(', ')}]`;
   if (typeof value === 'object') {
     const entries = Object.entries(value).filter(([, v]) => typeof v !== 'function');
-    // Message parameters carry their wire type on the class.
-    const type = (value.constructor as { TYPE?: number }).TYPE;
-    const label =
-      type === undefined ? '' : (MessageParameterType[type] ?? `0x${type.toString(16)}`);
-    if (label && entries.length === 1) return `${label}=${formatValue(entries[0]![1], depth + 1)}`;
     const body = entries.map(([k, v]) => `${k}: ${formatValue(v, depth + 1)}`).join(', ');
-    return `${label}{${body}}`;
+    return `{${body}}`;
   }
   return String(value);
 }
 
 let nextId = 0;
 
-export function toLogEntry(msg: ControlMessage, direction: MessageDirection): LogEntry {
+export function toLogEntry(msg: Message, direction: MessageDirection): LogEntry {
   const fields = Object.entries(msg)
-    .filter(([, v]) => typeof v !== 'function')
+    .filter(([k, v]) => k !== 'kind' && typeof v !== 'function')
     .map(([k, v]): [string, string] => [k, formatValue(v)]);
   return {
     id: nextId++,

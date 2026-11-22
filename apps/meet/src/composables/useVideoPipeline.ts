@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@
 import {
   LOCProperties,
   ObjectForwardingPreference,
-  LocationFilter,
+  locationFilter,
   LocationFilterType,
   GroupOrder,
-  RequestError,
+  isRequestError,
   Tuple,
   FullTrackName,
   MoqtObject,
@@ -695,7 +695,7 @@ function subscribeAndPipeToWorker(
 ): Promise<bigint | undefined> {
   return moqClient.subscribe(subscribeArgs).then(response => {
     window.appSettings.playoutBufferConfig.maxLatencyMs;
-    if (!(response instanceof RequestError)) {
+    if (!isRequestError(response)) {
       const { requestId, stream } = response;
       const buffer = new PlayoutBuffer(stream, {
         targetLatencyMs: window.appSettings.playoutBufferConfig.targetLatencyMs,
@@ -740,12 +740,12 @@ export function subscribeOnlyVideo(moqClient: MOQtailClient, videoFullTrackName:
       const response = await moqClient.subscribe({
         fullTrackName: videoFullTrackName,
         groupOrder: GroupOrder.Original,
-        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        locationFilter: locationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       });
 
-      if (response instanceof RequestError) {
+      if (isRequestError(response)) {
         console.error('subscribeOnlyVideo: subscribe returned error', response);
         return { cleanup: async () => {} };
       }
@@ -879,7 +879,7 @@ export function useVideoAndAudioSubscriber(
       {
         fullTrackName: audioFullTrackName,
         groupOrder: GroupOrder.Original,
-        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        locationFilter: locationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       },
@@ -893,7 +893,7 @@ export function useVideoAndAudioSubscriber(
       {
         fullTrackName: videoFullTrackName,
         groupOrder: GroupOrder.Original,
-        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        locationFilter: locationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       },
@@ -948,7 +948,7 @@ export function onlyUseVideoSubscriber(
       {
         fullTrackName: videoFullTrackName,
         groupOrder: GroupOrder.Original,
-        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        locationFilter: locationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       },
@@ -1006,7 +1006,7 @@ export function onlyUseAudioSubscriber(
       {
         fullTrackName: audioFullTrackName,
         groupOrder: GroupOrder.Original,
-        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        locationFilter: locationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       },

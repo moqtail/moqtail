@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
  */
 
 export * from './common'
-export * from './control'
+export * from './constants'
 export * from './data'
 export * from './error'
+export * from './messages'
+export * from './parameters'
 export * from './property'
-export * from './parameter'
+export type { Codec } from './codec'

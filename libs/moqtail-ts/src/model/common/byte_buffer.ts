@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ import { NotEnoughBytesError, VarIntOverflowError, CastingError } from '../error
 import { KeyValuePair } from './pair'
 import { Location } from './location'
 import { Tuple } from './tuple'
-import { ReasonPhrase } from './reason_phrase'
 import { FullTrackName } from '../data'
 
 const MAX_VARINT_VALUE = 2n ** 64n - 1n
@@ -26,124 +25,88 @@ const MAX_VARINT_VALUE = 2n ** 64n - 1n
 /** @public */
 export abstract class BaseByteBuffer {
   protected buf: Uint8Array
-  protected view: DataView
   protected _offset = 0
   protected _checkpoint = 0
 
   constructor(buf: Uint8Array) {
     this.buf = buf
-    this.view = new DataView(buf.buffer, buf.byteOffset, buf.length)
   }
 
   get offset(): number {
     return this._offset
   }
+
   abstract get length(): number
+
   get remaining(): number {
     return this.length - this._offset
   }
 
-  /**
-   * Save current read position for potential rollback
-   */
+  /** Saves the read position, for {@link BaseByteBuffer.restore} to go back to. */
   checkpoint(): void {
     this._checkpoint = this._offset
   }
 
-  /**
-   * Restore read position to last checkpoint
-   */
   restore(): void {
     this._offset = this._checkpoint
   }
 
   toUint8Array(): Uint8Array {
-    return this.buf.slice() // Use slice() to create a copy
+    return this.buf.slice()
   }
 
   getU8(): number {
-    if (this.remaining < 1) throw new NotEnoughBytesError('getU8', 1, this.remaining)
-    return this.view.getUint8(this._offset++)
+    this.#need(1, 'getU8')
+    return this.buf[this._offset++]!
   }
 
   getU16(): number {
-    if (this.remaining < 2) throw new NotEnoughBytesError('getU16', 2, this.remaining)
-    const v = this.view.getUint16(this._offset, false)
-    this._offset += 2
-    return v
+    this.#need(2, 'getU16')
+    return (this.buf[this._offset++]! << 8) | this.buf[this._offset++]!
   }
 
+  /**
+   * A varint (moqt-22 §1.4.1): the leading ones of the first byte count the bytes that
+   * follow. A varint cut short leaves the offset where it was, so it can be read again
+   * once more bytes arrive.
+   */
   getVI(): bigint {
-    if (this.remaining < 1) throw new NotEnoughBytesError('getVI.first_byte', 1, this.remaining)
+    this.#need(1, 'getVI')
 
-    const first = this.getU8()
+    const first = this.buf[this._offset]!
+    let extra = 0
+    while (extra < 8 && first & (0x80 >> extra)) extra++
 
-    const leadingOnes = this.countLeadingOnes(first)
-    const length = leadingOnes + 1
-    const extra = length - 1
+    this.#need(extra + 1, 'getVI')
 
-    if (this.remaining < extra) {
-      this._offset--
-      throw new NotEnoughBytesError('getVI.continuation', length, this.remaining + 1)
-    }
+    let value = extra === 8 ? 0n : BigInt(first & (0x7f >> extra))
 
-    let result = this.firstByteValueBits(first, length)
-    for (let i = 0; i < extra; i++) {
-      result = (result << 8n) | BigInt(this.getU8())
-    }
-    return result
-  }
+    this._offset++
+    for (let i = 0; i < extra; i++) value = (value << 8n) | BigInt(this.buf[this._offset++]!)
 
-  countLeadingOnes(byte: number): number {
-    let count = 0
-    let mask = 0x80 // 1000_0000
-    while (mask !== 0 && (byte & mask) !== 0) {
-      count++
-      mask >>= 1
-    }
-    return count
-  }
-
-  firstByteValueBits(first: number, length: number): bigint {
-    if (length === 9) {
-      return 0n
-    }
-    const dataBitsInFirstByte = 8 - length
-    const mask = (1 << dataBitsInFirstByte) - 1
-    return BigInt(first & mask)
+    return value
   }
 
   getNumberVI(): number {
-    let big = this.getVI()
-    if (big > Number.MAX_SAFE_INTEGER)
-      throw new CastingError(
-        'BaseByteBuffer.getNumberVI()',
-        'bigint',
-        'number',
-        'bigint exceeds Number.MAX_SAFE_INTEGER',
-      )
-    return Number(big)
+    const value = this.getVI()
+    if (value > Number.MAX_SAFE_INTEGER) {
+      throw new CastingError('getNumberVI', 'bigint', 'number', 'exceeds Number.MAX_SAFE_INTEGER')
+    }
+
+    return Number(value)
   }
+
   getBytes(len: number): Uint8Array {
-    if (this.remaining < len) throw new NotEnoughBytesError('getBytes', len, this.remaining)
-    const slice = this.buf.slice(this._offset, this._offset + len) // Use slice() to create a copy
-    this._offset += len
-    return slice
+    this.#need(len, 'getBytes')
+    return this.buf.slice(this._offset, (this._offset += len))
   }
 
   getLengthPrefixedBytes(): Uint8Array {
-    const len = this.getNumberVI()
-    if (this.length < this.offset + len)
-      throw new NotEnoughBytesError('BaseByteBuffer.getLengthPrefixedBytes', len, this.length - this.offset)
-    return this.getBytes(len)
+    return this.getBytes(this.getNumberVI())
   }
 
   getKeyValuePair(): KeyValuePair {
     return KeyValuePair.deserialize(this)
-  }
-
-  getReasonPhrase(): ReasonPhrase {
-    return ReasonPhrase.deserialize(this)
   }
 
   getLocation(): Location {
@@ -157,6 +120,10 @@ export abstract class BaseByteBuffer {
   getFullTrackName(): FullTrackName {
     return FullTrackName.deserialize(this)
   }
+
+  #need(bytes: number, context: string): void {
+    if (this.remaining < bytes) throw new NotEnoughBytesError(context, bytes, this.remaining)
+  }
 }
 
 /** @public */
@@ -166,127 +133,65 @@ export class ByteBuffer extends BaseByteBuffer {
   constructor(initialSize = 128) {
     super(new Uint8Array(initialSize))
   }
+
   get length(): number {
     return this._length
   }
-  /**
-   * Clear all data and reset all positions
-   */
+
+  /** Drops all data and resets the positions. */
   clear(): void {
     this._length = 0
     this._offset = 0
     this._checkpoint = 0
-    // Reset view to point to the beginning of the buffer
-    this.buf = new Uint8Array()
-    this.view = new DataView(this.buf.buffer, this.buf.byteOffset, this.buf.length)
   }
-  /**
-   * Drop all data before current offset and reset positions
-   * This is the key method for memory management - removes processed data
-   */
+
+  /** Drops the data already read, which is how a receive buffer stays small. */
   commit(): void {
-    if (this._offset === 0) {
-      return // Nothing to commit
-    }
-    if (this._offset >= this._length) {
-      // All data has been read
-      this.clear()
-      return
-    }
-    // Move unread data to the beginning of the buffer
-    this.buf.set(this.buf.subarray(this._offset, this._length), 0)
-    this._length = this._length - this._offset
+    if (this._offset === 0) return
+
+    this.buf.copyWithin(0, this._offset, this._length)
+    this._length -= this._offset
     this._offset = 0
     this._checkpoint = 0
-    // Update view to reflect the new buffer state
-    this.view = new DataView(this.buf.buffer, this.buf.byteOffset, this.buf.length)
   }
-
-  private ensureCapacity(add: number): void {
-    const need = this._length + add
-    if (need <= this.buf.length) return
-
-    // TODO: Critical figure out and fix why buf.length is 0?
-    let newSize = this.buf.length * 2 + 1
-    while (newSize < need) newSize *= 2
-
-    const newBuf = new Uint8Array(newSize)
-    newBuf.set(this.buf.subarray(0, this._length))
-    this.buf = newBuf
-    this.view = new DataView(this.buf.buffer)
-  }
-
-  // --------- WRITE OPERATIONS ---------
 
   putU8(v: number): void {
-    if (v < 0 || v > 0xff) {
-      throw new RangeError(`Value ${v} is out of range for a U8 (0-255).`)
-    }
-    this.ensureCapacity(1)
-    this.view.setUint8(this._length++, v)
+    if (v < 0 || v > 0xff) throw new RangeError(`Value ${v} is out of range for a U8 (0-255).`)
+
+    this.#room(1)
+    this.buf[this._length++] = v
   }
+
   putU16(v: number): void {
-    if (v < 0 || v > 0xffff) {
-      throw new RangeError(`Value ${v} is out of range for a U16 (0-65535).`)
-    }
-    this.ensureCapacity(2)
-    this.view.setUint16(this._length, v, false)
-    this._length += 2
+    if (v < 0 || v > 0xffff) throw new RangeError(`Value ${v} is out of range for a U16 (0-65535).`)
+
+    this.#room(2)
+    this.buf[this._length++] = v >> 8
+    this.buf[this._length++] = v & 0xff
   }
 
-  /**
-  /**
-  * Encode a MOQT varint using the minimal length.
-  */
+  /** A varint in its shortest form: 1 to 8 bytes hold 7 bits each, 9 bytes all 64. */
   putVI(v: bigint | number): void {
-    const value = typeof v === 'number' ? BigInt(v) : v
+    const value = BigInt(v)
+    if (value < 0n) throw new CastingError('putVI', typeof v, 'unsigned varint', 'negative values are not supported')
+    if (value > MAX_VARINT_VALUE) throw new VarIntOverflowError('putVI', Number(value))
 
-    if (value < 0n) {
-      throw new CastingError('putVI', typeof v, 'unsigned varint', 'negative values are not supported')
-    }
-    if (value > MAX_VARINT_VALUE) {
-      throw new VarIntOverflowError('putVI', Number(value))
-    }
+    let length = 1
+    while (length < 9 && value >= 1n << BigInt(7 * length)) length++
 
-    // Choose the minimal length: lengths 1-8 hold 7*length bits, else 9 bytes.
-    let length = 9
-    for (let l = 1; l <= 8; l++) {
-      if (value < 1n << BigInt(7 * l)) {
-        length = l
-        break
-      }
-    }
+    this.#room(length)
 
-    this.ensureCapacity(length)
+    if (length === 9) this.buf[this._length++] = 0xff
 
-    if (length === 9) {
-      // First byte 0xFF (all leading ones), then the full 64-bit value.
-      this.view.setUint8(this._length++, 0xff)
-      for (let i = 7; i >= 0; i--) {
-        this.view.setUint8(this._length++, Number((value >> BigInt(8 * i)) & 0xffn))
-      }
-      return
-    }
-
-    const bytes: number[] = []
-
-    for (let i = length - 1; i >= 0; i--) {
-      bytes.push(Number((value >> BigInt(8 * i)) & 0xffn))
-    }
-
-    const ones = length - 1
-    if (ones > 0) {
-      const prefix = (((1 << ones) - 1) << (8 - ones)) & 0xff
-      bytes[0] = (bytes[0] ?? 0) | prefix
-    }
-
-    for (const b of bytes) {
-      this.view.setUint8(this._length++, b)
+    const bytes = Math.min(length, 8)
+    for (let i = bytes - 1; i >= 0; i--) {
+      const prefix = length < 9 && i === bytes - 1 ? (0xff00 >> (length - 1)) & 0xff : 0
+      this.buf[this._length++] = Number((value >> BigInt(8 * i)) & 0xffn) | prefix
     }
   }
 
   putBytes(src: Uint8Array): void {
-    this.ensureCapacity(src.length)
+    this.#room(src.length)
     this.buf.set(src, this._length)
     this._length += src.length
   }
@@ -297,20 +202,15 @@ export class ByteBuffer extends BaseByteBuffer {
   }
 
   putKeyValuePair(pair: KeyValuePair): void {
-    const b = pair.serialize().toUint8Array()
-    this.putBytes(b)
+    this.putBytes(pair.serialize().toUint8Array())
   }
 
-  putReasonPhrase(reason: ReasonPhrase): void {
-    const b = reason.serialize().toUint8Array()
-    this.putBytes(b)
-  }
   override toUint8Array(): Uint8Array {
-    return this.buf.slice(0, this._length) // Use slice() to create a copy
+    return this.buf.slice(0, this._length)
   }
+
   freeze(): FrozenByteBuffer {
-    const snap = this.buf.slice(0, this._length) // Use slice() to create a copy
-    return new FrozenByteBuffer(snap)
+    return new FrozenByteBuffer(this.toUint8Array())
   }
 
   putLocation(loc: Location): void {
@@ -319,21 +219,25 @@ export class ByteBuffer extends BaseByteBuffer {
   }
 
   putTuple(tuple: Tuple): void {
-    const serialized = tuple.serialize()
-    this.putBytes(serialized.toUint8Array())
+    this.putBytes(tuple.serialize().toUint8Array())
   }
 
   putFullTrackName(fullTrackName: FullTrackName): void {
-    const serialized = fullTrackName.serialize()
-    this.putBytes(serialized.toUint8Array())
+    this.putBytes(fullTrackName.serialize().toUint8Array())
+  }
+
+  #room(bytes: number): void {
+    const need = this._length + bytes
+    if (need <= this.buf.length) return
+
+    const next = new Uint8Array(Math.max(need, this.buf.length * 2))
+    next.set(this.buf.subarray(0, this._length))
+    this.buf = next
   }
 }
 
 /** @public */
 export class FrozenByteBuffer extends BaseByteBuffer {
-  constructor(buf: Uint8Array) {
-    super(buf)
-  }
   get length(): number {
     return this.buf.length
   }
@@ -761,17 +665,6 @@ if (import.meta.vitest) {
         expect(() => readBuf.getU8()).toThrow('not enough bytes')
         expect(() => readBuf.getU16()).toThrow('not enough bytes')
         expect(() => readBuf.getBytes(1)).toThrow('not enough bytes')
-      })
-    })
-
-    describe('reason phrase', () => {
-      test('putReasonPhrase and getReasonPhrase roundtrip', () => {
-        const phrase = new ReasonPhrase('test reason')
-        const buf = new ByteBuffer()
-        buf.putReasonPhrase(phrase)
-        const frozen = buf.freeze()
-        const readPhrase = frozen.getReasonPhrase()
-        expect(readPhrase.phrase).toBe('test reason')
       })
     })
 

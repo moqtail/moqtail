@@ -216,9 +216,11 @@ if (import.meta.vitest) {
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
       const datagram = Datagram.newPayload(trackAlias, groupId, objectId, publisherPriority, properties, payload, false)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x01) // Has properties, not EOG, has objectId, no default priority
+      expect(datagram.type).toBe(0x01) // Has properties, not EOG, has objectId, no default priority
+
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
+
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(groupId)
       expect(parsed.objectId).toBe(objectId)
@@ -237,9 +239,11 @@ if (import.meta.vitest) {
       const publisherPriority = 128
       const payload = new TextEncoder().encode('hello')
       const datagram = Datagram.newPayload(trackAlias, groupId, objectId, publisherPriority, null, payload, false)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x04) // No properties, not EOG, objectId = 0, no default priority
+      expect(datagram.type).toBe(0x04) // No properties, not EOG, objectId = 0, no default priority
+
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
+
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(groupId)
       expect(parsed.objectId).toBe(0n)
@@ -256,9 +260,11 @@ if (import.meta.vitest) {
       const publisherPriority = 0
       const payload = new TextEncoder().encode('final object')
       const datagram = Datagram.newPayload(trackAlias, groupId, objectId, publisherPriority, null, payload, true)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x02) // No properties, EOG, has objectId, no default priority
+      expect(datagram.type).toBe(0x02) // No properties, EOG, has objectId, no default priority
+
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
+
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(groupId)
       expect(parsed.objectId).toBe(objectId)
@@ -271,10 +277,13 @@ if (import.meta.vitest) {
       const objectId = 5n
       const payload = new TextEncoder().encode('default priority')
       const datagram = Datagram.newPayload(trackAlias, groupId, objectId, null, null, payload, false)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x08) // No properties, not EOG, has objectId, default priority
+
+      expect(datagram.type).toBe(0x08) // No properties, not EOG, has objectId, default priority
       expect(ObjectDatagramType.hasDefaultPriority(datagram.type)).toBe(true)
+
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
+
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(groupId)
       expect(parsed.objectId).toBe(objectId)
@@ -289,9 +298,11 @@ if (import.meta.vitest) {
       const properties = [KeyValuePair.tryNewVarInt(4, 12345)]
       const payload = new TextEncoder().encode('all bits')
       const datagram = Datagram.newPayload(trackAlias, groupId, objectId, null, properties, payload, true)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x0F) // All payload bits set
+      expect(datagram.type).toBe(0x0f) // All payload bits set
+
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
+
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.objectId).toBe(0n)
       expect(parsed.publisherPriority).toBeNull()
@@ -314,9 +325,11 @@ if (import.meta.vitest) {
         ObjectStatus.EndOfGroup,
       )
       expect(ObjectDatagramType.isStatus(datagram.type)).toBe(true)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x20) // Status, no properties, has objectId, no default priority
+      expect(datagram.type).toBe(0x20) // Status, no properties, has objectId, no default priority
+
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
+
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(5n)
       expect(parsed.objectId).toBe(42n)
@@ -333,9 +346,11 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const datagram = Datagram.newStatus(trackAlias, 9n, 10n, 255, properties, ObjectStatus.EndOfTrack)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x21) // Status, with properties, has objectId, no default priority
+      expect(datagram.type).toBe(0x21) // Status, with properties, has objectId, no default priority
+
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
+
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(9n)
       expect(parsed.objectId).toBe(10n)
@@ -347,9 +362,11 @@ if (import.meta.vitest) {
     test('roundtrip status with ZERO_OBJECT_ID and DEFAULT_PRIORITY', () => {
       const trackAlias = 77n
       const datagram = Datagram.newStatus(trackAlias, 3n, 0n, null, null, ObjectStatus.EndOfGroup)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x2C) // Status + ZERO_OBJECT_ID + DEFAULT_PRIORITY
+      expect(datagram.type).toBe(0x2c) // Status + ZERO_OBJECT_ID + DEFAULT_PRIORITY
+
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
+
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.objectId).toBe(0n)
       expect(parsed.publisherPriority).toBeNull()

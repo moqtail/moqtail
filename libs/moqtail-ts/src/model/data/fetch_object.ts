@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { KeyValuePair, serializeKvpList } from '../common/pair'
 import { ObjectProperty } from '../property/object_property'
 import { Location } from '../common/location'
-import { GroupOrder } from '../control/constant'
+import { GroupOrder } from '../constants'
 import { ObjectForwardingPreference } from './constant'
 import { ProtocolViolationError } from '../error/error'
 

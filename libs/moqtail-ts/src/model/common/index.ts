@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,5 +20,3 @@ export * from './pair'
 export * from './location'
 export * from './moqt_url'
 export * from './tuple'
-export * from './reason_phrase'
-export * from './redirect'

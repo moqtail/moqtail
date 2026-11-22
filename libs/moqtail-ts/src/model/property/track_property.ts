@@ -18,7 +18,7 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { greaseValue } from '../common/grease'
 import { ProtocolViolationError } from '../error/error'
-import { GroupOrder } from '../control/constant'
+import { GroupOrder } from '../constants'
 import { TrackPropertyType } from './constant'
 
 /** @public A timeout of 0 means no timeout is set (§8), on this side as on the parameter side. */

@@ -16,10 +16,9 @@
 
 import type { MOQtailClient } from '@/client/client'
 import type { ObjectOrdering } from '@/client/types'
-import { LocationFilterType } from '@/model/control/constant'
-import { RequestError } from '@/model/control/request_error'
+import { LocationFilterType } from '@/model/constants'
 import type { MoqtObject } from '@/model/data/object'
-import { LocationFilter } from '@/model/parameter/message/location_filter'
+import { locationFilter } from '@/model/parameters'
 import { PlayerError } from '@/player/error'
 import type { MsfSource } from '@/player/msf_url'
 import {
@@ -32,6 +31,8 @@ import {
   type TrackProperties,
 } from './delivery'
 import { merge } from './ranges'
+import { isRequestError } from '@/model/messages'
+import type { RequestError } from '@/model/messages'
 
 /**
  * The request the player sends for a track URL no element accepts alone, so the probes can
@@ -61,7 +62,7 @@ export class Preroll {
     const common = mediaRequest(source.namespace, source.trackBytes, ordering)
     this.#request = range
       ? client.fetch({ ...common, locationFilter: fetchFilter(range.start, range.end) })
-      : client.subscribe({ ...common, locationFilter: new LocationFilter(LocationFilterType.RelativeStart, 0n) })
+      : client.subscribe({ ...common, locationFilter: locationFilter(LocationFilterType.RelativeStart, 0n) })
   }
 
   /** The objects read so far, in order. */
@@ -119,13 +120,14 @@ export class Preroll {
   async #accept(): Promise<Accepted> {
     const result = await this.#request
 
-    if (result instanceof RequestError) {
+    if (isRequestError(result)) {
       throw new PlayerError('UNSUPPORTED_SOURCE', `The request for track "${this.#track}" was rejected`, {
         cause: result,
       })
     }
 
     this.#accepted = result
+
     return result
   }
 }

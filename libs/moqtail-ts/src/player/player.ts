@@ -21,7 +21,7 @@
 
 import type { MOQtailClient } from '@/client/client'
 import type { MOQtailClientOptions, ObjectOrdering } from '@/client/types'
-import type { SetupOptions } from '@/model/parameter/setup_option'
+import type { SetupOptions } from '@/model/parameters'
 import { DEFAULT_CATALOG_TIMEOUT_MS } from '@/player/constants'
 import type { SinkElement, SourceElement } from '@/player/element/base'
 import { Chain } from '@/player/element/chain'
@@ -687,8 +687,6 @@ if (import.meta.vitest) {
   type CollectingSink = import('@/player/testing/elements').CollectingSink
   const { definePlugin } = await import('./plugin')
   const { CapabilityCode } = await import('@/player/element/define')
-  const { SetupOptions } = await import('@/model/parameter/setup_option')
-  const { Setup } = await import('@/model/control/setup')
   type Feature = import('./plugin').Feature
   type Sink = import('@/player/testing/elements').FakeMediaSink
   type Source = import('@/player/testing/elements').TestSource
@@ -990,10 +988,10 @@ if (import.meta.vitest) {
         definePlugin({
           name,
           setup: (_, setup) => {
-            setup.addSstsAlgorithms([algorithm])
+            setup.sstsAlgorithms = [BigInt(algorithm)]
             return true
           },
-          negotiated: (_, serverSetup) => serverSetup.setupOptions.length > 0,
+          negotiated: (_, serverSetup) => Object.keys(serverSetup.options).length > 0,
           features,
         })()
 
@@ -1031,7 +1029,8 @@ if (import.meta.vitest) {
       await inactive.destroy()
 
       fakes.restore()
-      fakes = fakeClients(undefined, new Setup(new SetupOptions().addSstsAlgorithms([1]).build()))
+      fakes = fakeClients(undefined, { kind: 'setup', options: { sstsAlgorithms: [1n] } })
+
       const player = new MOQtailPlayer({ plugins: plugins() }).registerElement(top).source(URL).sink(fakeMediaSink)
       await player.init()
       expect(player.sources.map((s) => s.definition.name).sort()).toEqual(['plugin-top', 'video'])

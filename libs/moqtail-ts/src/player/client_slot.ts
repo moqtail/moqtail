@@ -143,16 +143,10 @@ export async function release(member: SlotMember, after: Promise<unknown>): Prom
   if (s.disposing === disposing) s.disposing = undefined
 }
 
-/**
- * Setup parameters as `[type, value]` pairs sorted by type, transport options with sorted
- * keys, and the attempt count. Equal keys mean the same session.
- */
+/** Setup options and transport options with sorted keys, and the attempt count. Equal keys mean the same session. */
 export function clientKey(options: ClientOptions): string {
-  const setup = (options.setupOptions?.build() ?? [])
-    .map((pair) => [pair.typeValue, pair.value] as const)
-    .sort((a, b) => Number(a[0] - b[0]))
   return canonicalJson({
-    setup,
+    setup: options.setupOptions ?? {},
     transport: options.transportOptions ?? {},
     reconnectAttempts: options.reconnectAttempts ?? DEFAULT_RECONNECT_ATTEMPTS,
   })
@@ -283,8 +277,6 @@ if (import.meta.vitest) {
   const { describe, test, expect, beforeEach, afterEach, vi } = import.meta.vitest
   const { fakeClients } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
-  const { SetupOptions } = await import('@/model/parameter/setup_option')
-  const { GoAway } = await import('@/model/control/goaway')
 
   const ORIGIN = 'moqt://relay.example.com/app'
   const member = () => {
@@ -321,7 +313,7 @@ if (import.meta.vitest) {
     })
 
     test('UNSUPPORTED_ORIGIN for another origin or setup, synchronously and on connect', async () => {
-      const ssts = { setupOptions: new SetupOptions().addSstsAlgorithms([1]) }
+      const ssts = { setupOptions: { sstsAlgorithms: [1n] } }
       void acquire(member(), ORIGIN, ssts)
       expect(() => check('moqt://other.example.com/app', clientKey(ssts))).toThrow(
         expect.objectContaining({ code: 'UNSUPPORTED_ORIGIN' }),
@@ -395,26 +387,27 @@ if (import.meta.vitest) {
     test('GOAWAY moves every player to the new session URI, or back to this one without it', async () => {
       const a = member()
       await acquire(a, ORIGIN, {})
-      fakes.clients[0]!.emit('goaway', new GoAway('moqt://next.example.com/app', 5000n))
+      fakes.clients[0]!.emit('goaway', { kind: 'goAway', newSessionUri: 'moqt://next.example.com/app', timeout: 5000n })
       await flush()
       expect(fakes.clients[0]!.disconnected).toBe(true)
       expect(currentClient()).toBe(fakes.clients[1])
       expect(fakes.clients[1]!.options.url).toBe('moqt://next.example.com/app')
       expect(a.log).toEqual(['reconnecting 1', 'reconnected'])
 
-      fakes.clients[1]!.emit('goaway', new GoAway(undefined, 5000n))
+      fakes.clients[1]!.emit('goaway', { kind: 'goAway', timeout: 5000n })
       await flush()
       expect(fakes.clients[2]!.options.url).toBe('moqt://next.example.com/app')
     })
 
     test('a GOAWAY during setup is retried at the new session URI', async () => {
       fakes.restore()
+
       const setup = Promise.withResolvers<void>()
       fakes = fakeClients((i) => (i === 0 ? setup.promise : Promise.resolve()))
 
       const connecting = acquire(member(), ORIGIN, {})
       await flush()
-      fakes.clients[0]!.emit('goaway', new GoAway('moqt://next.example.com/app', 5000n))
+      fakes.clients[0]!.emit('goaway', { kind: 'goAway', newSessionUri: 'moqt://next.example.com/app', timeout: 5000n })
       setup.resolve()
       expect(await connecting).toBe(fakes.clients[1])
       expect(fakes.clients[0]!.disconnected).toBe(true)

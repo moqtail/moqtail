@@ -20,7 +20,7 @@
  */
 
 import type { MOQtailClient } from '@/client/client'
-import type { LocationFilter } from '@/model/parameter/message/location_filter'
+import type { LocationFilter } from '@/model/parameters'
 import {
   MOQtailPlayer,
   parseMsfUrl,

@@ -26,13 +26,10 @@ import type { MOQtailClient } from '@/client/client'
 import type { SubscribeResult } from '@/client/types'
 import type { Location } from '@/model/common/location'
 import type { Tuple } from '@/model/common/tuple'
-import { GroupOrder, LocationFilterType } from '@/model/control/constant'
-import { RequestError } from '@/model/control/request_error'
-import type { SubscribeOk } from '@/model/control/subscribe_ok'
+import { GroupOrder, LocationFilterType } from '@/model/constants'
 import { FullTrackName } from '@/model/data/full_track_name'
 import type { MoqtObject } from '@/model/data/object'
-import { FillParameters } from '@/model/parameter/message/fill_parameters'
-import { LocationFilter } from '@/model/parameter/message/location_filter'
+import { locationFilter } from '@/model/parameters'
 import { findProperty } from '@/model/property/find'
 import { DEFAULT_MAX_CATALOG_BYTES } from '@/player/constants'
 import type { ElementContext } from '@/player/element/context'
@@ -44,6 +41,8 @@ import {
   MsfCompressionObjectProperty,
   MsfCompressionTrackProperty,
 } from './compression'
+import { isRequestError } from '@/model/messages'
+import type { RequestError, SubscribeOk } from '@/model/messages'
 
 /** How long a missing object, or a stale group's next independent object, is waited for. */
 const ORDERING_WINDOW_MS = 2000
@@ -109,15 +108,15 @@ export class TrackReader {
         // The reader orders its own objects
         ordering: 'none',
         // The next object live, and the latest group from object 0 as fill (no Joining FETCH in moqt-22)
-        locationFilter: new LocationFilter(LocationFilterType.NextObject),
-        parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 1n)])],
+        locationFilter: locationFilter(LocationFilterType.NextObject),
+        parameters: { fillParameters: { locationFilter: locationFilter(LocationFilterType.RelativeStart, 1n) } },
       })
     } catch (cause) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'Subscribing failed', { cause })
     }
 
-    if (result instanceof RequestError) {
-      throw new PlayerError('UNSUPPORTED_SOURCE', `Subscribe rejected: ${result.reasonPhrase.phrase}`)
+    if (isRequestError(result)) {
+      throw new PlayerError('UNSUPPORTED_SOURCE', `Subscribe rejected: ${result.reasonPhrase}`)
     }
     if (this.#abort.signal.aborted) {
       void unsubscribe({ client, result })
@@ -336,9 +335,10 @@ if (import.meta.vitest) {
 
       const sent = client.sent<import('@/client/types').SubscribeOptions>('subscribe')[0]!
       expect([sent.priority, sent.locationFilter?.filterType]).toEqual([0, LocationFilterType.NextObject])
-      const fill = sent.parameters?.[0] as FillParameters
-      expect((fill.parameters[0] as LocationFilter).filterType).toBe(LocationFilterType.RelativeStart)
-      expect((fill.parameters[0] as LocationFilter).startGroup).toBe(1n)
+
+      const fill = sent.parameters?.fillParameters?.locationFilter
+      expect(fill?.filterType).toBe(LocationFilterType.RelativeStart)
+      expect(fill?.startGroup).toBe(1n)
 
       // An old group's object, a delta ahead of its predecessor, and the next group
       client.last.push(object(5, 0, 'a'), object(5, 2, 'c'), object(4, 1, 'old'), object(5, 1, 'b'), object(6, 1, 'x'))

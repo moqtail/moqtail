@@ -22,7 +22,7 @@
 import { expect } from 'vitest'
 import type { DataEvent } from '@/client/data_event'
 import type { Location } from '@/model/common/location'
-import type { LocationFilter } from '@/model/parameter/message/location_filter'
+import type { LocationFilter } from '@/model/parameters'
 import type { PlayerEvents, PlayerState } from '@/player'
 
 export interface StateRecord {

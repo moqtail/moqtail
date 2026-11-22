@@ -21,9 +21,9 @@
  */
 
 import type { MOQtailClient } from '@/client/client'
-import { GroupOrder, LocationFilterType } from '@/model/control/constant'
+import { GroupOrder, LocationFilterType } from '@/model/constants'
 import type { FullTrackName } from '@/model/data/full_track_name'
-import { LocationFilter } from '@/model/parameter/message/location_filter'
+import { locationFilter } from '@/model/parameters'
 import { CONFIRMING, UP_EVIDENCE, type Observation } from './features'
 
 /** An object that arrived whole. */
@@ -277,20 +277,14 @@ export class Prober {
   }
 
   async #fetch(inFlight: InFlight, fullTrackName: FullTrackName, { start, end }: ProbeRange): Promise<void> {
-    const locationFilter = new LocationFilter(
-      LocationFilterType.AbsoluteRange,
-      start.group,
-      start.object,
-      end.group,
-      end.object,
-    )
+    const filter = locationFilter(LocationFilterType.AbsoluteRange, start.group, start.object, end.group, end.object)
 
     try {
       const result = await inFlight.client.fetch({
         priority: PROBE_PRIORITY,
         groupOrder: GroupOrder.Ascending,
         fullTrackName,
-        locationFilter,
+        locationFilter: filter,
       })
 
       // A refused FETCH leaves the probe to time out with what else arrived

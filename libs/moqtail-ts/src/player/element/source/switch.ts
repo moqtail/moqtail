@@ -22,10 +22,8 @@
 
 import type { SubscribeResult, SwitchOptions } from '@/client/types'
 import { Location } from '@/model/common/location'
-import { LocationFilterType, SwitchMode } from '@/model/control/constant'
-import { RequestError } from '@/model/control/request_error'
-import { FillParameters } from '@/model/parameter/message/fill_parameters'
-import { LocationFilter } from '@/model/parameter/message/location_filter'
+import { LocationFilterType, SwitchMode } from '@/model/constants'
+import { locationFilter } from '@/model/parameters'
 import type { ElementContext } from '@/player/element/context'
 import type { CatalogTrack, MediaSourceOptions } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
@@ -35,6 +33,7 @@ import { alignmentUnit, misaligned, switchDistance, switchPoint } from './alignm
 import { sendSwitch, trackOf, type Delivery } from './delivery'
 import type { End } from './ranges'
 import type { Recovery } from './recovery'
+import { isRequestError } from '@/model/messages'
 
 /** How many alignment units before a longer GoP's switch point the climb asks for it. */
 const CLIMB_LEAD_UNITS = 2n
@@ -318,21 +317,19 @@ export class Switcher {
 
     const request = delivery.request(track, { fetch, start, ...(fetch && end && { end }) })
     recovery.handOver(track, request, start, false)
+
     const accepted = await request
 
-    if (accepted instanceof RequestError) return this.#rejected(track, from)
+    if (isRequestError(accepted)) return this.#rejected(track, from)
     if (fetch) return
 
     // The old subscription ends with its End Group; reading stops at the switch point inside it
-    const locationFilter = new LocationFilter(
-      LocationFilterType.AbsoluteStartGroupEnd,
-      last.location.group,
-      0n,
-      point.end.group,
-    )
+    const filter = locationFilter(LocationFilterType.AbsoluteStartGroupEnd, last.location.group, 0n, point.end.group)
 
     // Without the update, reading still stops at the switch point
-    await context.client.subscribeUpdate({ subscriptionRequestId: current.requestId, locationFilter }).catch(() => {})
+    await context.client
+      .subscribeUpdate({ subscriptionRequestId: current.requestId, locationFilter: filter })
+      .catch(() => {})
   }
 
   #warnIfMisaligned(set: readonly CatalogTrack[]): void {
@@ -376,7 +373,7 @@ export class Switcher {
     const newSubscribeOptions = {
       ...delivery.subscribeOptions(track, { fetch: false, start }),
       // Already-published objects from the switch group on
-      parameters: [new FillParameters([])],
+      parameters: { fillParameters: {} },
     }
 
     const request = sendSwitch(context.client, options.requests, track, {
@@ -390,7 +387,7 @@ export class Switcher {
     delivery.expectSwitch({ track, end: point.end, accepted: request })
     recovery.handOver(track, request, start, true)
 
-    if ((await request) instanceof RequestError) {
+    if (isRequestError(await request)) {
       delivery.expectSwitch(undefined)
       return this.#rejected(track, from)
     }

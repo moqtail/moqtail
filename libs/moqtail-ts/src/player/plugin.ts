@@ -19,8 +19,9 @@
  * parameters they need, so a protocol extension or a controller is one entry in `opts.plugins`.
  */
 
-import type { Setup } from '@/model/control/setup'
-import { SetupOptions } from '@/model/parameter/setup_option'
+import type { Setup } from '@/model/messages'
+import { KeyValuePair } from '@/model/common/pair'
+import type { SetupOptions } from '@/model/parameters'
 import {
   checkName,
   DEFAULT_PRIORITY,
@@ -132,8 +133,9 @@ export function initPlugins(plugins: readonly Plugin[]): PluginInstance[] {
   const instances: PluginInstance[] = []
   for (const { definition, config } of plugins) {
     const ctx = definition.init?.(config)
-    const setupOptions = new SetupOptions()
+    const setupOptions: SetupOptions = {}
     if (definition.setup && !definition.setup(ctx, setupOptions)) continue
+
     instances.push({
       name: definition.name,
       priority: definition.priority ?? DEFAULT_PRIORITY,
@@ -162,6 +164,7 @@ export function resolveFeatures(active: readonly PluginInstance[]): Features {
 
   const [bufferController] = items('buffer-controller')
   const [abrController] = items('abr-controller')
+
   return {
     ...(bufferController && { bufferController }),
     ...(abrController && { abrController }),
@@ -171,47 +174,52 @@ export function resolveFeatures(active: readonly PluginInstance[]): Features {
 }
 
 /**
- * `client.setupOptions` followed by each plugin's. A plugin setting a parameter type to
- * another value than an earlier entry throws `UNSUPPORTED_ORIGIN`.
+ * `client.setupOptions` followed by each plugin's. A plugin setting an option to another
+ * value than an earlier entry throws `UNSUPPORTED_ORIGIN`.
  */
 export function mergeSetupOptions(
   base: SetupOptions | undefined,
   plugins: readonly PluginInstance[],
 ): SetupOptions | undefined {
-  if (!plugins.some((p) => p.setupOptions.build().length > 0)) return base
+  if (!plugins.some((p) => Object.keys(p.setupOptions).length > 0)) return base
 
-  const merged = new SetupOptions()
-  const owners = new Map<bigint, { owner: string; value: string }>()
-  for (const pair of base?.build() ?? []) {
-    merged.addRaw(pair)
-    if (!owners.has(pair.typeValue))
-      owners.set(pair.typeValue, { owner: 'client.setupOptions', value: canonicalJson(pair.value) })
-  }
+  // Extensions are one entry per option type, like the named options
+  const entries = (options: SetupOptions) => [
+    ...Object.entries(options).filter(([key]) => key !== 'extensions'),
+    ...(options.extensions ?? []).map((pair): [string, unknown] => [`0x${pair.typeValue.toString(16)}`, pair]),
+  ]
+  const merged = new Map(entries(base ?? {}))
+  const owners = new Map([...merged.keys()].map((key) => [key, 'client.setupOptions']))
 
   for (const plugin of plugins) {
-    for (const pair of plugin.setupOptions.build()) {
-      const value = canonicalJson(pair.value)
-      const existing = owners.get(pair.typeValue)
-
-      if (existing && existing.value !== value) {
+    for (const [key, value] of entries(plugin.setupOptions)) {
+      const owner = owners.get(key)
+      if (owner && canonicalJson(merged.get(key)) !== canonicalJson(value)) {
         throw new PlayerError(
           'UNSUPPORTED_ORIGIN',
-          `${existing.owner} and plugin "${plugin.name}" set setup parameter 0x${pair.typeValue.toString(16)} to different values`,
+          `${owner} and plugin "${plugin.name}" set setup option ${key} to different values`,
         )
       }
+      if (owner) continue
 
-      if (existing) continue
-      owners.set(pair.typeValue, { owner: `plugin "${plugin.name}"`, value })
-      merged.addRaw(pair)
+      owners.set(key, `plugin "${plugin.name}"`)
+      merged.set(key, value)
     }
   }
 
-  return merged
+  const options: Record<string, unknown> = {}
+  const extensions: KeyValuePair[] = []
+
+  for (const [key, value] of merged) {
+    if (value instanceof KeyValuePair) extensions.push(value)
+    else options[key] = value
+  }
+
+  return (extensions.length > 0 ? { ...options, extensions } : options) as SetupOptions
 }
 
 if (import.meta.vitest) {
   const { describe, test, expect, expectTypeOf } = import.meta.vitest
-  const { Setup } = await import('@/model/control/setup')
   const { testSource } = await import('@/player/testing/elements')
   const buffer = (name: string): BufferController => ({ attach() {}, detach() {}, backBuffer: () => name.length })
   const abr = (name: string): AbrController & { name: string } => ({ name, attach() {}, detach() {} })
@@ -242,7 +250,7 @@ if (import.meta.vitest) {
       const refused = definePlugin({
         name: 'refused',
         setup: (_, s) => {
-          s.addMaxRequestUpdates(1)
+          s.maxRequestUpdates = 1n
           return false
         },
       })
@@ -274,7 +282,8 @@ if (import.meta.vitest) {
         offer('tie-2', 100),
         offer('no', 1, false),
       ])
-      const features = resolveFeatures(activePlugins(plugins, new Setup([])))
+      const features = resolveFeatures(activePlugins(plugins, { kind: 'setup', options: {} }))
+
       expect(features.bufferController?.backBuffer?.()).toBe('tie-1'.length)
       expect((features.abrController as ReturnType<typeof abr>).name).toBe('tie-1')
       expect(features.elements.map((e) => e.name)).toEqual(['tie-1', 'tie-2', 'late'])
@@ -287,14 +296,25 @@ if (import.meta.vitest) {
         definePlugin({
           name,
           setup: (_, s) => {
-            s.addSstsAlgorithms(ids)
+            s.sstsAlgorithms = ids.map(BigInt)
             return true
           },
         })()
 
-      const base = new SetupOptions().addMaxRequestUpdates(4)
+      const base: SetupOptions = { maxRequestUpdates: 4n }
       const merged = mergeSetupOptions(base, initPlugins([algorithms('a', 1), algorithms('b', 1)]))
-      expect(merged?.build()).toHaveLength(2)
+      expect(merged).toEqual({ maxRequestUpdates: 4n, sstsAlgorithms: [1n] })
+
+      const extension = (name: string, type: number) =>
+        definePlugin({
+          name,
+          setup: (_, s) => {
+            s.extensions = [KeyValuePair.tryNewVarInt(type, 1)]
+            return true
+          },
+        })()
+      const extended = mergeSetupOptions(undefined, initPlugins([extension('x', 0x7f00), extension('y', 0x7f02)]))
+      expect(extended?.extensions?.map((pair) => pair.typeValue)).toEqual([0x7f00n, 0x7f02n])
       expect(mergeSetupOptions(base, initPlugins([definePlugin({ name: 'none' })()]))).toBe(base)
       expect(() => mergeSetupOptions(undefined, initPlugins([algorithms('a', 1), algorithms('b', 2)]))).toThrow(
         'plugin "a" and plugin "b"',

@@ -22,10 +22,8 @@
 import type { MOQtailClient } from '@/client/client'
 import type { FetchOptions, SubscribeOptions, SwitchOptions } from '@/client/types'
 import type { FullTrackName } from '@/model/data/full_track_name'
-import { FillParameters } from '@/model/parameter/message/fill_parameters'
-import type { LocationFilter } from '@/model/parameter/message/location_filter'
-import { RequestError } from '@/model/control/request_error'
 import { at, type Log, type RequestRecord } from './records'
+import { isRequestError } from '@/model/messages'
 
 const decode = (name: FullTrackName) => new TextDecoder().decode(name.name)
 
@@ -44,11 +42,12 @@ export function recordClient(client: MOQtailClient, log: Log): void {
     ) =>
     async (args: A) => {
       const sent = performance.now()
+
       const result = await call.call(client, args)
+
       const { fullTrackName, locationFilter, parameters } = options(args)
       // A filled SUBSCRIBE starts where its FILL_PARAMETERS say.
-      const fill = parameters?.find((p): p is FillParameters => p instanceof FillParameters)
-      const start = (fill?.parameters[0] as LocationFilter | undefined) ?? locationFilter
+      const start = parameters?.fillParameters?.locationFilter ?? locationFilter
       const entry: RequestRecord = {
         kind,
         requestId: undefined,
@@ -56,21 +55,27 @@ export function recordClient(client: MOQtailClient, log: Log): void {
         ...(start && { locationFilter: start }),
         at: sent,
       }
-      if (result instanceof RequestError) {
-        entry.error = `${result.errorCode} ${result.reasonPhrase.phrase}`
+
+      if (isRequestError(result)) {
+        entry.error = `${result.errorCode} ${result.reasonPhrase}`
       } else if (result && typeof result === 'object' && 'requestId' in result) {
         const { requestId } = result as { requestId: bigint }
         entry.requestId = requestId
         requests.set(requestId, entry)
+
         const ok = (result as { subscribeOk?: { trackAlias: bigint } }).subscribeOk
         if (ok) aliases.set(ok.trackAlias, requestId)
+
         // switch() sends its SUBSCRIBE through subscribe(), which was recorded already.
         const inner = kind === 'switch' ? log.requests.findIndex((r) => r.requestId === requestId) : -1
         if (inner !== -1) log.requests.splice(inner, 1)
       }
+
       log.requests.push(entry)
+
       return result
     }
+
   client.subscribe = record('subscribe', client.subscribe, (a: SubscribeOptions) => a)
   client.fetch = record('fetch', client.fetch, (a: FetchOptions) => a)
   client.switch = record('switch', client.switch, (a: SwitchOptions) => a.newSubscribeOptions)

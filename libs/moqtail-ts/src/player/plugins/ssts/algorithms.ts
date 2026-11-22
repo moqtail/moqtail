@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-import type { Setup } from '@/model/control/setup'
-import { SstsAlgorithms } from '@/model/parameter/setup/ssts_algorithms'
+import type { Setup } from '@/model/messages'
 
 /** @public The algorithms `ssts()` offers by default: 0 (the draft's default) and demo-abr's 0xff01. */
 export const SSTS_ALGORITHMS: readonly bigint[] = [0n, 0xff01n]
@@ -25,6 +24,6 @@ export const SSTS_ALGORITHMS: readonly bigint[] = [0n, 0xff01n]
  * Empty when it lists none or omits the option, which prohibits SSTS (SSTS 3).
  */
 export function sstsAlgorithms(serverSetup: Setup, preferred: readonly bigint[]): bigint[] {
-  const offered = serverSetup.setupOptions.map((pair) => SstsAlgorithms.fromKeyValuePair(pair)).find((o) => o)
-  return preferred.filter((a) => offered?.algorithms.includes(a))
+  const offered = serverSetup.options.sstsAlgorithms
+  return preferred.filter((a) => offered?.includes(a))
 }

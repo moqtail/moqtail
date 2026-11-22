@@ -22,7 +22,7 @@
 
 import type { MOQtailClient } from '@/client/client'
 import type { Location } from '@/model/common/location'
-import type { RequestError } from '@/model/control/request_error'
+import type { RequestError } from '@/model/messages'
 import { DEFAULT_RECONNECT_ATTEMPTS } from '@/player/constants'
 import type { ElementContext } from '@/player/element/context'
 import type { CatalogTrack } from '@/player/element/interfaces'
@@ -414,7 +414,7 @@ if (import.meta.vitest) {
   const timeline = twoSecondTimeline()
   const { mediaObject, refuse } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
-  const { PublishDoneStatusCode } = await import('@/model/control/constant')
+  const { PublishDoneStatusCode } = await import('@/model/constants')
   type Sent = { fullTrackName: import('@/model/data/full_track_name').FullTrackName; locationFilter?: any }
   /** Runs every timer and what it starts; the longest backoff is 5 s. */
   const elapse = () => vi.advanceTimersByTimeAsync(6000)

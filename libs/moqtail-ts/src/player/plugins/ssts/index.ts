@@ -44,7 +44,7 @@ export const ssts = definePlugin({
   setup: ({ algorithms }, clientSetup) => {
     // An empty list offers nothing, which prohibits SSTS (SSTS 3)
     if (algorithms.length === 0) return false
-    clientSetup.addSstsAlgorithms([...algorithms])
+    clientSetup.sstsAlgorithms = [...algorithms]
     return true
   },
   negotiated: ({ algorithms }, serverSetup) => sstsAlgorithms(serverSetup, algorithms).length > 0,
@@ -53,14 +53,15 @@ export const ssts = definePlugin({
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { Setup } = await import('@/model/control/setup')
-  const { SetupOptions } = await import('@/model/parameter/setup_option')
+  type Setup = import('@/model/messages').Setup
   const { activePlugins, initPlugins } = await import('@/player/plugin')
-  const setup = (algorithms?: bigint[]) =>
-    new Setup(algorithms ? new SetupOptions().addSstsAlgorithms(algorithms).build() : [])
+  const setup = (algorithms?: bigint[]): Setup => ({
+    kind: 'setup',
+    options: algorithms ? { sstsAlgorithms: algorithms } : {},
+  })
 
   const offered = (...config: Parameters<typeof ssts>) =>
-    initPlugins([ssts(...config)]).map((p) => p.setupOptions.build().length)
+    initPlugins([ssts(...config)]).map((p) => Object.keys(p.setupOptions).length)
 
   test('sstsAlgorithms: the common algorithms in our order', () => {
     expect(sstsAlgorithms(setup([0xff01n, 7n, 0n]), SSTS_ALGORITHMS)).toEqual([0n, 0xff01n])

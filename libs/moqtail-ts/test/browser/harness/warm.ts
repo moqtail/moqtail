@@ -25,13 +25,14 @@ import { afterAll, beforeAll } from 'vitest'
 import { MOQtailClient } from '@/client/client'
 import type { SubscribeOptions } from '@/client/types'
 import { Tuple } from '@/model/common/tuple'
-import { GroupOrder, LocationFilterType } from '@/model/control/constant'
-import { RequestError } from '@/model/control/request_error'
+import { GroupOrder, LocationFilterType } from '@/model/constants'
 import { FullTrackName } from '@/model/data/full_track_name'
-import { LocationFilter } from '@/model/parameter/message/location_filter'
+import { locationFilter } from '@/model/parameters'
 import { parseCatalog } from '@/player/elements/catalog/parse'
 import { withRole } from '@/player/elements/catalog/selection'
 import { RELAY, type TestSource } from './sources'
+import { isRequestError } from '@/model/messages'
+import type { RequestError } from '@/model/messages'
 
 const options = (namespace: Tuple, name: string | Uint8Array, forward: boolean): SubscribeOptions => ({
   fullTrackName: FullTrackName.tryNew(namespace, name),
@@ -39,7 +40,7 @@ const options = (namespace: Tuple, name: string | Uint8Array, forward: boolean):
   groupOrder: GroupOrder.Original,
   forward,
   // The current group: its first object is a whole catalog.
-  locationFilter: new LocationFilter(LocationFilterType.RelativeStart, 1n),
+  locationFilter: locationFilter(LocationFilterType.RelativeStart, 1n),
 })
 
 /** Registers `beforeAll`/`afterAll` that keep the live `sources`' media tracks subscribed. */
@@ -49,25 +50,33 @@ export function warmUp(...sources: TestSource[]): void {
   beforeAll(async () => {
     client = new MOQtailClient({ url: RELAY })
     await client.init()
+
     for (const source of sources.filter((s) => s.live)) {
       const namespace = Tuple.fromUtf8Path(source.namespace)
       const catalog = await client.subscribe(options(namespace, 'catalog', true))
-      if (catalog instanceof RequestError) throw new Error(`warm-up: catalog of ${source.namespace} rejected`)
+      if (isRequestError(catalog)) throw new Error(`warm-up: catalog of ${source.namespace} rejected`)
+
       // A group's first object is a whole catalog, the rest deltas; status objects carry no payload.
       const reader = catalog.stream.getReader()
       let payload: Uint8Array | null | undefined
+
       while (!payload) {
         const { value, done } = await reader.read()
         if (done) throw new Error(`warm-up: catalog of ${source.namespace} ended`)
+
         if (value.location.object === 0n) payload = value.payload
       }
+
       reader.releaseLock()
       await client.unsubscribe(catalog.requestId)
+
       const { tracks } = parseCatalog(payload, { namespace, variables: {} }).catalog
       const media = tracks.map(withRole).filter((t) => t.role === 'video' || t.role === 'audio')
       const results = await Promise.all(media.map((t) => client!.subscribe(options(t.namespace, t.nameBytes, false))))
-      const rejected = media.filter((_, i) => results[i] instanceof RequestError).map((t) => t.name)
+
+      const rejected = media.filter((_, i) => isRequestError(results[i])).map((t) => t.name)
       if (rejected.length > 0) throw new Error(`warm-up: ${rejected} of ${source.namespace} rejected`)
+
       for (const r of results) subscribed.push((r as Exclude<typeof r, RequestError>).requestId)
     }
   }, 20_000)

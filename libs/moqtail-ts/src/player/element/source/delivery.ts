@@ -30,13 +30,11 @@ import type {
 } from '@/client/types'
 import { Location } from '@/model/common/location'
 import type { Tuple } from '@/model/common/tuple'
-import { GroupOrder, LocationFilterType, PublishDoneStatusCode } from '@/model/control/constant'
-import { RequestError } from '@/model/control/request_error'
+import { GroupOrder, LocationFilterType, PublishDoneStatusCode } from '@/model/constants'
 import { ObjectForwardingPreference, ObjectStatus } from '@/model/data/constant'
 import { FullTrackName } from '@/model/data/full_track_name'
 import type { MoqtObject } from '@/model/data/object'
-import { FillParameters } from '@/model/parameter/message/fill_parameters'
-import { LocationFilter } from '@/model/parameter/message/location_filter'
+import { locationFilter } from '@/model/parameters'
 import type { ElementContext } from '@/player/element/context'
 import type { CatalogTrack, RequestHooks, TimelineReader } from '@/player/element/interfaces'
 import type { Packet, Pad, PadProperties } from '@/player/element/pad'
@@ -47,6 +45,9 @@ import { renditionId, trackKey } from '@/player/util/track'
 import { beyond, reached, type End } from './ranges'
 import { GroupTimes } from './seek'
 import type { Packaging } from './switching_set'
+import { isRequestError } from '@/model/messages'
+import type { RequestError } from '@/model/messages'
+import type { LocationFilter } from '@/model/parameters'
 
 /** The abort reason of an attempt that a new request replaces: it's ended once that one is answered. */
 export const REPLACED = Symbol('replaced')
@@ -102,11 +103,12 @@ export function mediaRequest(namespace: Tuple, nameBytes: Uint8Array, ordering: 
 /** The FETCH filter from `start`, through `end` or to the end of the track. */
 export function fetchFilter(start: Location, end: End | undefined): LocationFilter {
   const { group, object } = start
-  if (!end) return new LocationFilter(LocationFilterType.AbsoluteStart, group, object)
+  if (!end) return locationFilter(LocationFilterType.AbsoluteStart, group, object)
 
   if (end.object === undefined)
-    return new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, group, object, end.group)
-  return new LocationFilter(LocationFilterType.AbsoluteRange, group, object, end.group, end.object)
+    return locationFilter(LocationFilterType.AbsoluteStartGroupEnd, group, object, end.group)
+
+  return locationFilter(LocationFilterType.AbsoluteRange, group, object, end.group, end.object)
 }
 
 /** Sends a SUBSCRIBE through the hooks: they change the options last and hear the accepted result. */
@@ -119,7 +121,8 @@ async function sendSubscribe(
   const sent = hooks?.subscribe?.(track, options) ?? options
   const result = await client.subscribe(sent)
 
-  if (!(result instanceof RequestError)) hooks?.subscribed?.(track, result, sent)
+  if (!isRequestError(result)) hooks?.subscribed?.(track, result, sent)
+
   return result
 }
 
@@ -133,7 +136,8 @@ async function sendFetch(
   const sent = hooks?.fetch?.(track, options) ?? options
   const result = await client.fetch(sent)
 
-  if (!(result instanceof RequestError)) hooks?.fetched?.(track, result, sent)
+  if (!isRequestError(result)) hooks?.fetched?.(track, result, sent)
+
   return result
 }
 
@@ -147,7 +151,8 @@ export async function sendSwitch(
   const sent = hooks?.subscribe?.(track, options.newSubscribeOptions) ?? options.newSubscribeOptions
   const result = await client.switch({ ...options, newSubscribeOptions: sent })
 
-  if (!(result instanceof RequestError)) hooks?.subscribed?.(track, result, sent)
+  if (!isRequestError(result)) hooks?.subscribed?.(track, result, sent)
+
   return result
 }
 
@@ -230,6 +235,7 @@ export class Delivery {
 
     const client = this.#context.client
     let accepted: RequestError | Accepted | undefined
+
     try {
       const request = ready ?? this.request(track, target)
       accepted = await untilAborted(request, signal, (late) => cancel(client, late))
@@ -240,7 +246,7 @@ export class Delivery {
     }
 
     if (accepted === undefined) return 'stopped'
-    if (accepted instanceof RequestError) return 'rejected'
+    if (isRequestError(accepted)) return 'rejected'
 
     const trackProperties = trackPropertiesOf(accepted)
     const initData = this.#initDataOf(track, trackProperties)
@@ -256,6 +262,7 @@ export class Delivery {
 
     const outcome = await this.#read(track, accepted, signal)
     this.#endRead(accepted, outcome, signal)
+
     return outcome
   }
 
@@ -286,7 +293,8 @@ export class Delivery {
     const client = this.#context.client
     void request.then(
       (accepted) => {
-        if (accepted instanceof RequestError) return
+        if (isRequestError(accepted)) return
+
         if (client !== this.#listening) {
           this.#listening?.off('orderinggap', this.#gapped)
           client.on('orderinggap', this.#gapped)
@@ -307,17 +315,17 @@ export class Delivery {
   subscribeOptions(track: CatalogTrack, target: Target): SubscribeOptions {
     const start = target.start
     const fill = start && target.fill
-    const locationFilter = fill
-      ? new LocationFilter(LocationFilterType.NextObject)
+    const filter = fill
+      ? locationFilter(LocationFilterType.NextObject)
       : start
-        ? new LocationFilter(LocationFilterType.AbsoluteStart, start.group, start.object)
-        : new LocationFilter(LocationFilterType.RelativeStart, 0n)
+        ? locationFilter(LocationFilterType.AbsoluteStart, start.group, start.object)
+        : locationFilter(LocationFilterType.RelativeStart, 0n)
 
     const parameters = fill
-      ? [new FillParameters([new LocationFilter(LocationFilterType.AbsoluteStart, start.group, 0n)])]
+      ? { fillParameters: { locationFilter: locationFilter(LocationFilterType.AbsoluteStart, start.group, 0n) } }
       : undefined
 
-    return { ...this.#common(track), locationFilter, ...(parameters && { parameters }) }
+    return { ...this.#common(track), locationFilter: filter, ...(parameters && { parameters }) }
   }
 
   /** Stops the request being read after `end`; later objects aren't written. */
@@ -508,8 +516,9 @@ export class Delivery {
   /** The first object of a `SWITCH_FROM` target: its request becomes the one being read. */
   async #enter(soft: SoftSwitch): Promise<CatalogTrack | undefined> {
     this.#soft = undefined
+
     const accepted = await soft.accepted
-    if (accepted instanceof RequestError) return undefined
+    if (isRequestError(accepted)) return undefined
 
     const { trackProperties } = accepted.subscribeOk
     const initData = this.#initDataOf(soft.track, trackProperties)
@@ -676,7 +685,7 @@ function untilAborted<T>(request: Promise<T>, signal: AbortSignal, late: (result
 
 /** Ends a request this source no longer reads. A lost session already ended it. */
 export async function cancel(client: MOQtailClient, result: RequestError | Accepted): Promise<void> {
-  if (result instanceof RequestError) return
+  if (isRequestError(result)) return
 
   try {
     await ('fetchOk' in result ? client.fetchCancel(result.requestId) : client.unsubscribe(result.requestId))

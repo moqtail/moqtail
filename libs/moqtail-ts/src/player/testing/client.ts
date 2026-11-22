@@ -29,13 +29,7 @@ import type {
   SwitchOptions,
 } from '@/client/types'
 import { Location } from '@/model/common/location'
-import { ReasonPhrase } from '@/model/common/reason_phrase'
-import { PublishDoneStatusCode, RequestErrorCode } from '@/model/control/constant'
-import { FetchOk } from '@/model/control/fetch_ok'
-import { PublishDone } from '@/model/control/publish_done'
-import { RequestError } from '@/model/control/request_error'
-import { Setup } from '@/model/control/setup'
-import { SubscribeOk } from '@/model/control/subscribe_ok'
+import { PublishDoneStatusCode, RequestErrorCode } from '@/model/constants'
 import { ObjectForwardingPreference } from '@/model/data/constant'
 import { FullTrackName } from '@/model/data/full_track_name'
 import { MoqtObject } from '@/model/data/object'
@@ -44,6 +38,8 @@ import type { TrackProperty } from '@/model/property/track_property'
 import { Emitter } from '@/util/emitter'
 import { ObjectOrderer } from '@/client/ordering'
 import { factory } from '@/player/client_slot'
+import { isRequestError, requestError } from '@/model/messages'
+import type { FetchOk, PublishDone, RequestError, Setup, SubscribeOk } from '@/model/messages'
 
 /** How the fake answers a SUBSCRIBE or FETCH: refuse it, or accept it with these values. */
 export type FakeResponse = RequestError | { trackProperties?: TrackProperty[]; endOfTrack?: boolean }
@@ -114,7 +110,7 @@ export class FakeRequest {
     for (const target of this.#targets) for (const object of target.#parked.splice(0)) this.#controller.enqueue(object)
     if (!(this.#into && this.#into.#open) && !this.#targets.some((target) => target.#open)) this.#controller.close()
 
-    this.#done.resolve(status === undefined ? undefined : new PublishDone(status, 0n, new ReasonPhrase('')))
+    this.#done.resolve(status === undefined ? undefined : publishDone(status))
   }
 
   /** Errors the stream, as a reset or a lost session does. */
@@ -142,7 +138,7 @@ export class FakeClient extends Emitter<ClientEvents> {
     options: SubscribeOptions | FetchOptions,
   ) => FakeResponse | Promise<FakeResponse> = () => ({})
   /** The peer's SETUP. */
-  serverSetup = new Setup([])
+  serverSetup: Setup = { kind: 'setup', options: {} }
   /** Decides each REQUEST_UPDATE; throw to fail it. */
   update: (args: SubscribeUpdateOptions) => void | Promise<void> = () => {}
   #terminated = false
@@ -181,20 +177,26 @@ export class FakeClient extends Emitter<ClientEvents> {
 
   async subscribe(options: SubscribeOptions): Promise<RequestError | SubscribeResult> {
     const response = await this.#respond('subscribe', options)
-    if (response instanceof RequestError) return response
+    if (isRequestError(response)) return response
 
     const request = this.#open('subscribe', options)
-    const subscribeOk = SubscribeOk.create(request.requestId, [], response.trackProperties ?? [])
+    const subscribeOk = subscribeOkFor(request.requestId, response.trackProperties)
 
     return { requestId: request.requestId, subscribeOk, stream: request.stream, done: request.done }
   }
 
   async fetch(options: FetchOptions): Promise<RequestError | FetchResult> {
     const response = await this.#respond('fetch', options)
-    if (response instanceof RequestError) return response
+    if (isRequestError(response)) return response
 
     const request = this.#open('fetch', options)
-    const fetchOk = new FetchOk(response.endOfTrack ?? false, new Location(0n, 0n), [], response.trackProperties ?? [])
+    const fetchOk: FetchOk = {
+      kind: 'fetchOk',
+      endOfTrack: response.endOfTrack ?? false,
+      endLocation: new Location(0n, 0n),
+      parameters: {},
+      trackProperties: response.trackProperties ?? [],
+    }
 
     return { requestId: request.requestId, fetchOk, stream: request.stream }
   }
@@ -202,11 +204,12 @@ export class FakeClient extends Emitter<ClientEvents> {
   /** The new request delivers into the subscription it switches from. */
   async switch(args: SwitchOptions): Promise<RequestError | SubscribeResult> {
     const from = this.request(args.switchFromRequestId)
+
     const response = await this.#respond('switch', args, args.newSubscribeOptions)
-    if (response instanceof RequestError) return response
+    if (isRequestError(response)) return response
 
     const request = this.#open('subscribe', args.newSubscribeOptions, from)
-    const subscribeOk = SubscribeOk.create(request.requestId, [], response.trackProperties ?? [])
+    const subscribeOk = subscribeOkFor(request.requestId, response.trackProperties)
 
     return { requestId: request.requestId, subscribeOk, stream: request.stream, done: from?.done ?? request.done }
   }
@@ -261,7 +264,15 @@ export class FakeClient extends Emitter<ClientEvents> {
 }
 
 /** A REQUEST_ERROR with `code`, for `respond`. */
-export const refuse = (code = RequestErrorCode.DoesNotExist) => new RequestError(code, 0n, new ReasonPhrase('refused'))
+export const refuse = (code = RequestErrorCode.DoesNotExist) => requestError(code, 'refused')
+
+function publishDone(statusCode: PublishDoneStatusCode): PublishDone {
+  return { kind: 'publishDone', statusCode, streamCount: 0n, errorReason: '' }
+}
+
+function subscribeOkFor(trackAlias: bigint, trackProperties: TrackProperty[] = []): SubscribeOk {
+  return { kind: 'subscribeOk', trackAlias, parameters: {}, trackProperties }
+}
 
 /** A media object at `group`.`object` of `track`, with a payload and optional object properties. */
 export function mediaObject(

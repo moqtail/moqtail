@@ -24,9 +24,8 @@ import { MoqtObject } from '@/model/data/object'
 import { Cmaf } from '@/player/elements/cmaf'
 import type { SwitchingSetSource } from '@/player/element/source/switching_set'
 import type { SubscribeOptions, SubscribeUpdateOptions, SwitchOptions } from '@/client/types'
-import { LocationFilterType } from '@/model/control/constant'
-import { FillParameters } from '@/model/parameter/message/fill_parameters'
-import type { LocationFilter } from '@/model/parameter/message/location_filter'
+import { LocationFilterType } from '@/model/constants'
+import type { LocationFilter } from '@/model/parameters'
 import { CapabilityCode, type SourceElementDefinition } from '@/player/element/define'
 import type { CatalogReader, CatalogTrack, MediaSourceOptions, TimelineReader } from '@/player/element/interfaces'
 import { fragment } from './bmff'
@@ -171,8 +170,8 @@ function describeCall({ method, args }: { method: string; args: unknown }): stri
   }
 
   const options = (method === 'switch' ? (args as SwitchOptions).newSubscribeOptions : args) as SubscribeOptions
-  const fill = options.parameters?.find((p): p is FillParameters => p instanceof FillParameters)
-  const filled = fill && ` fill${fill.parameters.map((f) => ` ${describeFilter(f as LocationFilter)}`).join('')}`
+  const fill = options.parameters?.fillParameters
+  const filled = fill && ` fill${fill.locationFilter ? ` ${describeFilter(fill.locationFilter)}` : ''}`
   const from = method === 'switch' ? ` ${(args as SwitchOptions).switchFromRequestId}` : ''
 
   return `${method}${from} ${requested(options)} ${describeFilter(options.locationFilter)}${filled ?? ''}`

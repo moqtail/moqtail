@@ -23,7 +23,7 @@
 
 import type { MOQtailClient } from '@/client/client'
 import type { SubscribeOptions } from '@/client/types'
-import { SwitchingSetAssignment } from '@/model/parameter/message/switching_set_assignment'
+import type { SwitchingSetAssignment } from '@/model/parameters'
 import { SourceElement, type BaseElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode, defineElement } from '@/player/element/define'
@@ -273,7 +273,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     return {
       subscribe: (track, { forward: _, ...options }) => ({
         ...options,
-        parameters: [...(options.parameters ?? []), this.#assignment(track)],
+        parameters: { ...options.parameters, switchingSetAssignment: this.#assignment(track) },
       }),
       subscribed: (_, result) => {
         const replaced = child.subscription !== undefined
@@ -292,7 +292,14 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     const pinned = this.#pinned !== undefined
     const kbps = pinned ? BigInt(this.#pinned === this.#id(track)) : BigInt(Math.round(bitrateOf(track) / 1000))
 
-    return new SwitchingSetAssignment(this.#setIdFor(this.context.client), this.#algorithm, kbps, 1n, activate, 0)
+    return {
+      switchingSetId: this.#setIdFor(this.context.client),
+      algorithmId: this.#algorithm,
+      throughputThresholdKbps: kbps,
+      setThroughputWeight: 1n,
+      activateSwitching: activate,
+      setRank: 0,
+    }
   }
 
   /** Unique per client, and taken again on the client after a reconnect. */
@@ -326,9 +333,10 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   #update(child: Child): Promise<void> {
     const subscription = child.subscription
     if (!subscription) return Promise.resolve()
+
     return this.context.client.subscribeUpdate({
       subscriptionRequestId: subscription.result.requestId,
-      parameters: [this.#assignment(child.track)],
+      parameters: { switchingSetAssignment: this.#assignment(child.track) },
     })
   }
 
@@ -408,9 +416,8 @@ export function sstsSource(algorithms: readonly bigint[]) {
 
 if (import.meta.vitest) {
   const { test, expect, vi, afterEach } = import.meta.vitest
-  const { Setup } = await import('@/model/control/setup')
-  const { SetupOptions } = await import('@/model/parameter/setup_option')
-  const { PublishDoneStatusCode } = await import('@/model/control/constant')
+  const { PublishDoneStatusCode } = await import('@/model/constants')
+  type MessageParameters = import('@/model/parameters').MessageParameters
   const { Cmaf } = await import('@/player/elements/cmaf')
   const { packetOf } = await import('@/player/element/pad')
   const { SSTS_ALGORITHMS } = await import('./algorithms')
@@ -433,7 +440,7 @@ if (import.meta.vitest) {
     } = {},
   ) {
     const client = new FakeClient()
-    client.serverSetup = new Setup(new SetupOptions().addSstsAlgorithms(options.algorithms ?? [0n, 0xff01n]).build())
+    client.serverSetup = { kind: 'setup', options: { sstsAlgorithms: options.algorithms ?? [0n, 0xff01n] } }
 
     const { chain, failures } = testChain(
       () => [],
@@ -488,8 +495,9 @@ if (import.meta.vitest) {
   }
 
   /** The assignment a SUBSCRIBE or REQUEST_UPDATE carries, in short. */
-  function assigned(options: { parameters?: unknown[] }): string {
-    const a = options.parameters?.find((p): p is SwitchingSetAssignment => p instanceof SwitchingSetAssignment)
+  function assigned(options: { parameters?: MessageParameters | undefined }): string {
+    const a = options.parameters?.switchingSetAssignment
+
     return a
       ? `set ${a.switchingSetId} alg ${a.algorithmId} kbps ${a.throughputThresholdKbps} activate ${a.activateSwitching}`
       : 'none'
@@ -567,11 +575,12 @@ if (import.meta.vitest) {
     expect([requested(retry), assigned(retry)]).toEqual(['v1', 'set 0 alg 0 kbps 1000 activate 2'])
 
     const [update] = c.client.sent<UpdateOptions>('subscribeUpdate')
-    expect(update).toEqual({ subscriptionRequestId: 3n, parameters: [expect.any(SwitchingSetAssignment)] })
+    expect(update).toEqual({ subscriptionRequestId: 3n, parameters: { switchingSetAssignment: expect.any(Object) } })
     expect(assigned(update!)).toBe('set 0 alg 0 kbps 1000 activate 2')
 
     await c.source.selectRenditions(['v1', 'v2', 'v3'])
     await vi.advanceTimersByTimeAsync(0)
+
     const added = c.client.sent<SubscribeOptions>('subscribe').at(-1)!
     expect([requested(added), assigned(added)]).toEqual(['v3', 'set 0 alg 0 kbps 1000 activate 3'])
 

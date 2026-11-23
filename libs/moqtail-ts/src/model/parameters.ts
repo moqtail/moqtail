@@ -79,6 +79,17 @@ export interface SwitchingSetAssignment {
   readonly setThroughputWeight: bigint
   readonly activateSwitching: bigint
   readonly setRank: number
+  /**
+   * The subscriber's reorder buffer in ms. Only non-zero algorithms carry the
+   * extension; 0 means no latency budget was offered. Omitted when the
+   * assignment predates the extension.
+   */
+  readonly subscriberBufferMs?: bigint
+  /**
+   * Algorithm-specific knobs, in wire order. Only non-zero algorithms carry
+   * them; the relay hands them to the algorithm unread.
+   */
+  readonly algorithmParams?: readonly bigint[]
 }
 
 /** @public AUTHORIZATION TOKEN (moqt-22 §9.2.1.1), by alias type. */

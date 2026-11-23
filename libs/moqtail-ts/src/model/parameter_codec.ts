@@ -136,7 +136,7 @@ const switchFrom: Codec<SwitchFrom> = wrapped([
 ])
 
 const switchingSetAssignment: Codec<SwitchingSetAssignment> = wrapped([
-  (buf) => {
+  (buf): SwitchingSetAssignment => {
     const switchingSetId = buf.getVI()
     const algorithmId = buf.getVI()
     const throughputThresholdKbps = buf.getVI()
@@ -151,7 +151,33 @@ const switchingSetAssignment: Codec<SwitchingSetAssignment> = wrapped([
     const activateSwitching = buf.getVI()
     const setRank = buf.remaining > 0 ? buf.getU8() : 0
 
-    return { switchingSetId, algorithmId, throughputThresholdKbps, setThroughputWeight, activateSwitching, setRank }
+    // Algorithm 0 is fixed at the draft's six fields; a private knob wearing its
+    // id would be read as the next standard field by a conformant peer.
+    if (algorithmId === 0n) {
+      if (buf.remaining > 0) {
+        throw new ProtocolViolationError('SwitchingSetAssignment', 'excess bytes in SWITCHING_SET_ASSIGNMENT parameter')
+      }
+
+      return { switchingSetId, algorithmId, throughputThresholdKbps, setThroughputWeight, activateSwitching, setRank }
+    }
+
+    // The extension is the latency budget followed by the algorithm's own
+    // varints. A peer that predates it sends nothing here, which reads as no
+    // budget rather than a malformed assignment.
+    const subscriberBufferMs = buf.remaining > 0 ? buf.getVI() : undefined
+    const algorithmParams: bigint[] = []
+    while (buf.remaining > 0) algorithmParams.push(buf.getVI())
+
+    return {
+      switchingSetId,
+      algorithmId,
+      throughputThresholdKbps,
+      setThroughputWeight,
+      activateSwitching,
+      setRank,
+      ...(subscriberBufferMs !== undefined && { subscriberBufferMs }),
+      ...(algorithmParams.length > 0 && { algorithmParams }),
+    }
   },
   (buf, v) => {
     buf.putVI(v.switchingSetId)
@@ -160,6 +186,14 @@ const switchingSetAssignment: Codec<SwitchingSetAssignment> = wrapped([
     buf.putVI(v.setThroughputWeight)
     buf.putVI(v.activateSwitching)
     buf.putU8(v.setRank)
+
+    // Algorithm 0 stays byte-identical to the draft, even if the caller
+    // attached extension fields.
+    if (v.algorithmId === 0n) return
+    if (v.subscriberBufferMs === undefined && (v.algorithmParams?.length ?? 0) === 0) return
+
+    buf.putVI(v.subscriberBufferMs ?? 0n)
+    for (const param of v.algorithmParams ?? []) buf.putVI(param)
   },
 ])
 
@@ -309,6 +343,69 @@ if (import.meta.vitest) {
 
     it('carries a Range Filter removal as an empty value', () => {
       expect(decode(encode({ priorityFilter: [{ deltas: [] }] }))).toEqual({ priorityFilter: [{ deltas: [] }] })
+    })
+  })
+
+  describe('SWITCHING_SET_ASSIGNMENT', () => {
+    const base = {
+      switchingSetId: 7n,
+      algorithmId: 0xff04n,
+      throughputThresholdKbps: 2500n,
+      setThroughputWeight: 3n,
+      activateSwitching: 2n,
+      setRank: 1,
+    }
+
+    const parameter = (value: Uint8Array) => {
+      const buf = new ByteBuffer()
+      buf.putVI(1)
+      buf.putVI(0x41)
+      buf.putLengthPrefixedBytes(value)
+
+      return buf.toUint8Array()
+    }
+
+    it('writes the draft fields, then the budget and the algorithm varints, in order', () => {
+      const assignment = { ...base, subscriberBufferMs: 250n, algorithmParams: [25n, 2n, 0n] }
+      const value = new ByteBuffer()
+      value.putVI(7n)
+      value.putVI(0xff04n)
+      value.putVI(2500n)
+      value.putVI(3n)
+      value.putVI(2n)
+      value.putU8(1)
+      value.putVI(250n)
+      value.putVI(25n)
+      value.putVI(2n)
+      value.putVI(0n)
+
+      expect(encode({ switchingSetAssignment: assignment })).toEqual(parameter(value.toUint8Array()))
+      expect(decode(encode({ switchingSetAssignment: assignment }))).toEqual({ switchingSetAssignment: assignment })
+    })
+
+    it('reads a non-default assignment that predates the extension', () => {
+      expect(decode(encode({ switchingSetAssignment: base }))).toEqual({ switchingSetAssignment: base })
+    })
+
+    it('keeps algorithm 0 byte-identical and ignores extension fields', () => {
+      const six = { ...base, algorithmId: 0n }
+      const asked = { ...six, subscriberBufferMs: 250n, algorithmParams: [25n] }
+
+      expect(encode({ switchingSetAssignment: asked })).toEqual(encode({ switchingSetAssignment: six }))
+      expect(decode(encode({ switchingSetAssignment: asked }))).toEqual({ switchingSetAssignment: six })
+    })
+
+    it('rejects extension bytes under algorithm 0', () => {
+      const value = new ByteBuffer()
+      value.putVI(7n)
+      value.putVI(0n)
+      value.putVI(2500n)
+      value.putVI(3n)
+      value.putVI(2n)
+      value.putU8(1)
+      value.putVI(250n)
+
+      expect(() => decode(parameter(value.toUint8Array()))).toThrow(ProtocolViolationError)
     })
   })
 }

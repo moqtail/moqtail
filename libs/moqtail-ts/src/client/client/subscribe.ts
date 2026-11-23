@@ -346,6 +346,37 @@ if (import.meta.vitest) {
 
     const ftn = FullTrackName.tryNew('room/alice', 'video')
 
+    it('sends an extended switching set assignment through subscribe()', async () => {
+      const { client, transport } = await connected()
+      const assignment = {
+        switchingSetId: 4n,
+        algorithmId: 0xff04n,
+        throughputThresholdKbps: 800n,
+        setThroughputWeight: 1n,
+        activateSwitching: 2n,
+        setRank: 0,
+        subscriberBufferMs: 250n,
+        algorithmParams: [25n, 2n, 0n],
+      }
+
+      const pending = client.subscribe({
+        fullTrackName: ftn,
+        priority: 0,
+        groupOrder: GroupOrder.Original,
+        parameters: { switchingSetAssignment: assignment },
+      })
+
+      const stream = await openedStream(transport, 0)
+      expect(stream.messages[0]).toMatchObject({
+        kind: 'subscribe',
+        parameters: { switchingSetAssignment: assignment },
+      })
+
+      stream.respond(subscribeOk(1n, {}, []))
+      await pending
+      await client.disconnect()
+    })
+
     it('keeps the alias of a switch back to a track whose earlier request is still retiring', async () => {
       const { client, transport } = await connected()
 

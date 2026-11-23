@@ -163,6 +163,7 @@ const player = new MOQtailPlayer({ plugins: [ssts(), liveBuffer(), abr()] })
 ```
 
 - The plugin offers its algorithms at setup, most preferred first: `SSTS_ALGORITHMS` (`0n` and `0xff01n`) by default, or your own with `ssts({ algorithms })`.
+- For a non-zero algorithm, `ssts({ subscriberBufferMs, algorithmParams })` adds the draft's latency-budget extension to every assignment. Omit both and the assignment stays at the six base fields.
 - It is active only when the relay accepts one of them. The MOQtail relay does when `ssts_enable` is true in its [configuration file](/relay/reference/config). Otherwise the player plays as if the plugin weren't listed, and `abr()` picks the rendition.
 - SSTS sources switch themselves, so the player doesn't attach the `abr()` controller to them.
 - Picking one rendition by hand pins the relay to it, as above.

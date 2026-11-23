@@ -81,6 +81,9 @@ pub struct AsdV11Algorithm {
   tier: TierState,
   /// Until the ladder's top or the first congestion, whichever comes first.
   exploring: bool,
+  /// Discards reported by decisions that are not the group boundary; see
+  /// [`crate::algorithms::asd`] for why they wait for the boundary.
+  pending_timeouts: u64,
 }
 
 impl AsdV11Algorithm {
@@ -90,6 +93,7 @@ impl AsdV11Algorithm {
     Self {
       tier: TierState::new(),
       exploring: true,
+      pending_timeouts: 0,
     }
   }
 
@@ -117,19 +121,19 @@ impl AbrAlgorithm for AsdV11Algorithm {
       .unwrap_or(1)
       .saturating_sub(1);
 
-    // A per-object sample re-evaluates the group in flight but is not a new
-    // group: the slow-start and cautious streaks count uncongested groups, so
-    // the state machine is walked only at a group boundary or on a stream
-    // timeout (immediate congestion evidence). The tier in hand still serves
-    // the group in flight.
-    if input.reason == DecisionReason::PeriodicSample {
+    // The streaks count groups, and the paper reads the discards on the
+    // new-group boundary. A stream-timeout or object-paced decision serves the
+    // tier in hand but does not walk the state machine; its discards wait for
+    // the boundary so one group's burst cannot downshift several tiers.
+    self.pending_timeouts += input.total_stream_timeouts_since_last_decision();
+    if input.reason != DecisionReason::GroupBoundary {
       self.tier.clamp_to(max_index);
       return crate::algorithms::serve_tier(input, self.tier.tier());
     }
 
     let observation = Observation::new(
       input.active_stream_depth(),
-      input.total_stream_timeouts_since_last_decision(),
+      std::mem::take(&mut self.pending_timeouts),
     );
 
     // Congestion ends the exploration whether or not the tier had anywhere to

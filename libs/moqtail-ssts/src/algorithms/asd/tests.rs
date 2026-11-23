@@ -38,6 +38,21 @@ fn set(id: u64, active: bool) -> SetSnapshot {
   }
 }
 
+/// A set with six rungs, so a burst of downshifts has room to show itself.
+fn tall_set(id: u64, active: bool) -> SetSnapshot {
+  SetSnapshot {
+    members: vec![
+      (500, id * 10),
+      (1000, id * 10 + 1),
+      (2000, id * 10 + 2),
+      (3000, id * 10 + 3),
+      (4000, id * 10 + 4),
+      (5000, id * 10 + 5),
+    ],
+    ..set(id, active)
+  }
+}
+
 /// A stream table with `count` live streams on each listed set, on distinct
 /// groups and at the set's lowest member, so they read as separate deliveries
 /// of one quality.
@@ -85,12 +100,31 @@ fn decide(
   timeouts: u64,
   group: u64,
 ) -> crate::Selection {
+  decide_at(
+    algorithm,
+    sets,
+    open,
+    timeouts,
+    group,
+    DecisionReason::GroupBoundary,
+  )
+}
+
+/// Run one decision with an explicit reason, for the cadence tests.
+fn decide_at(
+  algorithm: &mut dyn AbrAlgorithm,
+  sets: &[SetSnapshot],
+  open: &[StreamSnapshot],
+  timeouts: u64,
+  group: u64,
+  reason: DecisionReason,
+) -> crate::Selection {
   let input = AbrInput {
     client_id: 7,
     group_id: group,
     bandwidth_estimate_kbps: 0,
     configured_cap_kbps: 0,
-    reason: DecisionReason::GroupBoundary,
+    reason,
     now_ms: 0,
     now_unix_ms: 0,
     sets,
@@ -214,6 +248,54 @@ fn a_timeout_during_cooldown_drops_the_tier_again() {
     decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 1, 17),
     Some(10),
     "a stream that timed out on the tier just tried is enough to drop again"
+  );
+}
+
+#[test]
+fn a_timeout_burst_inside_one_group_drops_once_at_the_boundary() {
+  // The paper decides on the new-group boundary. The host also asks on every
+  // stream timeout; if the state machine walked on those, a burst of resets
+  // inside one group would drop one tier per reset. The tier must hold during
+  // the burst and fall once at the boundary that sees the accumulated count.
+  let sets = [tall_set(1, true)];
+  let mut algorithm = AsdAlgorithm::new();
+  climb(&mut algorithm, &sets, 25);
+  assert_eq!(
+    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 25),
+    Some(15),
+    "top rung before the congestion"
+  );
+  assert_eq!(
+    decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, 26),
+    Some(14),
+    "depth two drops one tier and starts cooldown"
+  );
+
+  for _ in 0..3 {
+    let selection = decide_at(
+      &mut algorithm,
+      &sets,
+      &streams(&[(1, 1)]),
+      1,
+      26,
+      DecisionReason::StreamTimeout,
+    );
+    assert_eq!(
+      selection.tracks[&1],
+      Some(14),
+      "a timeout decision serves the tier in hand; it does not walk the streak"
+    );
+  }
+
+  assert_eq!(
+    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 27),
+    Some(13),
+    "the boundary sees three discards and drops exactly one tier"
+  );
+  assert_eq!(
+    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 28),
+    Some(13),
+    "no new evidence: the tier holds"
   );
 }
 

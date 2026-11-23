@@ -65,6 +65,13 @@ impl AbrAlgorithmFactory for AsdAlgorithmFactory {
 /// Walks one tier index up and down in response to stream backpressure.
 pub struct AsdAlgorithm {
   state: TierState,
+  /// Discards reported by decisions that are not the group boundary.
+  ///
+  /// The paper reads `discards_since_last_decision` once, on the new-group
+  /// boundary. The host also re-evaluates on a stream timeout, and that
+  /// decision clears the host's counter; the discards are kept here until the
+  /// boundary that is supposed to see them.
+  pending_timeouts: u64,
 }
 
 impl AsdAlgorithm {
@@ -73,6 +80,7 @@ impl AsdAlgorithm {
   pub fn new() -> Self {
     Self {
       state: TierState::default(),
+      pending_timeouts: 0,
     }
   }
 }
@@ -85,16 +93,21 @@ impl Default for AsdAlgorithm {
 
 impl AbrAlgorithm for AsdAlgorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
-    // A per-object sample re-evaluates the group in flight but is not a new
-    // group: ASD's streaks count uncongested groups, so the state machine is
-    // walked only at a group boundary or on a stream timeout (immediate
-    // congestion evidence). Feeding it the object-paced samples would fill a
-    // five-group streak several times inside one group and climb several rungs
-    // at once.
-    if input.reason != DecisionReason::PeriodicSample {
+    // The paper's algorithm decides on the new-group boundary: one
+    // observation per group, with `d = open_streams + discards_since_last`.
+    // The host also calls this on a stream timeout and on the object-paced
+    // sample. Those decisions serve the tier in hand, but they must not walk
+    // the state machine: a timeout decision would otherwise apply the same
+    // group's discards once per reset, and a burst inside one group would
+    // fall several tiers for one group's evidence. The discards are not lost;
+    // they are accumulated and read at the next boundary, which is where the
+    // paper reads them.
+    self.pending_timeouts += input.total_stream_timeouts_since_last_decision();
+
+    if input.reason == DecisionReason::GroupBoundary {
       let observation = Observation::new(
         input.active_stream_depth(),
-        input.total_stream_timeouts_since_last_decision(),
+        std::mem::take(&mut self.pending_timeouts),
       );
 
       match self.state.observe(observation) {

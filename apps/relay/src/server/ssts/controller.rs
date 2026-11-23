@@ -24,7 +24,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use moqtail_ssts::registry::registry;
 use moqtail::model::error::StreamResetCode;
 use moqtail_ssts::registry::registry;
 use moqtail_ssts::{

@@ -25,7 +25,7 @@ use crate::server::stream_id::StreamId;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail_ssts::{SetSnapshot, StreamSnapshot};
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -803,10 +803,10 @@ mod tests {
     let track = make_track("ns", "t");
     // Two subscriptions to the same track, both assigning it to set 7.
     manager
-      .assign(track.clone(), 42, 2, 7, 0, 100, 5, 2, 0)
+      .assign(track.clone(), 42, 2, 7, 0, 100, 5, 2, 0, 0, vec![])
       .unwrap();
     manager
-      .assign(track.clone(), 42, 4, 7, 0, 100, 5, 2, 0)
+      .assign(track.clone(), 42, 4, 7, 0, 100, 5, 2, 0, 0, vec![])
       .unwrap();
 
     manager.release(&track, 2);
@@ -823,7 +823,7 @@ mod tests {
     let mut manager = SwitchingSetManager::new();
     let track = make_track("ns", "t");
     manager
-      .assign(track.clone(), 42, 2, 7, 0, 100, 5, 2, 0)
+      .assign(track.clone(), 42, 2, 7, 0, 100, 5, 2, 0, 0, vec![])
       .unwrap();
 
     // A second subscription to the track, without an assignment, ends.

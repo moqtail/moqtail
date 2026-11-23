@@ -643,16 +643,14 @@ mod tests {
   /// written one way and the private ones the other.
   #[test]
   fn the_whole_experimental_set_starts_together() {
-    let base = moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE;
-    let requested = format!(
-      "0,{:#x},{:#x},{:#x},{:#x}",
-      base,
-      base + 1,
-      base + 2,
-      base + 3
-    );
-    let running = ssts_algorithms_for(&["--ssts-enable", "--ssts-algorithms", &requested]);
-    let mut expected = vec![0, base, base + 1, base + 2, base + 3];
+    let ids = moqtail_ssts::registry::registry().ids();
+    let list = ids
+      .iter()
+      .map(|id| format!("{id:#x}"))
+      .collect::<Vec<_>>()
+      .join(", ");
+    let running = ssts_algorithms_for(&format!("ssts_enable: true\nssts_algorithms: [{list}]"));
+    let mut expected = ids;
     expected.sort_unstable();
     expected.dedup();
     assert_eq!(

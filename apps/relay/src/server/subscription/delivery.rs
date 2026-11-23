@@ -649,11 +649,7 @@ impl Subscription {
   /// cached subgroup, which is the cache-only repair. A missing live header is
   /// synthesized only when the run starts at the subgroup's first Object, so
   /// `FIRST_OBJECT` is true rather than guessed.
-  async fn replay_cached_objects(
-    &self,
-    stream_id: &StreamId,
-    before: Option<u64>,
-  ) -> usize {
+  async fn replay_cached_objects(&self, stream_id: &StreamId, before: Option<u64>) -> usize {
     let Some(group_id) = stream_id.group_id else {
       return 0;
     };
@@ -1049,9 +1045,6 @@ mod tests {
       cached(7, 1, 0),
     ];
     assert_eq!(ids(&cached_objects(&objects, Some(0), None)), vec![0, 1, 2]);
-    assert_eq!(
-      ids(&cached_objects(&objects, Some(0), Some(2))),
-      vec![0, 1]
-    );
+    assert_eq!(ids(&cached_objects(&objects, Some(0), Some(2))), vec![0, 1]);
   }
 }

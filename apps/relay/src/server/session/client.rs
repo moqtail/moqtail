@@ -536,10 +536,7 @@ impl MOQTClient {
 
     // Only the creator counts against the switching set, mirroring the
     // release on every path that drops the stream from the map.
-    self
-      .ssts
-      .on_stream_opened(&stream_key.stream_id)
-      .await;
+    self.ssts.on_stream_opened(&stream_key.stream_id).await;
 
     trace!(
       "open_stream |  writing to stream ({}) connection_id: {}",
@@ -570,10 +567,7 @@ impl MOQTClient {
         let send_stream_map = self.get_stream_map(stream_key);
         let mut send_streams = send_stream_map.write().await;
         send_streams.remove(stream_key);
-        self
-          .ssts
-          .on_stream_closed(&stream_key.stream_id)
-          .await;
+        self.ssts.on_stream_closed(&stream_key.stream_id).await;
 
         return Err(anyhow::anyhow!(
           "Failed to write header payload to send stream ({}): {:?} connection_id: {}",
@@ -641,10 +635,7 @@ impl MOQTClient {
         // (and the set's depth) survives for the rest of the session and vetoes
         // every later upshift.
         self.take_sent_bytes(stream_key).await;
-        self
-          .ssts
-          .on_stream_closed(&stream_key.stream_id)
-          .await;
+        self.ssts.on_stream_closed(&stream_key.stream_id).await;
         return match finish_result {
           Ok(()) => {
             self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
@@ -755,10 +746,7 @@ impl MOQTClient {
     let removed = self.take_stream(stream_key).await;
     if removed.is_some() {
       self.take_sent_bytes(stream_key).await;
-      self
-        .ssts
-        .on_stream_closed(&stream_key.stream_id)
-        .await;
+      self.ssts.on_stream_closed(&stream_key.stream_id).await;
     }
     removed
   }

@@ -447,10 +447,10 @@ impl AbrAlgorithm for WasdAlgorithm {
         // produces its depth all by itself. Upshifts belong to the boundary
         // alone: the moment the relay's forward gate is waiting to record
         // that group's track. The algorithm's whole state is this one number,
-        // and a tier change is the rare outcome: every reading goes to the
-        // log (the run's dashboard is built from these lines), the changes
-        // log on top of them with more.
-        tracing::debug!(
+        // and a tier change is the rare outcome: every reading is a per-Object
+        // `trace` line (the run's dashboard is built from these), the changes
+        // log on top of them at `debug`.
+        tracing::trace!(
           client_id = input.client_id,
           group_id = input.group_id,
           tier = self.ladder.tier(),

@@ -198,8 +198,10 @@ async fn decide(
   // The estimate every algorithm is being handed, on one line, whether or not
   // the algorithm reads it: an algorithm that switches on stream depth says
   // nothing about the estimate, and the first question asked of a decision is
-  // still what the transport thought the path was worth at that moment.
-  tracing::debug!(
+  // still what the transport thought the path was worth at that moment. This
+  // is per Object on the mid-group clock, so it is `trace`, like the relay's
+  // other per-Object lines.
+  tracing::trace!(
     client_id = client.connection_id,
     group_id,
     ?reason,

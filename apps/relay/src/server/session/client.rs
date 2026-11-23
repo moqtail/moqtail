@@ -858,7 +858,7 @@ impl MOQTClient {
       // no longer exists, so it is dropped here rather than written into the
       // just-cancelled stream.
       if !self.stream_live(stream_key).await {
-        debug!(
+        trace!(
           "write_stream_object | Stream {} was cancelled mid-delivery; dropping object {}",
           stream_key, object_id
         );

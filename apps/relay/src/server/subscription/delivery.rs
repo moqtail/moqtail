@@ -677,7 +677,7 @@ impl Subscription {
       }
       Some(HeaderInfo::Subgroup {
         header: SubgroupHeader::new_with_explicit_id(
-          self.relay_track_id,
+          self.track_alias,
           group_id,
           first.subgroup_id,
           Some(first.publisher_priority),

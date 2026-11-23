@@ -66,29 +66,6 @@ impl Schedule {
     Self { steps, total_ms }
   }
 
-  /// The schedule re-based at `origin_ms`: the lead-in before it is dropped —
-  /// the run's bring-up consumes it in every run and no sender could have used
-  /// it — and the step it straddles starts there, so the windows measured from
-  /// the origin are the run's own delivery windows.
-  pub(crate) fn rebased_at(self, origin_ms: u64) -> Self {
-    // The last step that starts at or before the origin carries it; everything
-    // after it is untouched. An origin before the schedule's start re-bases at
-    // its first step.
-    let index = self
-      .steps
-      .iter()
-      .rposition(|&(_, start)| start <= origin_ms)
-      .unwrap_or(0);
-    let steps = self.steps[index..]
-      .iter()
-      .map(|&(cap, start)| (cap, start.saturating_sub(origin_ms)))
-      .collect();
-    Self {
-      steps,
-      total_ms: self.total_ms.saturating_sub(origin_ms),
-    }
-  }
-
   /// Mean capacity in kbps over `[from_ms, to_ms)` of the schedule's own time,
   /// holding the last step's capacity past its end (the run is over; the path
   /// is not).

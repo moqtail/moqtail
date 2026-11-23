@@ -1004,8 +1004,13 @@ async fn register_ssts_assignment_from_publish_ok(
     return;
   };
 
-  // The pushed PUBLISH's track alias is the relay track id.
-  let relay_track_id = publish.track_alias;
+  // A pushed PUBLISH carries the subscriber's own alias for the track, which
+  // is not the relay's id under `per-subscription`; the subscription knows the
+  // id the switching set is keyed by.
+  let Some(subscription) = subscription else {
+    return;
+  };
+  let relay_track_id = subscription.read().await.relay_track_id();
 
   if let MessageParameter::SwitchingSetAssignment {
     switching_set_id,
@@ -1053,7 +1058,7 @@ async fn register_ssts_assignment_from_publish_ok(
 
     // Same forward-state reasoning as the SUBSCRIBE path: the gating in the
     // subscription implements the spec's per-group forward selection.
-    if let Some(subscription) = subscription {
+    {
       let sub = subscription.read().await;
       let mut state = sub.subscription_state.write().await;
       state.forward = true;

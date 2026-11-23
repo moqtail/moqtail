@@ -152,6 +152,7 @@ impl LadderState {
   /// abandoned, hit this on every climb back to 1080p; the guard is common to
   /// all versions and, like the repair veto, holds the climb and restarts the
   /// clean streak until the rung above is clear.
+  #[allow(clippy::too_many_arguments)]
   pub(crate) fn on_sample(
     &mut self,
     depth: u64,

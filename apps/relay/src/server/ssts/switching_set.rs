@@ -29,6 +29,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// The one place mechanism state becomes algorithm state: everything, and only
 /// everything, an algorithm is allowed to know about a set.
@@ -123,20 +124,18 @@ impl SwitchingSet {
   }
 
   /// How long a forwarding stream of this set may linger after its group
-  /// ended before the relay resets it, in ms; 0 closes every stream
-  /// gracefully.
+  /// ended, in ms; 0 closes every stream gracefully.
   ///
-  /// The default algorithm gets `None`, because the draft fixes its
-  /// serialization without this extension and gives it no discard behaviour.
-  /// For every other algorithm the negotiated subscriber buffer is the whole
-  /// answer, and `Some(0)` is an answer: the subscriber that sent zero asked
-  /// for no delivery timeout at all, so the relay must not substitute its own
-  /// configured timeout.
-  pub fn negotiated_discard_timeout_ms(&self) -> Option<u64> {
-    if self.algorithm_id != 0 {
-      Some(self.subscriber_buffer_ms)
-    } else {
+  /// The timeout belongs to the set, never to the connection: a track outside
+  /// every set has no timer, and neither has a set on the default algorithm,
+  /// because the draft fixes its serialization without the extension and
+  /// gives it no discard behaviour. A non-default set that negotiated zero
+  /// explicitly disables the timer.
+  pub fn discard_timeout(&self) -> Option<Duration> {
+    if self.algorithm_id == 0 || self.subscriber_buffer_ms == 0 {
       None
+    } else {
+      Some(Duration::from_millis(self.subscriber_buffer_ms))
     }
   }
 }
@@ -701,16 +700,14 @@ mod tests {
   }
 
   /// The negotiated buffer is the subscriber's permission to discard its own
-  /// media; nothing else may grant it. A set on the default algorithm and a
-  /// track outside every set leave the relay's configured timeout in charge;
-  /// a non-default set that negotiated zero explicitly disables it.
+  /// media; nothing else may grant it. A set on the default algorithm, a set
+  /// that negotiated zero, and a track outside every set have no timer at all.
   #[test]
-  fn only_a_non_default_set_can_authorize_discarding() {
+  fn only_a_non_default_set_with_a_budget_authorizes_discarding() {
     let private = 0xff01;
     let buffer = make_track("ns", "buf");
     let unbuffered = make_track("ns", "nobuf");
     let default_algo = make_track("ns", "default");
-    let outside = make_track("ns", "outside");
 
     let mut manager = SwitchingSetManager::new();
     assign_with(&mut manager, &buffer, 11, 1, private, 100, 250, vec![3, 70]);
@@ -718,30 +715,20 @@ mod tests {
     assign_with(&mut manager, &default_algo, 13, 3, 0, 100, 900, vec![]);
 
     assert_eq!(
-      manager
-        .set_of_relay_track(11)
-        .unwrap()
-        .negotiated_discard_timeout_ms(),
-      Some(250)
+      manager.set_of_relay_track(11).unwrap().discard_timeout(),
+      Some(Duration::from_millis(250))
     );
     assert_eq!(
-      manager
-        .set_of_relay_track(12)
-        .unwrap()
-        .negotiated_discard_timeout_ms(),
-      Some(0),
+      manager.set_of_relay_track(12).unwrap().discard_timeout(),
+      None,
       "a zero buffer means never discard, not 'fall back to the default'"
     );
     assert_eq!(
-      manager
-        .set_of_relay_track(13)
-        .unwrap()
-        .negotiated_discard_timeout_ms(),
+      manager.set_of_relay_track(13).unwrap().discard_timeout(),
       None,
       "algorithm 0 has no discard behaviour in the draft"
     );
     assert!(manager.set_of_relay_track(99).is_none());
-    let _ = outside;
   }
 
   /// The snapshot must hand the algorithm the same knobs the subscriber sent,

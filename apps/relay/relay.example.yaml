@@ -89,8 +89,6 @@ ssts_algorithms: [0]
 # key=value tuning handed to the SSTS algorithms, e.g. [wasd.reads=2].
 # Unknown keys are inert; each algorithm documents the keys it reads.
 ssts_algorithm_params: []
-# How long an SSTS subscriber's subgroup stream may take to finish before it is reset; 0s never resets.
-ssts_discard_timeout: 1600ms
 
 # Relay mesh; off unless hop_id is set. peers needs hop_id.
 # hop_id: 1

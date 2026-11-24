@@ -256,12 +256,6 @@ pub struct AppConfig {
   /// inert rather than a startup error.
   #[default(vec![])]
   pub ssts_algorithm_params: Vec<String>,
-  /// How long an SSTS client's subgroup stream waits for a graceful finish
-  /// before it is reset and its stream slot is freed again. Only applies to
-  /// connections that negotiated SSTS; 0s always closes gracefully.
-  #[default(Duration::from_millis(1600))]
-  #[serde(with = "humantime_serde")]
-  pub ssts_discard_timeout: Duration,
   /// This relay's Hop ID in a relay mesh, declared in SETUP. Setting it turns
   /// clustering on; 0 joins the mesh while withholding an identity.
   pub hop_id: Option<u64>,

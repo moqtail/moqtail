@@ -348,16 +348,6 @@ impl SstsState {
     }
   }
 
-  /// The deadline a decision asked for on the re-send of this track's copy of
-  /// `group_id`, or `None` when the set's negotiated buffer stays in charge.
-  pub(crate) async fn resent_deadline_ms(&self, relay_track_id: u64, group_id: u64) -> Option<u64> {
-    let sets = self.switching_sets.read().await;
-    match sets.set_of_relay_track(relay_track_id) {
-      Some(set) => sets.resent_deadline_ms(set.id, group_id),
-      None => None,
-    }
-  }
-
   /// The full track name carrying this relay track, when it is in a switching
   /// set. Used to find the subscription that will own a replacement stream.
   pub(crate) async fn full_track_name_of_relay_track(
@@ -378,11 +368,24 @@ impl SstsState {
     Some(set.id)
   }
 
-  pub(crate) async fn negotiated_discard_timeout_ms(&self, relay_track_id: u64) -> Option<u64> {
+  /// How long closing one forwarding stream may wait for its FIN before the
+  /// stream is reset. `None` closes gracefully.
+  ///
+  /// The timer is a property of the switching set: no set means no timer, and
+  /// a set on the default algorithm has none either. A re-send deadline
+  /// replaces the set's buffer for the group it was ordered for; zero means
+  /// never discard there too. Nothing here reads a connection-wide setting.
+  pub(crate) async fn stream_close_timeout(
+    &self,
+    relay_track_id: u64,
+    group_id: u64,
+  ) -> Option<std::time::Duration> {
     let sets = self.switching_sets.read().await;
-    sets
-      .set_of_relay_track(relay_track_id)
-      .and_then(|set| set.negotiated_discard_timeout_ms())
+    let set = sets.set_of_relay_track(relay_track_id)?;
+    if let Some(ms) = sets.resent_deadline_ms(set.id, group_id) {
+      return (ms > 0).then(|| std::time::Duration::from_millis(ms));
+    }
+    set.discard_timeout()
   }
 }
 
@@ -527,5 +530,44 @@ mod tests {
     // It is pruned by the next decision, not by its own.
     assert!(state.record_group_decision(20, allocation(9), 18).await);
     assert!(!state.has_group_decision(10).await);
+  }
+
+  #[tokio::test]
+  async fn stream_close_timeout_comes_only_from_the_set() {
+    let private = moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE;
+    let state = SstsState::new(&setup_advertising(Some(&[private])), &[private]);
+    let track = moqtail::model::data::full_track_name::FullTrackName::new(
+      moqtail::model::common::tuple::Tuple::from_utf8_path("ns"),
+      moqtail::model::common::tuple::TupleField::from_utf8("t"),
+    )
+    .unwrap();
+    state
+      .switching_sets
+      .write()
+      .await
+      .assign(track, 42, 1, 7, private, 1000, 5, 1, 0, 250, vec![])
+      .unwrap();
+
+    assert_eq!(
+      state.stream_close_timeout(42, 3).await,
+      Some(std::time::Duration::from_millis(250))
+    );
+    assert_eq!(
+      state.stream_close_timeout(99, 3).await,
+      None,
+      "a track outside every set has no timer"
+    );
+
+    // A decision may put its own deadline on one group, and zero means never.
+    {
+      let mut sets = state.switching_sets.write().await;
+      sets.mark_group_resent(7, 4, Some(0));
+      sets.mark_group_resent(7, 5, Some(100));
+    }
+    assert_eq!(state.stream_close_timeout(42, 4).await, None);
+    assert_eq!(
+      state.stream_close_timeout(42, 5).await,
+      Some(std::time::Duration::from_millis(100))
+    );
   }
 }

@@ -36,7 +36,6 @@ fn set(id: u64, thresholds: &[u64]) -> SetSnapshot {
     members: thresholds.iter().map(|&t| (t, t)).collect(),
     subscriber_buffer_ms: 1600,
     algorithm_params: vec![],
-    group_span_ms: 500,
   }
 }
 

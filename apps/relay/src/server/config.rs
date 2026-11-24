@@ -251,7 +251,7 @@ pub struct AppConfig {
   #[validate(custom(function = "super::ssts::check_algorithm_ids"))]
   pub ssts_algorithms: Vec<u64>,
   /// `key=value` tuning handed to the SSTS algorithms when their instances are
-  /// created, for example `bnb.safe_factor=0.3`. A key belongs to the algorithm
+  /// created, for example `wasd.reads=3`. A key belongs to the algorithm
   /// that reads it; the relay only carries the values, so an unknown key is
   /// inert rather than a startup error.
   #[default(vec![])]

@@ -22,8 +22,6 @@
 pub mod asd;
 pub mod asd_v11;
 pub mod default;
-/// Algorithms parked deliberately: still built and tested, not offered.
-pub mod experimental;
 /// The perfect-knowledge oracle, run on the testbed: the ceiling the adaptive
 /// algorithms are measured against.
 pub mod oracle;

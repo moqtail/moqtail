@@ -257,15 +257,7 @@ impl SstsState {
   /// runs while a lock is held.
   pub async fn decision_snapshot(&self, now_ms: u64) -> (Vec<SetSnapshot>, Vec<StreamSnapshot>) {
     let manager = self.switching_sets.read().await;
-    let sets: Vec<SetSnapshot> = manager
-      .sets
-      .values()
-      .map(|set| {
-        let mut snapshot = SetSnapshot::from(set);
-        snapshot.group_span_ms = manager.group_span_ms(set.id);
-        snapshot
-      })
-      .collect();
+    let sets: Vec<SetSnapshot> = manager.sets.values().map(SetSnapshot::from).collect();
     (sets, manager.stream_table(now_ms))
   }
 

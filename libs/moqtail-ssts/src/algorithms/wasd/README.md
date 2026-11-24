@@ -266,9 +266,8 @@ new group, which keeps the tier in sync with the wire — at the price of a
 recovered path waiting, on average, half a group longer than it strictly has
 to.
 
-**One tier for the whole connection, still.** Every set the algorithm owns moves
+**One tier for the whole connection.** Every set the algorithm owns moves
 together, so a connection carrying a 4K ladder and an audio ladder degrades both
-to hear the audio better. This is the assumption that
-[`../experimental/bnb`](../experimental/bnb) exists to break; wasd kept it because the research version
-compared the depth _signal_, and a per-set index would have changed two things at
-once.
+to hear the audio better. The relay therefore accepts only one switching set
+while a version of this algorithm is in use; multi-set support needs a per-set
+ladder first.

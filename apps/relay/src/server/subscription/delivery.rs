@@ -763,6 +763,29 @@ impl Subscription {
   }
 
   async fn on_datagram(&self, times: EventTimes, picked: Option<Instant>, object: Arc<Datagram>) {
+    // SSTS selects subgroup streams; a datagram cannot be re-sent on another
+    // track and is not part of the stream depth model. Drop it for tracks in a
+    // switching set until datagram mode is modelled, and say so once.
+    if self.datagrams_blocked.load(Ordering::Relaxed) {
+      return;
+    }
+    if self.subscriber.ssts_enabled()
+      && self
+        .subscriber
+        .ssts
+        .set_id_of_relay_track(self.relay_track_id)
+        .await
+        .is_some()
+    {
+      if !self.datagrams_blocked.swap(true, Ordering::Relaxed) {
+        debug!(
+          "SSTS: dropping datagrams for subscriber={} relay_track_id={}; switching-set tracks are stream-only",
+          self.client_connection_id, self.relay_track_id
+        );
+      }
+      return;
+    }
+
     // Handle datagram - serialize full MOQT datagram format
     // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
 

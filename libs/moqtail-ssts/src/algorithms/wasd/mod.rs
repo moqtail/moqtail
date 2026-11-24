@@ -725,9 +725,9 @@ fn resend_deadline_ms(input: &AbrInput, set: &SetSnapshot, new_tier: usize) -> O
 }
 
 /// The set whose ladder the tier belongs to: the set that owned the last
-/// selection while it is still active, otherwise the first active set. The
-/// draft scopes this algorithm to one switching set; the fallback keeps the
-/// experimental multi-set mode sane when its owner disappears.
+/// selection while it is still active, otherwise the first active set. The relay
+/// accepts one set while this algorithm runs; the fallback keeps the selection
+/// sane when its owner disappears.
 fn ladder_owner<'a>(input: &'a AbrInput<'_>, last_set_id: Option<u64>) -> Option<&'a SetSnapshot> {
   input
     .sets

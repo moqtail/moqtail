@@ -600,7 +600,6 @@ mod tests {
       members: tracks.iter().map(|track| (500 + *track, *track)).collect(),
       subscriber_buffer_ms: 0,
       algorithm_params: vec![],
-      group_span_ms: 0,
     }
   }
 

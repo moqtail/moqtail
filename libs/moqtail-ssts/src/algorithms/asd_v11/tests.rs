@@ -43,7 +43,6 @@ fn set(id: u64, active: bool) -> SetSnapshot {
     ],
     subscriber_buffer_ms: 0,
     algorithm_params: vec![],
-    group_span_ms: 0,
   }
 }
 

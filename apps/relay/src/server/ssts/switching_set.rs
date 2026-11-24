@@ -23,6 +23,9 @@
 
 use crate::server::stream_id::StreamId;
 use moqtail::model::data::full_track_name::FullTrackName;
+use moqtail_ssts::algorithms::wasd::{
+  WASD_ALGORITHM_ID, WASD_V2_ALGORITHM_ID, WASD_V3_ALGORITHM_ID,
+};
 use moqtail_ssts::{SetSnapshot, StreamSnapshot};
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
@@ -48,9 +51,6 @@ impl From<&SwitchingSet> for SetSnapshot {
         .collect(),
       subscriber_buffer_ms: set.subscriber_buffer_ms,
       algorithm_params: set.algorithm_params.clone(),
-      // Measured against the stream history rather than stored on the set, so
-      // the manager fills this in when it builds a snapshot.
-      group_span_ms: 0,
     }
   }
 }
@@ -62,6 +62,8 @@ pub enum SwitchingSetError {
   TrackInDifferentSet,
   /// The track does not belong to any switching set.
   TrackNotInSet,
+  /// This algorithm currently keeps one switching set per connection.
+  SingleSetAlgorithm { algorithm_id: u64 },
 }
 
 impl fmt::Display for SwitchingSetError {
@@ -71,8 +73,22 @@ impl fmt::Display for SwitchingSetError {
         write!(f, "track is already assigned to a different switching set")
       }
       Self::TrackNotInSet => write!(f, "track is not in any switching set"),
+      Self::SingleSetAlgorithm { algorithm_id } => write!(
+        f,
+        "algorithm {algorithm_id} supports only one switching set per connection"
+      ),
     }
   }
+}
+
+/// The backpressure family — the `wasd` module in this tree — keeps one ladder
+/// per connection and cannot yet reason about several sets. Algorithm 0 and the
+/// other controllers keep the draft's multi-set support.
+fn is_single_set_algorithm(algorithm_id: u64) -> bool {
+  matches!(
+    algorithm_id,
+    WASD_ALGORITHM_ID | WASD_V2_ALGORITHM_ID | WASD_V3_ALGORITHM_ID
+  )
 }
 
 /// A track's membership in a switching set.
@@ -157,9 +173,6 @@ pub struct SwitchingSetManager {
   /// asks are about streams: how long the oldest one has been waiting, which
   /// groups are in flight, which quality each is carrying.
   open_streams: HashMap<StreamId, OpenStream>,
-  /// Observed group cadence per set, so an algorithm can tell a stream that is
-  /// merely in flight from one that is behind.
-  group_spans: HashMap<u64, GroupSpan>,
   /// Bumped on every change to set membership or set properties. The forward
   /// gate caches its verdict against this counter, which it reads without
   /// taking this lock, so a change here invalidates what the gate cached.
@@ -185,27 +198,6 @@ pub struct OpenStream {
   /// carry new media.
   pub resent: bool,
 }
-
-/// The cadence a set's groups are arriving at, in ms.
-///
-/// A group's forwarding stream lives about one group span under normal
-/// pacing, so an age of one span is a healthy pipeline and only the excess
-/// over it is a backlog. Without this, a long group period looks like
-/// congestion to an algorithm that reads stream ages.
-#[derive(Debug, Default, Clone)]
-struct GroupSpan {
-  last_group: u64,
-  last_open_ms: u64,
-  span_ms: f64,
-  /// Whether `span_ms` holds a measurement; the first gap has nothing to be
-  /// averaged with, and guessing would report a cadence the host never saw.
-  measured: bool,
-}
-
-/// Weight of the newest gap in the cadence average. Small enough that a few
-/// irregular groups do not move the answer, large enough that a real change of
-/// group period is followed within a couple of groups.
-const SPAN_SMOOTHING: f64 = 0.3;
 
 impl SwitchingSetManager {
   pub fn new() -> Self {
@@ -264,23 +256,6 @@ impl SwitchingSetManager {
         resent,
       },
     );
-
-    let span = self.group_spans.entry(set_id).or_default();
-    // Only consecutive groups bracket one group period. A gap in the group
-    // numbers, or the first group of a set, says nothing about cadence.
-    if span.measured && span.last_group + 1 == group_id {
-      let gap = now_ms.saturating_sub(span.last_open_ms) as f64;
-      // The first gap is the seed rather than an average with zero, which
-      // would report a cadence a third of the one observed.
-      span.span_ms = if span.span_ms > 0.0 {
-        (1.0 - SPAN_SMOOTHING) * span.span_ms + SPAN_SMOOTHING * gap
-      } else {
-        gap
-      };
-    }
-    span.last_group = group_id;
-    span.last_open_ms = now_ms;
-    span.measured = true;
   }
 
   /// A forwarding stream ended, by finishing, being reset or being stopped by
@@ -401,17 +376,6 @@ impl SwitchingSetManager {
     table
   }
 
-  /// The observed group cadence of a set in ms, 0 until two consecutive
-  /// groups have been seen.
-  pub fn group_span_ms(&self, set_id: u64) -> u64 {
-    self
-      .group_spans
-      .get(&set_id)
-      .filter(|span| span.measured)
-      .map(|span| span.span_ms as u64)
-      .unwrap_or(0)
-  }
-
   #[allow(clippy::too_many_arguments)]
   pub fn assign(
     &mut self,
@@ -431,6 +395,22 @@ impl SwitchingSetManager {
       && existing_set_id != switching_set_id
     {
       return Err(SwitchingSetError::TrackInDifferentSet);
+    }
+
+    // A single-set algorithm and any other set cannot coexist on the same
+    // connection: the algorithm would see the second set's tracks through a
+    // ladder that was built for one. The default algorithm keeps the draft's
+    // multi-set allocation.
+    let creating_set = !self.sets.contains_key(&switching_set_id);
+    let existing_single_set = self
+      .sets
+      .values()
+      .any(|set| is_single_set_algorithm(set.algorithm_id));
+    if creating_set
+      && !self.sets.is_empty()
+      && (is_single_set_algorithm(algorithm_id) || existing_single_set)
+    {
+      return Err(SwitchingSetError::SingleSetAlgorithm { algorithm_id });
     }
 
     let mut member = SwitchingSetMember {
@@ -544,9 +524,8 @@ impl SwitchingSetManager {
     }
     if set.members.is_empty() {
       self.sets.remove(&set_id);
-      // The set is gone, and with it the meaning of its streams and cadence.
+      // The set is gone, and with it the meaning of its streams.
       self.open_streams.retain(|_, live| live.set_id != set_id);
-      self.group_spans.remove(&set_id);
       self.resent_groups.retain(|(set, _), _| *set != set_id);
     }
   }
@@ -744,6 +723,69 @@ mod tests {
     let snapshot = SetSnapshot::from(set);
     assert_eq!(snapshot.subscriber_buffer_ms, 300);
     assert_eq!(snapshot.algorithm_params, vec![1, 2, 3]);
+  }
+
+  #[test]
+  fn a_backpressure_set_keeps_the_connection_to_one_set() {
+    let mut manager = SwitchingSetManager::new();
+    let first = make_track("ns", "first");
+    let second = make_track("ns", "second");
+    let default = make_track("ns", "default");
+
+    manager
+      .assign(
+        first,
+        10,
+        1,
+        1,
+        WASD_ALGORITHM_ID,
+        1000,
+        5,
+        1,
+        0,
+        250,
+        vec![],
+      )
+      .unwrap();
+
+    let error = manager
+      .assign(
+        second,
+        11,
+        2,
+        2,
+        WASD_ALGORITHM_ID,
+        1000,
+        5,
+        1,
+        0,
+        250,
+        vec![],
+      )
+      .unwrap_err();
+    assert!(matches!(
+      error,
+      SwitchingSetError::SingleSetAlgorithm { algorithm_id }
+        if algorithm_id == WASD_ALGORITHM_ID
+    ));
+
+    // A default set cannot be added beside a backpressure set either.
+    let error = manager
+      .assign(default, 12, 3, 3, 0, 1000, 5, 1, 0, 0, vec![])
+      .unwrap_err();
+    assert!(matches!(
+      error,
+      SwitchingSetError::SingleSetAlgorithm { .. }
+    ));
+  }
+
+  #[test]
+  fn the_default_algorithm_keeps_multiple_sets() {
+    let mut manager = SwitchingSetManager::new();
+    assign(&mut manager, &make_track("ns", "a"), 10, 1, 100);
+    assign(&mut manager, &make_track("ns", "b"), 11, 2, 200);
+
+    assert_eq!(manager.sets.len(), 2, "algorithm 0 supports multiple sets");
   }
 
   #[test]
@@ -1056,45 +1098,6 @@ mod tests {
       manager.stream_table(0).is_empty(),
       "a reused set id starts with the depth it actually has"
     );
-  }
-
-  /// A group's forwarding stream lives about one group period under normal
-  /// pacing, so an algorithm that reads stream ages needs the period to tell a
-  /// backlog from a healthy pipeline.
-  #[test]
-  fn the_group_cadence_needs_two_consecutive_groups() {
-    let mut manager = SwitchingSetManager::new();
-    let track = make_track("ns", "t");
-    assign(&mut manager, &track, 42, 7, 100);
-
-    // One group: nothing to compare it with, so no cadence.
-    manager.note_stream_opened(&StreamId::new_subgroup(42, 4, Some(0)), 0);
-    assert_eq!(manager.group_span_ms(7), 0);
-
-    // Consecutive groups 100 ms apart: the cadence is that gap.
-    manager.note_stream_opened(&StreamId::new_subgroup(42, 5, Some(0)), 100);
-    assert_eq!(manager.group_span_ms(7), 100);
-
-    // A gap in the group numbers is not a group period: the publisher was
-    // away, not pacing.
-    manager.note_stream_opened(&StreamId::new_subgroup(42, 9, Some(0)), 5000);
-    assert_eq!(
-      manager.group_span_ms(7),
-      100,
-      "a skipped run of groups is ignored"
-    );
-
-    // The next consecutive group moves it, and only partway: the point of the
-    // average is that one odd group does not redefine the cadence.
-    manager.note_stream_opened(&StreamId::new_subgroup(42, 10, Some(0)), 5200);
-    let span = manager.group_span_ms(7);
-    assert!(
-      span > 100 && span < 200,
-      "expected a damped move, got {span}"
-    );
-
-    // A set nobody measured reads as zero rather than as a guess.
-    assert_eq!(manager.group_span_ms(1234), 0);
   }
 
   #[test]

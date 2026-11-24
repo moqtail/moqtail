@@ -65,7 +65,7 @@ Name: **ASD** (Active Stream Depth), wire id `0xff01`
 from ran it as algorithm `1`, a value the specification reserves for future IETF
 allocation; MOQtail's own algorithms live in the private range at the top of the
 id space so a later standard allocation cannot collide with them. The mapping is
-`1 → 0xff01`, `2 → 0xff02`, `3 → 0xff03`, `4 → 0xff04`. The tree names are
-`asd` (this algorithm, formerly `backpressure`), `asd_v11` (formerly
-`enhanced_bp`), and `wasd` (formerly `eeasd`); `bnb` (0xff03) is parked under
-[`../experimental`](../experimental).
+`1 → 0xff01`, `2 → 0xff02`, `4 → 0xff04`; `3` (0xff03) is unused after the BNB
+experiment was removed. The tree names are `asd` (this algorithm, formerly
+`backpressure`), `asd_v11` (formerly `enhanced_bp`), and `wasd` (formerly
+`eeasd`).

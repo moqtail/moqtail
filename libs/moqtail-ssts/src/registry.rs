@@ -54,10 +54,8 @@ impl Registry {
         // ASD v1.1: the same signal with an exploration phase at the start, at
         // the next private id. Also opt-in.
         Arc::new(AsdV11AlgorithmFactory),
-        // Id 0xff03 (BNB, budget-negotiated backpressure) is deliberately left
-        // unregistered: the algorithm lives on, unadvertised, under
-        // `algorithms::experimental`, and its id stays unused so nothing else
-        // claims it by accident.
+        // Id 0xff03 is deliberately left unused: it belonged to the BNB
+        // experiment, which was removed rather than shipped.
         // WASD (Within-tier Active Stream Depth): the depth read at the tier
         // being delivered, sampled inside the group. Three versions share that
         // state machine and differ only in how far a downshift reaches back

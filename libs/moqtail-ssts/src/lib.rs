@@ -270,9 +270,6 @@ pub struct SetSnapshot {
   /// discard it. `0` means no latency budget, and an algorithm that switches
   /// against a deadline has nothing to switch against.
   pub subscriber_buffer_ms: u64,
-  /// How long the host has seen this set's consecutive groups arriving
-  /// a fixed distance apart, in ms, or 0 until it has two to compare.
-  pub group_span_ms: u64,
   /// The set's own negotiated knobs, handed over exactly as the subscriber
   /// sent them and in the order the algorithm defined. The host never reads
   /// them, which is what lets an algorithm add a knob without a change here:
@@ -512,19 +509,6 @@ impl AbrInput<'_> {
     self.stream_timeouts_since_last_decision.values().sum()
   }
 
-  /// The observed span of a set's groups in ms, or 0 until the host has seen
-  /// two consecutive groups go by. A healthy group's stream lives about one
-  /// group span, so an age beyond the span is the part that piled up rather
-  /// than the part that is simply in flight.
-  pub fn group_span_ms(&self, set_id: u64) -> u64 {
-    self
-      .sets
-      .iter()
-      .find(|set| set.id == set_id)
-      .map(|set| set.group_span_ms)
-      .unwrap_or(0)
-  }
-
   /// Live forwarding streams across the sets that have a subscriber: the
   /// connection's queue depth, which is what a stream-based congestion signal
   /// should measure. Streams on a set nobody is watching are not evidence of
@@ -707,7 +691,7 @@ mod tests {
     NONE.get_or_init(HashMap::new)
   }
 
-  fn set(id: u64, group_span_ms: u64) -> SetSnapshot {
+  fn set(id: u64) -> SetSnapshot {
     SetSnapshot {
       id,
       algorithm_id: 0,
@@ -717,7 +701,6 @@ mod tests {
       members: vec![(500, 10), (1000, 11)],
       subscriber_buffer_ms: 0,
       algorithm_params: vec![],
-      group_span_ms,
     }
   }
 
@@ -730,7 +713,7 @@ mod tests {
       ..stream(1, 11, 7, 10)
     };
     let streams = [stream(1, 10, 8, 20), resent, stream(2, 20, 8, 5)];
-    let sets = [set(1, 0), set(2, 0)];
+    let sets = [set(1), set(2)];
     let input = input_with(&streams, &sets);
 
     assert_eq!(input.open_streams(1), 2);
@@ -754,7 +737,7 @@ mod tests {
   #[test]
   fn the_oldest_stream_and_the_open_groups_of_a_set() {
     let streams = [stream(1, 10, 8, 20), stream(1, 11, 9, 240)];
-    let sets = [set(1, 0)];
+    let sets = [set(1)];
     let input = input_with(&streams, &sets);
 
     assert_eq!(input.oldest_stream_age_ms(1), 240);
@@ -771,9 +754,9 @@ mod tests {
     ];
     let paused = SetSnapshot {
       active: false,
-      ..set(2, 0)
+      ..set(2)
     };
-    let sets = [set(1, 0), paused];
+    let sets = [set(1), paused];
     let input = input_with(&streams, &sets);
 
     assert_eq!(
@@ -781,16 +764,5 @@ mod tests {
       1,
       "a set with no subscriber and a set nobody is watching are not congestion here"
     );
-  }
-
-  /// The cadence is a per-set measurement; a set the host has not measured
-  /// reads as 0 rather than as some other set's number.
-  #[test]
-  fn each_set_carries_its_own_group_cadence() {
-    let sets = [set(1, 1000), set(2, 0)];
-    let input = input_with(&[], &sets);
-    assert_eq!(input.group_span_ms(1), 1000);
-    assert_eq!(input.group_span_ms(2), 0);
-    assert_eq!(input.group_span_ms(77), 0);
   }
 }

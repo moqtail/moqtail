@@ -45,7 +45,6 @@ fn set(id: u64, active: bool) -> SetSnapshot {
     ],
     subscriber_buffer_ms: 0,
     algorithm_params: vec![],
-    group_span_ms: 0,
   }
 }
 
@@ -60,12 +59,7 @@ fn set_with_buffer(id: u64, subscriber_buffer_ms: u64) -> SetSnapshot {
 
 /// A set with a chosen ladder, buffer and group cadence: the three numbers
 /// the dynamic upshift threshold `U(k)` reads.
-fn ladder_set(
-  id: u64,
-  bitrates: &[u64],
-  subscriber_buffer_ms: u64,
-  group_span_ms: u64,
-) -> SetSnapshot {
+fn ladder_set(id: u64, bitrates: &[u64], subscriber_buffer_ms: u64) -> SetSnapshot {
   SetSnapshot {
     id,
     algorithm_id: super::WASD_ALGORITHM_ID,
@@ -79,7 +73,6 @@ fn ladder_set(
       .collect(),
     subscriber_buffer_ms,
     algorithm_params: vec![],
-    group_span_ms,
   }
 }
 
@@ -807,7 +800,7 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
 /// floor of two sits below it.
 #[test]
 fn the_default_floor_is_two_and_rho_prices_the_step() {
-  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)];
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
   let mut algorithm = WasdAlgorithm::new();
   let empty: Vec<StreamSnapshot> = Vec::new();
 
@@ -843,7 +836,7 @@ fn the_default_floor_is_two_and_rho_prices_the_step() {
 /// groups - the step term ruling above the U_min floor of 4.
 #[test]
 fn smaller_rho_increases_upshift_streak_for_large_bitrate_jumps() {
-  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)];
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
     monitor_reads: 2,
     rho: 0.15,
@@ -880,7 +873,7 @@ fn smaller_rho_increases_upshift_streak_for_large_bitrate_jumps() {
 fn a_signalled_algorithm_param_overrides_rho() {
   let sets = [SetSnapshot {
     algorithm_params: vec![15],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
   let mut algorithm = WasdAlgorithm::new();
   let empty: Vec<StreamSnapshot> = Vec::new();
@@ -916,7 +909,7 @@ fn a_signalled_algorithm_param_overrides_rho() {
 fn a_signalled_u_min_overrides_the_buffer_floor() {
   let sets = [SetSnapshot {
     algorithm_params: vec![100, 6],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
   let mut algorithm = WasdAlgorithm::new();
   let empty: Vec<StreamSnapshot> = Vec::new();
@@ -952,7 +945,7 @@ fn a_zero_u_min_slot_falls_back_to_the_operator_rail() {
   let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
   let sets = [SetSnapshot {
     algorithm_params: vec![100, 0],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 0)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
   let mut algorithm = WasdAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
@@ -979,7 +972,7 @@ fn u_min_and_rho_signalled_together_take_the_max() {
   // The floor rules the step: max(10, 8) = 10.
   let sets = [SetSnapshot {
     algorithm_params: vec![15, 10],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
   let mut algorithm = WasdAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
@@ -997,7 +990,7 @@ fn u_min_and_rho_signalled_together_take_the_max() {
   // The step rules the floor: max(3, 8) = 8.
   let sets = [SetSnapshot {
     algorithm_params: vec![15, 3],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
   let mut algorithm = WasdAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
@@ -1053,7 +1046,7 @@ fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
   let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
 
   // Operator floor 6, subscriber silent: max(6, 2) = 6, not the derived 4.
-  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)];
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
     u_min: Some(6),
     ..WasdParams::default()
@@ -1073,7 +1066,7 @@ fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
   // The subscriber's signalled 3 outranks the operator's 6: max(3, 2) = 3.
   let sets = [SetSnapshot {
     algorithm_params: vec![100, 3],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
     u_min: Some(6),
@@ -1097,7 +1090,7 @@ fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
 /// the U_min floor of two.
 #[test]
 fn non_uniform_ladder_requires_more_groups_for_larger_relative_jumps() {
-  let sets = [ladder_set(1, &[500, 1500, 1800], 1000, 500)];
+  let sets = [ladder_set(1, &[500, 1500, 1800], 1000)];
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
     monitor_reads: 2,
     rho: 0.25,
@@ -1287,7 +1280,7 @@ fn a_downshift_inside_a_group_undoes_the_upshift_recorded_at_its_start() {
 /// separate switch.
 #[test]
 fn u_min_equal_to_u_max_pins_the_climb_and_makes_rho_inert() {
-  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)];
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0)];
   let empty: Vec<StreamSnapshot> = Vec::new();
   let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
 
@@ -1313,7 +1306,7 @@ fn u_min_equal_to_u_max_pins_the_climb_and_makes_rho_inert() {
 /// never; `wasd.umax` brings it back to a climbable six.
 #[test]
 fn u_max_caps_a_very_cautious_rho() {
-  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)];
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0)];
   let empty: Vec<StreamSnapshot> = Vec::new();
   let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
@@ -1346,7 +1339,7 @@ fn a_signalled_u_max_is_the_third_field_and_zero_means_unbounded() {
 
   let sets = [SetSnapshot {
     algorithm_params: vec![5, 2, 3],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0)
   }];
   let mut algorithm = WasdAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
@@ -1360,7 +1353,7 @@ fn a_signalled_u_max_is_the_third_field_and_zero_means_unbounded() {
   // Signalled zero: unbounded, so the operator's cap of two must not apply.
   let sets = [SetSnapshot {
     algorithm_params: vec![50, 2, 0],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0)
   }];
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
     u_max: Some(2),
@@ -1384,14 +1377,14 @@ fn a_signalled_u_max_is_the_third_field_and_zero_means_unbounded() {
 /// top rung fixed at two, and a cap below the floor raised to the floor.
 #[test]
 fn the_slow_climb_formula_matches_the_draft() {
-  let set = ladder_set(1, &[850, 1800, 3500, 6000], 0, 0);
+  let set = ladder_set(1, &[850, 1800, 3500, 6000], 0);
   let u = |tier| set_upshift_streak(&set, tier, 0.25, Some(2), None);
   assert_eq!(u(0), 5, "850 -> 1800 is a 112 % step");
   assert_eq!(u(1), 4, "1800 -> 3500 is a 94 % step");
   assert_eq!(u(2), 3, "3500 -> 6000 is a 71 % step");
   assert_eq!(u(3), 2, "the top rung is the draft's fixed two");
 
-  let zero = ladder_set(1, &[0, 1000, 2000, 3000], 0, 0);
+  let zero = ladder_set(1, &[0, 1000, 2000, 3000], 0);
   assert_eq!(
     set_upshift_streak(&zero, 0, 0.25, Some(2), None),
     4,
@@ -1484,7 +1477,7 @@ fn a_ladder_change_preserves_the_selected_nominal_rate() {
 fn a_signalled_zero_uses_the_draft_defaults_not_the_operator_rails() {
   let set = SetSnapshot {
     algorithm_params: vec![0, 0, 0],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0)
   };
   assert_eq!(
     set_upshift_streak(&set, 0, 0.4, Some(6), Some(2)),

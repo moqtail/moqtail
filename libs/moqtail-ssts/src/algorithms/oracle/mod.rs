@@ -54,8 +54,8 @@ mod schedule;
 use schedule::Schedule;
 
 /// MOQtail's oracle: the rung each group window's mean capacity covers,
-/// predestined from the trace. The next free id in the private range — 0xff03
-/// stays parked for BNB, 0xff04 and above are the wasd versions.
+/// predestined from the trace. Its private id follows the backpressure
+/// versions; 0xff03 stays unused.
 pub const ORACLE_ALGORITHM_ID: u64 = crate::registry::PRIVATE_ALGORITHM_ID_BASE + 6;
 
 /// The group window the schedule is read in, in ms: the ladder's GOP over its

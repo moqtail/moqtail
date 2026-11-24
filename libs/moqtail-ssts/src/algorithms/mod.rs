@@ -20,12 +20,11 @@
 //! the crate root is the only input.
 
 pub mod asd;
-pub mod asd_v11;
+pub mod backpressure;
 pub mod default;
 /// The perfect-knowledge oracle, run on the testbed: the ceiling the adaptive
 /// algorithms are measured against.
 pub mod oracle;
-pub mod wasd;
 
 use crate::{AbrInput, Selection};
 

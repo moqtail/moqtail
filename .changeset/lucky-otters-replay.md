@@ -3,7 +3,7 @@
 'relay': patch
 ---
 
-Add `wasd` (0xff04, landed as `eeasd` and renamed at the naming pass), the
+Add `backpressure` (0xff04, landed as `eeasd` and renamed at the naming pass), the
 third experimental tier controller: the depth measured
 only at the quality actually being delivered, read again while a group is still
 in flight, with a downshift that reaches back into the groups it overtook — their

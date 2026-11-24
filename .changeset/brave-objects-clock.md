@@ -10,7 +10,7 @@ the mid-group reading there. Samples are as regular as the path delivers
 connection that sends nothing takes no mid-group samples — the accepted
 cost is blindness during a true zero-progress stall, where the depth
 reading freezes with the delivery instead of being re-read on a wall
-clock. Measured on the cascade with wasd-v2: same decisions (25
+clock. Measured on the cascade with the retroactive toggle: same decisions (25
 downshifts), cheaper ones (waste 3.23 -> 1.47 MB, zero delivery-timeout
 resets, zero late frames), because congestion is confirmed after two
 deliveries instead of two hundred milliseconds.

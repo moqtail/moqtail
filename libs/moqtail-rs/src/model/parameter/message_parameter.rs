@@ -1353,27 +1353,27 @@ mod tests {
     assert_eq!(roundtrip(orig.clone()), orig);
   }
 
-  /// The draft fixes the extension order as the latency budget followed by
-  /// `rho_pct`, `U_min` and `U_max`; the codec carries the varints verbatim and
-  /// must not reorder or pad them.
+  /// The extension order is the latency budget followed by `rho_pct`, `U_min`,
+  /// `U_max` and the retroactive-supersede toggle; the codec carries the
+  /// varints verbatim and must not reorder or pad them.
   #[test]
   fn the_backpressure_extension_fields_keep_their_wire_order() {
     let orig = MessageParameter::new_switching_set_assignment_extended(
       3,
-      0xff05,
+      0xff04,
       1200,
       7,
       1,
       0,
       250,
-      vec![25, 2, 0],
+      vec![25, 2, 0, 1],
     );
     let pair: KeyValuePair = orig.try_into().unwrap();
-    let expected = assignment_payload(&[3, 0xff05, 1200, 7, 1, 0, 250, 25, 2, 0]);
+    let expected = assignment_payload(&[3, 0xff04, 1200, 7, 1, 0, 250, 25, 2, 0, 1]);
     assert_eq!(
       pair.serialize().unwrap(),
       expected.serialize().unwrap(),
-      "the extension must stay B, rho_pct, U_min, U_max"
+      "the extension must stay B, rho_pct, U_min, U_max, supersede"
     );
   }
 

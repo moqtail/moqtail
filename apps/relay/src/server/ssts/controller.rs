@@ -346,22 +346,11 @@ async fn supersede_overtaken(
   if request.newest_only {
     groups.retain(|group_id| *group_id == newest);
   }
-  let staged_below = if request.age_staged && !request.newest_only {
-    client.ssts.member_one_rung_below(set_id, track_id).await
-  } else {
-    None
-  };
-  // (group, the member its re-send runs on)
+  // (group, the member its re-send runs on): this request reaches one member,
+  // the one the decision selected.
   let staged: Vec<(u64, u64)> = groups
     .iter()
-    .map(|group_id| {
-      let track = if request.age_staged && *group_id != newest {
-        staged_below.unwrap_or(track_id)
-      } else {
-        track_id
-      };
-      (*group_id, track)
-    })
+    .map(|group_id| (*group_id, track_id))
     .collect();
 
   let mut flipped = 0usize;
@@ -386,7 +375,6 @@ async fn supersede_overtaken(
       set_id,
       relay_track_id = track,
       group = group_id,
-      staged = request.age_staged,
       newest_only = request.newest_only,
       deadline_ms = request.resend_deadline_ms,
       "SSTS: re-sent an overtaken group"
@@ -398,12 +386,12 @@ async fn supersede_overtaken(
   }
 
   for (group_id, stream_id) in &overtaken {
-    let Some((_, target_track)) = staged.iter().find(|(affected, _)| affected == group_id) else {
+    if !groups.contains(group_id) {
       // A group this request does not reach keeps its delivery; resetting
       // its stream would cancel the very thing newest-only asked to leave
       // alone.
       continue;
-    };
+    }
 
     // Read the old stream's progress before resetting it: the close path
     // clears the ledger, and the cache-only repair needs to know whether the
@@ -434,12 +422,11 @@ async fn supersede_overtaken(
     // it, no live Object will arrive to arm the normal re-send. Arm it from
     // the cache now. A Group whose last cached Object was already written is
     // left alone by the repair itself.
-    if let Some(subscription) = subscription_for(client, *target_track).await {
+    if let Some(subscription) = subscription_for(client, track_id).await {
       // The replay writes Objects on the wire; keep it off the decision loop,
       // which must keep sampling the path while the repair drains.
       let group_id = *group_id;
       let subgroup_id = stream_id.subgroup_id;
-      let target_track = *target_track;
       let client_id = client.connection_id;
       tokio::spawn(async move {
         let replayed = subscription
@@ -451,7 +438,7 @@ async fn supersede_overtaken(
           tracing::debug!(
             client_id,
             set_id,
-            relay_track_id = target_track,
+            relay_track_id = track_id,
             group = group_id,
             subgroup = ?subgroup_id,
             objects = replayed,
@@ -467,7 +454,6 @@ async fn supersede_overtaken(
     set_id,
     relay_track_id = track_id,
     groups = groups.len(),
-    staged = request.age_staged,
     newest_only = request.newest_only,
     streams = overtaken.len(),
     decisions_flipped = flipped,

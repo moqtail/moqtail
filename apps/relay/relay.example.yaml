@@ -86,7 +86,7 @@ max_filter_ranges: 32
 ssts_enable: false
 # Algorithm ids to run and advertise; decimal or 0x hex.
 ssts_algorithms: [0]
-# key=value tuning handed to the SSTS algorithms, e.g. [wasd.reads=2].
+# key=value tuning handed to the SSTS algorithms, e.g. [backpressure.reads=2].
 # Unknown keys are inert; each algorithm documents the keys it reads.
 ssts_algorithm_params: []
 

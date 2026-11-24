@@ -9,5 +9,5 @@ on is noisy with concurrent subscribers and re-sent streams, and the controller
 was parked unregistered before the public demo. It has been removed rather than
 shipped, and `0xff03` is intentionally left unused.
 
-The surviving controllers are `asd`, `asd_v11`, the `wasd` family (the
-backpressure experiment) and the testbed oracle.
+The surviving controllers are `asd`, the unified `backpressure` family and the
+testbed oracle.

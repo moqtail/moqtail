@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tests for the three things wasd changes: where the depth is measured, when
+//! Tests for the three things backpressure changes: where the depth is measured, when
 //! it is read, and — the one thing the versions differ in — how far a downshift
 //! reaches back into the groups it overtook.
 
@@ -24,16 +24,16 @@ use crate::AbrInput;
 use crate::DecisionReason;
 use crate::SetSnapshot;
 use crate::StreamSnapshot;
-use crate::algorithms::wasd::Reach;
-use crate::algorithms::wasd::WasdAlgorithm;
-use crate::algorithms::wasd::WasdParams;
+use crate::algorithms::backpressure::BackpressureAlgorithm;
+use crate::algorithms::backpressure::BackpressureParams;
+use crate::algorithms::backpressure::Reach;
 
 /// A set with a four-rung ladder. The rungs are addressed by index, so tier
 /// `n` of set `id` is track `id * 10 + n`.
 fn set(id: u64, active: bool) -> SetSnapshot {
   SetSnapshot {
     id,
-    algorithm_id: super::WASD_ALGORITHM_ID,
+    algorithm_id: super::BACKPRESSURE_ALGORITHM_ID,
     rank: 0,
     weight: 1,
     active,
@@ -58,11 +58,20 @@ fn set_with_buffer(id: u64, subscriber_buffer_ms: u64) -> SetSnapshot {
 }
 
 /// A set with a chosen ladder, buffer and group cadence: the three numbers
+/// The same set with the fourth algorithm parameter — the retroactive
+/// supersede toggle — set by the subscriber.
+fn set_with_supersede(id: u64, buffer_ms: u64, enabled: bool) -> SetSnapshot {
+  let mut set = set_with_buffer(id, buffer_ms);
+  set.algorithm_params = vec![0, 0, 0, u64::from(enabled)];
+
+  set
+}
+
 /// the dynamic upshift threshold `U(k)` reads.
 fn ladder_set(id: u64, bitrates: &[u64], subscriber_buffer_ms: u64) -> SetSnapshot {
   SetSnapshot {
     id,
-    algorithm_id: super::WASD_ALGORITHM_ID,
+    algorithm_id: super::BACKPRESSURE_ALGORITHM_ID,
     rank: 0,
     weight: 1,
     active: true,
@@ -143,7 +152,7 @@ fn tier_of(selection: &crate::Selection, set_id: u64) -> usize {
 }
 
 /// `groups` clean boundary readings: the exploration climbs one tier per group.
-fn climb(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], groups: u64) -> usize {
+fn climb(algorithm: &mut BackpressureAlgorithm, sets: &[SetSnapshot], groups: u64) -> usize {
   let mut tier = 0;
   for group in 0..groups {
     let empty: Vec<StreamSnapshot> = Vec::new();
@@ -159,13 +168,13 @@ fn climb(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], groups: u64) -> us
 /// what a test about the monitor or a version's reach needs: those measure
 /// something other than how the default prices a climb, so they must not move
 /// when that default changes.
-fn pinned_u(reach: Reach, u: u64) -> WasdAlgorithm {
-  WasdAlgorithm::with_reach_and_params(
+fn pinned_u(reach: Reach, u: u64) -> BackpressureAlgorithm {
+  BackpressureAlgorithm::with_reach_and_params(
     reach,
-    WasdParams {
+    BackpressureParams {
       u_min: Some(u),
       u_max: Some(u),
-      ..WasdParams::default()
+      ..BackpressureParams::default()
     },
   )
 }
@@ -173,7 +182,7 @@ fn pinned_u(reach: Reach, u: u64) -> WasdAlgorithm {
 #[test]
 fn the_exploration_climbs_one_tier_per_clean_group() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
 
   for expected in 1usize..=3 {
     let empty: Vec<StreamSnapshot> = Vec::new();
@@ -192,7 +201,7 @@ fn the_exploration_climbs_one_tier_per_clean_group() {
 #[test]
 fn the_depth_counts_only_the_streams_at_the_current_tier() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   // Two clean groups: the tier is 2, and six streams are in flight at other
   // rungs of the same set.
   climb(&mut algorithm, &sets, 2);
@@ -231,7 +240,7 @@ fn the_depth_counts_only_the_streams_at_the_current_tier() {
 #[test]
 fn a_climb_into_an_occupied_rung_is_held() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   climb(&mut algorithm, &sets, 2);
 
   // An old delivery still open at tier 3, nothing at tier 2.
@@ -262,7 +271,7 @@ fn a_climb_into_an_occupied_rung_is_held() {
 #[test]
 fn a_resent_stream_is_not_depth_and_vetoes_the_climb() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   climb(&mut algorithm, &sets, 2);
 
   let re_sends = [resent(1, track_at(1, 2), 5), resent(1, track_at(1, 2), 6)];
@@ -309,7 +318,7 @@ fn a_resent_stream_is_not_depth_and_vetoes_the_climb() {
 #[test]
 fn a_repair_in_flight_is_not_a_second_congestion() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   climb(&mut algorithm, &sets, 2);
 
   // Step one: a congested boundary at tier 2 falls to tier 1.
@@ -335,10 +344,10 @@ fn a_repair_in_flight_is_not_a_second_congestion() {
 #[test]
 fn a_repair_in_flight_does_not_block_a_real_downshift() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::v2();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   climb(&mut algorithm, &sets, 2);
 
-  // Congested boundary at tier 2: down to 1, and v2 requests a re-send.
+  // Congested boundary at tier 2: down to 1, and the retroactive mode requests a re-send.
   let congested = deep_at(2);
   let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
   assert_eq!(tier_of(&selection, 1), 1, "the first step");
@@ -398,37 +407,11 @@ fn a_repair_in_flight_breaks_the_clean_streak() {
   );
 }
 
+/// The retroactive request stops at the newest overtaken group.
 #[test]
-fn a_v3_downshift_asks_to_overtake_the_sets_it_moved_down() {
-  let sets = [set(1, true), set(2, false)];
-  let mut algorithm = WasdAlgorithm::v3();
-  climb(&mut algorithm, &sets, 2);
-
-  let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
-  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
-  assert!(
-    selection.supersede.contains_key(&1),
-    "the groups still in flight above the new rung were overtaken"
-  );
-  assert!(
-    selection.supersede[&1].age_staged,
-    "the re-send is staged by age: the newest overtaken group at the new rung, the older ones one below"
-  );
-  assert!(
-    !selection.supersede[&1].newest_only,
-    "and it reaches every overtaken group, not just the newest"
-  );
-  assert!(
-    !selection.supersede.contains_key(&2),
-    "a set with no subscriber has no delivery to overtake"
-  );
-}
-
-/// The one thing v2 is: the request stops at the newest overtaken group.
-#[test]
-fn a_v2_downshift_reaches_only_the_newest_overtaken_group() {
+fn a_retroactive_downshift_reaches_only_the_newest_overtaken_group() {
   let sets = [set_with_buffer(1, 800)];
-  let mut algorithm = WasdAlgorithm::v2();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [
@@ -449,10 +432,6 @@ fn a_v2_downshift_reaches_only_the_newest_overtaken_group() {
     selection.supersede[&1].newest_only,
     "and the older ones are left to finish where they are"
   );
-  assert!(
-    !selection.supersede[&1].age_staged,
-    "there is no age to stage when one group is reached"
-  );
   assert_eq!(
     selection.resend_deadline_ms(1),
     Some(550),
@@ -464,7 +443,7 @@ fn a_v2_downshift_reaches_only_the_newest_overtaken_group() {
 #[test]
 fn a_classic_downshift_asks_for_nothing() {
   let sets = [set_with_buffer(1, 800)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
@@ -480,15 +459,39 @@ fn a_classic_downshift_asks_for_nothing() {
   );
 }
 
-/// The comparison is only worth running if the three versions walk the same:
-/// same readings, same tier, version after version — they differ in one
-/// request, not in the decision.
+/// The unified algorithm listens to the fourth algorithm parameter rather
+/// than to a version id: zero/absent is classic, non-zero is the newest-group
+/// supersede.
 #[test]
-fn the_versions_pick_the_same_tiers_from_the_same_readings() {
+fn the_wire_toggle_picks_classic_or_newest_supersede() {
+  let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
+
+  for (enabled, wants_supersede) in [(false, false), (true, true)] {
+    let sets = [set_with_supersede(1, 800, enabled)];
+    let mut algorithm = BackpressureAlgorithm::new();
+    climb(&mut algorithm, &sets, 2);
+
+    let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+    assert_eq!(tier_of(&selection, 1), 1, "the tier falls in both modes");
+    assert_eq!(
+      selection.supersede.contains_key(&1),
+      wants_supersede,
+      "toggle {enabled} must {} a supersede request",
+      if wants_supersede { "issue" } else { "skip" }
+    );
+    if wants_supersede {
+      assert!(selection.supersede[&1].newest_only);
+    }
+  }
+}
+
+/// Classic and the retroactive toggle walk the same ladder: same readings,
+/// same tier; they differ in one request, not in the decision.
+#[test]
+fn classic_and_retroactive_pick_the_same_tiers_from_the_same_readings() {
   let sets = [set(1, true)];
-  let mut classic = WasdAlgorithm::new();
-  let mut v2 = WasdAlgorithm::v2();
-  let mut v3 = WasdAlgorithm::v3();
+  let mut classic = BackpressureAlgorithm::new();
+  let mut retroactive = BackpressureAlgorithm::retroactive();
 
   let events = [
     (0u64, DecisionReason::GroupBoundary, Vec::new()),
@@ -506,17 +509,18 @@ fn the_versions_pick_the_same_tiers_from_the_same_readings() {
   for (group, reason, streams) in events {
     let input = input(&sets, &streams, reason, group);
     let a = classic.decide(&input);
-    let b = v2.decide(&input);
-    let c = v3.decide(&input);
-    assert_eq!(a.tracks, b.tracks, "classic and v2 chose different tiers");
-    assert_eq!(a.tracks, c.tracks, "classic and v3 chose different tiers");
+    let b = retroactive.decide(&input);
+    assert_eq!(
+      a.tracks, b.tracks,
+      "classic and retroactive chose different tiers"
+    );
   }
 }
 
 #[test]
 fn an_upshift_asks_for_nothing() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   let empty: Vec<StreamSnapshot> = Vec::new();
   let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 1));
   assert_eq!(tier_of(&selection, 1), 1);
@@ -539,7 +543,7 @@ fn deep_at(tier: usize) -> [StreamSnapshot; 2] {
 /// It climbs one rung, meets congestion at a boundary — which ends the
 /// exploration and drops it to the bottom — and then sees `clean_groups`
 /// uncongested boundaries, five of which buy one rung on the cautious streak.
-fn settle(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], clean_groups: u64) {
+fn settle(algorithm: &mut BackpressureAlgorithm, sets: &[SetSnapshot], clean_groups: u64) {
   climb(algorithm, sets, 1);
   let congested = deep_at(1);
   algorithm.decide(&input(sets, &congested, DecisionReason::GroupBoundary, 10));
@@ -555,7 +559,7 @@ fn settle(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], clean_groups: u64
 #[test]
 fn one_deep_reading_inside_a_group_is_not_enough() {
   let sets = [set(1, true)];
-  let mut algorithm = pinned_u(Reach::AllStaged, 5);
+  let mut algorithm = pinned_u(Reach::Newest, 5);
   settle(&mut algorithm, &sets, 5);
 
   let inside = deep_at(1);
@@ -576,10 +580,6 @@ fn one_deep_reading_inside_a_group_is_not_enough() {
     selection.supersede.contains_key(&1),
     "and the groups it overtook are named, as on a boundary downshift"
   );
-  assert!(
-    selection.supersede[&1].age_staged,
-    "and staged by age, as on a boundary downshift"
-  );
 }
 
 /// The other half of the same truth: a mid-group reading that does not fire
@@ -590,7 +590,7 @@ fn one_deep_reading_inside_a_group_is_not_enough() {
 #[test]
 fn a_transient_mid_group_overlap_does_not_cost_the_climb_streak() {
   let sets = [set(1, true)];
-  let mut algorithm = pinned_u(Reach::AllStaged, 5);
+  let mut algorithm = pinned_u(Reach::Newest, 5);
   // Four clean boundaries after the fall: one short of the cautious five.
   settle(&mut algorithm, &sets, 4);
 
@@ -710,7 +710,7 @@ fn the_monitor_rearms_after_it_fires() {
 #[test]
 fn the_monitor_never_interrupts_the_exploration() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   climb(&mut algorithm, &sets, 1);
 
   let inside = [stream(1, track_at(1, 1), 9), stream(1, track_at(1, 1), 10)];
@@ -737,7 +737,7 @@ fn the_monitor_never_interrupts_the_exploration() {
 #[test]
 fn a_stream_timeout_is_not_a_reading() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   climb(&mut algorithm, &sets, 2);
 
   let timeouts = [(1u64, 3u64)].into_iter().collect::<HashMap<u64, u64>>();
@@ -769,7 +769,7 @@ fn a_stream_timeout_is_not_a_reading() {
 #[test]
 fn the_cautious_streak_returns_after_the_exploration_is_over() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   // Four clean groups reach the top of a four-rung ladder and end the
   // exploration there.
   let top = climb(&mut algorithm, &sets, 4);
@@ -801,7 +801,7 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
 #[test]
 fn the_default_floor_is_two_and_rho_prices_the_step() {
   let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   let empty: Vec<StreamSnapshot> = Vec::new();
 
   // Explore to tier 1, then meet congestion there: the exploration ends and
@@ -837,10 +837,10 @@ fn the_default_floor_is_two_and_rho_prices_the_step() {
 #[test]
 fn smaller_rho_increases_upshift_streak_for_large_bitrate_jumps() {
   let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
-  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
     monitor_reads: 2,
     rho: 0.15,
-    ..WasdParams::default()
+    ..BackpressureParams::default()
   });
   let empty: Vec<StreamSnapshot> = Vec::new();
 
@@ -875,7 +875,7 @@ fn a_signalled_algorithm_param_overrides_rho() {
     algorithm_params: vec![15],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   let empty: Vec<StreamSnapshot> = Vec::new();
 
   // Congestion at the bottom tier ends the exploration without a fall.
@@ -911,7 +911,7 @@ fn a_signalled_u_min_overrides_the_buffer_floor() {
     algorithm_params: vec![100, 6],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   let empty: Vec<StreamSnapshot> = Vec::new();
 
   // Congestion at the bottom tier ends the exploration without a fall.
@@ -947,7 +947,7 @@ fn a_zero_u_min_slot_falls_back_to_the_operator_rail() {
     algorithm_params: vec![100, 0],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
 
   let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 1));
@@ -974,7 +974,7 @@ fn u_min_and_rho_signalled_together_take_the_max() {
     algorithm_params: vec![15, 10],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
   for group in 1..10 {
     let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
@@ -992,7 +992,7 @@ fn u_min_and_rho_signalled_together_take_the_max() {
     algorithm_params: vec![15, 3],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
   for group in 1..8 {
     let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
@@ -1008,35 +1008,35 @@ fn u_min_and_rho_signalled_together_take_the_max() {
 
 /// The operator's rails parse through the tuning. The draft floor is two
 /// clean groups, so a lower value (including zero) is raised to it; leaving
-/// the key out keeps the default floor, and `wasd.umax` is the cap (`0` or
+/// the key out keeps the default floor, and `backpressure.umax` is the cap (`0` or
 /// absent = uncapped).
 #[test]
 fn the_operator_tuning_parses_the_rails() {
-  let tuned = crate::Tuning::from_pairs(["wasd.umin=6"]);
-  assert_eq!(WasdParams::from_tuning(&tuned).u_min, Some(6));
+  let tuned = crate::Tuning::from_pairs(["backpressure.umin=6"]);
+  assert_eq!(BackpressureParams::from_tuning(&tuned).u_min, Some(6));
 
-  let no_floor = crate::Tuning::from_pairs(["wasd.umin=0"]);
+  let no_floor = crate::Tuning::from_pairs(["backpressure.umin=0"]);
   assert_eq!(
-    WasdParams::from_tuning(&no_floor).u_min,
+    BackpressureParams::from_tuning(&no_floor).u_min,
     Some(2),
     "zero is raised to the draft floor, not treated as no floor"
   );
 
   let untouched = crate::Tuning::from_pairs(std::iter::empty::<&str>());
   assert_eq!(
-    WasdParams::from_tuning(&untouched).u_min,
+    BackpressureParams::from_tuning(&untouched).u_min,
     Some(2),
     "an untouched key keeps the draft default floor"
   );
-  assert_eq!(WasdParams::from_tuning(&untouched).u_max, None);
+  assert_eq!(BackpressureParams::from_tuning(&untouched).u_max, None);
 
-  let capped = crate::Tuning::from_pairs(["wasd.umax=8"]);
-  assert_eq!(WasdParams::from_tuning(&capped).u_max, Some(8));
-  let uncapped = crate::Tuning::from_pairs(["wasd.umax=0"]);
-  assert_eq!(WasdParams::from_tuning(&uncapped).u_max, None);
+  let capped = crate::Tuning::from_pairs(["backpressure.umax=8"]);
+  assert_eq!(BackpressureParams::from_tuning(&capped).u_max, Some(8));
+  let uncapped = crate::Tuning::from_pairs(["backpressure.umax=0"]);
+  assert_eq!(BackpressureParams::from_tuning(&uncapped).u_max, None);
 }
 
-/// The operator's `wasd.umin` replaces the derived horizon for a subscriber
+/// The operator's `backpressure.umin` replaces the derived horizon for a subscriber
 /// that signals none — and loses to one that does: the same ladder climbs
 /// after six clean groups under the operator's floor of 6, and after three
 /// under the signalled `vec![100, 3]`.
@@ -1047,9 +1047,9 @@ fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
 
   // Operator floor 6, subscriber silent: max(6, 2) = 6, not the derived 4.
   let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
-  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
     u_min: Some(6),
-    ..WasdParams::default()
+    ..BackpressureParams::default()
   });
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
   for group in 1..6 {
@@ -1068,9 +1068,9 @@ fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
     algorithm_params: vec![100, 3],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
   }];
-  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
     u_min: Some(6),
-    ..WasdParams::default()
+    ..BackpressureParams::default()
   });
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
   for group in 1..3 {
@@ -1091,11 +1091,11 @@ fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
 #[test]
 fn non_uniform_ladder_requires_more_groups_for_larger_relative_jumps() {
   let sets = [ladder_set(1, &[500, 1500, 1800], 1000)];
-  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
     monitor_reads: 2,
     rho: 0.25,
     u_min: Some(2),
-    ..WasdParams::default()
+    ..BackpressureParams::default()
   });
   let empty: Vec<StreamSnapshot> = Vec::new();
 
@@ -1128,7 +1128,7 @@ fn non_uniform_ladder_requires_more_groups_for_larger_relative_jumps() {
 #[test]
 fn a_downshift_inherits_the_remaining_buffer_of_the_newest_overtaken_stream() {
   let sets = [set_with_buffer(1, 800)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [
@@ -1142,10 +1142,6 @@ fn a_downshift_inherits_the_remaining_buffer_of_the_newest_overtaken_stream() {
     Some(500),
     "the re-send's deadline is the newest overtaken group's remainder: 800 - 300"
   );
-  assert!(
-    selection.supersede[&1].age_staged,
-    "and the staging does not depend on the deadline"
-  );
 }
 
 /// A stream that is itself a re-send donates a deadline too: its age runs
@@ -1157,7 +1153,7 @@ fn a_downshift_inherits_the_remaining_buffer_of_the_newest_overtaken_stream() {
 #[test]
 fn a_re_sent_stream_donates_its_remaining_buffer_to_the_next_repair() {
   let sets = [set_with_buffer(1, 800)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   climb(&mut algorithm, &sets, 2);
 
   // Two fresh streams at tier 2 make the depth that steps the ladder. The
@@ -1188,7 +1184,7 @@ fn a_re_sent_stream_donates_its_remaining_buffer_to_the_next_repair() {
 #[test]
 fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
   let sets = [set_with_buffer(1, 0)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
@@ -1202,10 +1198,6 @@ fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
     None,
     "and nothing is asked of their deadlines"
   );
-  assert!(
-    selection.supersede[&1].age_staged,
-    "the staging stands on its own: no buffer, no deadline, but the older groups still go one rung below"
-  );
 }
 
 /// An overtaken stream whose age already meets or exceeds the buffer has no
@@ -1215,7 +1207,7 @@ fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
 #[test]
 fn exhausted_remaining_buffer_clamps_to_one_millisecond_not_never() {
   let sets = [set_with_buffer(1, 800)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = BackpressureAlgorithm::retroactive();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [
@@ -1285,11 +1277,11 @@ fn u_min_equal_to_u_max_pins_the_climb_and_makes_rho_inert() {
   let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
 
   for rho in [0.05_f64, 1.0] {
-    let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+    let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
       rho,
       u_min: Some(4),
       u_max: Some(4),
-      ..WasdParams::default()
+      ..BackpressureParams::default()
     });
     algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
     for group in 1..4 {
@@ -1303,16 +1295,16 @@ fn u_min_equal_to_u_max_pins_the_climb_and_makes_rho_inert() {
 
 /// The cap bounds a very cautious rho: at rho = 0.05 the 850 -> 1800 jump
 /// prices at ceil(1.118 / 0.05) = 23 clean groups, which on a short trace is
-/// never; `wasd.umax` brings it back to a climbable six.
+/// never; `backpressure.umax` brings it back to a climbable six.
 #[test]
 fn u_max_caps_a_very_cautious_rho() {
   let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0)];
   let empty: Vec<StreamSnapshot> = Vec::new();
   let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
-  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
     rho: 0.05,
     u_max: Some(6),
-    ..WasdParams::default()
+    ..BackpressureParams::default()
   });
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
   for group in 1..6 {
@@ -1341,7 +1333,7 @@ fn a_signalled_u_max_is_the_third_field_and_zero_means_unbounded() {
     algorithm_params: vec![5, 2, 3],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 0)
   }];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
   for group in 1..3 {
     let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
@@ -1355,9 +1347,9 @@ fn a_signalled_u_max_is_the_third_field_and_zero_means_unbounded() {
     algorithm_params: vec![50, 2, 0],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 0)
   }];
-  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
     u_max: Some(2),
-    ..WasdParams::default()
+    ..BackpressureParams::default()
   });
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
   for group in 1..3 {
@@ -1409,7 +1401,7 @@ fn the_slow_climb_formula_matches_the_draft() {
 /// selected rung must fall to the highest rate that still fits.
 #[test]
 fn a_ladder_change_preserves_the_selected_nominal_rate() {
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = BackpressureAlgorithm::new();
   let start = SetSnapshot {
     members: vec![(300, 10), (600, 11), (1000, 12), (1500, 13)],
     ..set(1, true)

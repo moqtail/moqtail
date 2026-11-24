@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The tier state machine behind wasd, and the reading that moves it.
+//! The tier state machine behind backpressure, and the reading that moves it.
 //!
 //! Pure again: `(state, sample) -> event`, no clock, no transport. There is
 //! one reading now — the depth at the tier being delivered — fed by every
@@ -35,7 +35,7 @@ pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;
 /// streak re-arms when it fires, so one burst cannot chain.
 ///
 /// Two, which is the value every measured run used: the October suites took
-/// it from this default, the November suites pinned `wasd.reads=2`. The draft
+/// it from this default, the November suites pinned `backpressure.reads=2`. The draft
 /// alignment briefly raised it to three (commit ec8bcf6); that is not the
 /// configuration the results in the paper come from, so the default is back
 /// to two and the paper's numbers stay reproducible without a flag.

@@ -1,8 +1,8 @@
 # ASD — Active Stream Depth tier selection
 
-The original of MOQtail's depth family; the other compared algorithms
-([`../asd_v11`](../asd_v11) and [`../wasd`](../wasd)) are iterations on this
-signal. It was named `backpressure` in the tree until the rename.
+The original of MOQtail's depth family; [`../backpressure`](../backpressure) is
+the later iteration on this signal. It was named `backpressure` in the tree
+until the rename.
 
 A bandwidth allocation algorithm that does not use a bandwidth estimate.
 
@@ -65,7 +65,6 @@ Name: **ASD** (Active Stream Depth), wire id `0xff01`
 from ran it as algorithm `1`, a value the specification reserves for future IETF
 allocation; MOQtail's own algorithms live in the private range at the top of the
 id space so a later standard allocation cannot collide with them. The mapping is
-`1 → 0xff01`, `2 → 0xff02`, `4 → 0xff04`; `3` (0xff03) is unused after the BNB
-experiment was removed. The tree names are `asd` (this algorithm, formerly
-`backpressure`), `asd_v11` (formerly `enhanced_bp`), and `wasd` (formerly
-`eeasd`).
+`1 → 0xff01` for this algorithm and `4 → 0xff04` for backpressure. `2` (the
+retired ASD v1.1) and `3` (the removed BNB experiment) are unused. The tree
+names are `asd` (formerly `backpressure`) and `backpressure` (formerly `eeasd`).

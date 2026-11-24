@@ -2,7 +2,7 @@
 'moqtail-ssts': minor
 ---
 
-WASD's downshift and upshift paths become one. Every depth sample — group
+BACKPRESSURE's downshift and upshift paths become one. Every depth sample — group
 boundary or mid-group — now feeds a single persistence counter, and a
 downshift fires wherever the streak fills: the boundary has no monopoly on
 acting, and no veto. It also ends the exploration when it fires, replacing

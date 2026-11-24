@@ -21,7 +21,6 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::algorithms::asd::AsdAlgorithmFactory;
-use crate::algorithms::asd_v11::AsdV11AlgorithmFactory;
 use crate::algorithms::default::DefaultAlgorithmFactory;
 use crate::{AbrAlgorithm, AbrAlgorithmFactory, Tuning};
 
@@ -51,23 +50,12 @@ impl Registry {
         // forwarding streams, at the first private id. Opt-in: it is only
         // advertised when --ssts-algorithms asks for it.
         Arc::new(AsdAlgorithmFactory),
-        // ASD v1.1: the same signal with an exploration phase at the start, at
-        // the next private id. Also opt-in.
-        Arc::new(AsdV11AlgorithmFactory),
         // Id 0xff03 is deliberately left unused: it belonged to the BNB
         // experiment, which was removed rather than shipped.
-        // WASD (Within-tier Active Stream Depth): the depth read at the tier
-        // being delivered, sampled inside the group. Three versions share that
-        // state machine and differ only in how far a downshift reaches back
-        // into the groups it overtook.
-        // The classic: a downshift is forward-looking only.
-        Arc::new(crate::algorithms::wasd::classic::FACTORY),
-        // v2: the downshift also cancels the newest group it overtook and has
-        // it re-sent at the new rung.
-        Arc::new(crate::algorithms::wasd::v2::FACTORY),
-        // v3: everything older is cancelled too and re-sent a rung below the
-        // new rung — the retroactive double downshift.
-        Arc::new(crate::algorithms::wasd::v3::FACTORY),
+        // BACKPRESSURE: the depth read at the tier being delivered, sampled
+        // inside the group. One id; the fourth assignment parameter toggles
+        // the retroactive newest-group supersede.
+        Arc::new(crate::algorithms::backpressure::FACTORY),
         // The perfect-knowledge oracle: the rung each group window could
         // simply carry, predestined from the trace. Experimental: it exists to
         // be measured, and it is only advertised when --ssts-algorithms asks

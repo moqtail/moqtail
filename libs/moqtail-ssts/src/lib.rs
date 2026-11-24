@@ -86,18 +86,6 @@ pub struct Supersede {
   /// that wants a shorter deadline than "never" has to have been given a buffer
   /// to shorten, and returns `None` when there was none.
   pub resend_deadline_ms: Option<u64>,
-  /// Stage the re-send by the age of the overtaken group: the newest of them
-  /// is re-sent at the member this decision selected, every older one one rung
-  /// below that, the ladder's bottom being the floor.
-  ///
-  /// The reason is the clock, not the quality: an older group started earlier,
-  /// so less of its delivery window remains, and the re-send has to finish
-  /// inside what is left; fewer bits per second is how a re-send gets done
-  /// sooner. The newest group still has the full window, so it keeps the rung
-  /// the decision landed on. A host that does not re-send at all is free to
-  /// ignore the flag: it asks how the re-send is laid out, not whether one
-  /// happens.
-  pub age_staged: bool,
   /// Reach only the newest of the overtaken groups.
   ///
   /// Without this flag the request covers every group the decision overtook;
@@ -107,10 +95,6 @@ pub struct Supersede {
   /// believes in: the group closest to the decision is the one whose fresh
   /// objects are still a small share of the delivery, and reaching further
   /// back spends bytes the subscriber may already have given up on.
-  ///
-  /// There is no age to stage when one group is affected, so a host applies
-  /// `age_staged` only when it is set alongside this flag and nothing requires
-  /// the two to be set together.
   pub newest_only: bool,
 }
 
@@ -163,19 +147,6 @@ impl Selection {
     );
   }
 
-  /// The same, with the re-send staged by the age of the overtaken group: the
-  /// newest at the member this decision selected, the older ones one rung
-  /// below it.
-  pub fn supersede_age_staged(&mut self, set_id: u64) {
-    self.supersede.insert(
-      set_id,
-      Supersede {
-        age_staged: true,
-        ..Default::default()
-      },
-    );
-  }
-
   /// Ask the host to reach back into the newest overtaken group only, leaving
   /// the older ones to finish on the member they were already carrying.
   pub fn supersede_newest(&mut self, set_id: u64) {
@@ -195,19 +166,6 @@ impl Selection {
       Supersede {
         resend_deadline_ms: Some(resend_deadline_ms),
         newest_only: true,
-        ..Default::default()
-      },
-    );
-  }
-
-  /// Age-staged, and with the re-send's own deadline.
-  pub fn supersede_age_staged_with_deadline(&mut self, set_id: u64, resend_deadline_ms: u64) {
-    self.supersede.insert(
-      set_id,
-      Supersede {
-        resend_deadline_ms: Some(resend_deadline_ms),
-        age_staged: true,
-        ..Default::default()
       },
     );
   }
@@ -548,7 +506,7 @@ pub trait AbrAlgorithm: Send {
 /// not know which algorithms a given relay runs, and a `Tuning` with a field
 /// for each algorithm would put that knowledge back into the contract. A
 /// parameter is therefore named by the algorithm that reads it
-/// (`"wasd.reads"`) and read with the algorithm's own default, so a relay
+/// (`"backpressure.reads"`) and read with the algorithm's own default, so a relay
 /// that sets nothing gets the behaviour the algorithm was written with.
 ///
 /// The host decides where the values come from — command line, environment,
@@ -664,8 +622,12 @@ mod tests {
 
   #[test]
   fn tuning_falls_back_to_the_algorithm_default() {
-    let tuning = Tuning::from_pairs(["wasd.reads=4", "asd.up_streak=7", "asd.down_streak=three"]);
-    assert_eq!(tuning.usize("wasd.reads", 2), 4);
+    let tuning = Tuning::from_pairs([
+      "backpressure.reads=4",
+      "asd.up_streak=7",
+      "asd.down_streak=three",
+    ]);
+    assert_eq!(tuning.usize("backpressure.reads", 2), 4);
     assert_eq!(tuning.usize("asd.up_streak", 3), 7);
     // Unset, and set-but-unparsable, both land on the value the algorithm was
     // written with: a typo in a deployment must not silently become a
@@ -680,8 +642,8 @@ mod tests {
 
   #[test]
   fn tuning_survives_a_malformed_entry_without_losing_the_others() {
-    let tuning = Tuning::from_pairs(["oops", " wasd.reads = 3 ", "empty="]);
-    assert_eq!(tuning.usize("wasd.reads", 2), 3);
+    let tuning = Tuning::from_pairs(["oops", " backpressure.reads = 3 ", "empty="]);
+    assert_eq!(tuning.usize("backpressure.reads", 2), 3);
     assert_eq!(tuning.values.len(), 2, "the keyless entry is dropped");
   }
 

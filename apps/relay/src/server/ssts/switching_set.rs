@@ -23,9 +23,7 @@
 
 use crate::server::stream_id::StreamId;
 use moqtail::model::data::full_track_name::FullTrackName;
-use moqtail_ssts::algorithms::wasd::{
-  WASD_ALGORITHM_ID, WASD_V2_ALGORITHM_ID, WASD_V3_ALGORITHM_ID,
-};
+use moqtail_ssts::algorithms::backpressure::BACKPRESSURE_ALGORITHM_ID;
 use moqtail_ssts::{SetSnapshot, StreamSnapshot};
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
@@ -81,14 +79,11 @@ impl fmt::Display for SwitchingSetError {
   }
 }
 
-/// The backpressure family — the `wasd` module in this tree — keeps one ladder
+/// The backpressure family — the `backpressure` module in this tree — keeps one ladder
 /// per connection and cannot yet reason about several sets. Algorithm 0 and the
 /// other controllers keep the draft's multi-set support.
 fn is_single_set_algorithm(algorithm_id: u64) -> bool {
-  matches!(
-    algorithm_id,
-    WASD_ALGORITHM_ID | WASD_V2_ALGORITHM_ID | WASD_V3_ALGORITHM_ID
-  )
+  algorithm_id == BACKPRESSURE_ALGORITHM_ID
 }
 
 /// A track's membership in a switching set.
@@ -307,22 +302,6 @@ impl SwitchingSetManager {
 
   /// The live streams carrying one group of one set on a member other than
   /// `keep`, which is what an overtaken delivery is made of.
-  /// The member one rung below `track_id` in `set_id`'s ladder — the rung an
-  /// age-staged re-send gives to the groups older than the newest one it
-  /// overtook. One rung below the ladder's bottom is the bottom itself, which
-  /// is the floor staging can fall to.
-  pub fn member_one_rung_below(&self, set_id: u64, track_id: u64) -> Option<u64> {
-    let set = self.sets.get(&set_id)?;
-    let index = set
-      .members
-      .iter()
-      .position(|member| member.relay_track_id == track_id)?;
-    set
-      .members
-      .get(index.saturating_sub(1))
-      .map(|member| member.relay_track_id)
-  }
-
   pub fn streams_above(&self, set_id: u64, keep_track: u64) -> Vec<(u64, StreamId)> {
     let ladder = match self.sets.get(&set_id) {
       Some(set) => set,
@@ -740,7 +719,7 @@ mod tests {
         10,
         1,
         1,
-        WASD_ALGORITHM_ID,
+        BACKPRESSURE_ALGORITHM_ID,
         1000,
         5,
         1,
@@ -756,7 +735,7 @@ mod tests {
         11,
         2,
         2,
-        WASD_ALGORITHM_ID,
+        BACKPRESSURE_ALGORITHM_ID,
         1000,
         5,
         1,
@@ -768,7 +747,7 @@ mod tests {
     assert!(matches!(
       error,
       SwitchingSetError::SingleSetAlgorithm { algorithm_id }
-        if algorithm_id == WASD_ALGORITHM_ID
+        if algorithm_id == BACKPRESSURE_ALGORITHM_ID
     ));
 
     // A default set cannot be added beside a backpressure set either.
@@ -790,7 +769,7 @@ mod tests {
         12,
         3,
         1,
-        WASD_ALGORITHM_ID,
+        BACKPRESSURE_ALGORITHM_ID,
         1000,
         5,
         1,
@@ -942,12 +921,21 @@ mod tests {
   fn test_update_assignment_moves_the_latency_budget_and_algorithm_params() {
     let mut manager = SwitchingSetManager::new();
     let track = make_track("ns", "t");
-    assign_with(&mut manager, &track, 1, 3, 0xff05, 100, 250, vec![25, 2, 0]);
+    assign_with(
+      &mut manager,
+      &track,
+      1,
+      3,
+      0xff04,
+      100,
+      250,
+      vec![25, 2, 0, 1],
+    );
 
     manager
       .update_assignment(
         &track,
-        Some(0xff05),
+        Some(0xff04),
         Some(100),
         Some(5),
         Some(2),
@@ -1369,29 +1357,5 @@ mod tests {
     manager.note_stream_opened(&stream, 1000);
     manager.note_stream_closed(&stream);
     assert_eq!(manager.resent_deadline_ms(7, 3), None);
-  }
-
-  /// The rung an age-staged re-send gives to the older groups: one below the
-  /// member the decision selected, the ladder's bottom being the floor. A
-  /// track that is not in the set has no rung at all.
-  #[test]
-  fn one_rung_below_walks_down_the_ladder_and_floors_at_the_bottom() {
-    let mut manager = SwitchingSetManager::new();
-    let low = make_track("ns", "low");
-    let mid = make_track("ns", "mid");
-    let high = make_track("ns", "high");
-    assign(&mut manager, &low, 40, 7, 100);
-    assign(&mut manager, &mid, 41, 7, 200);
-    assign(&mut manager, &high, 42, 7, 300);
-
-    assert_eq!(manager.member_one_rung_below(7, 42), Some(41));
-    assert_eq!(manager.member_one_rung_below(7, 41), Some(40));
-    assert_eq!(
-      manager.member_one_rung_below(7, 40),
-      Some(40),
-      "one rung below the bottom is the bottom: the floor, not a hole"
-    );
-    assert_eq!(manager.member_one_rung_below(7, 99), None);
-    assert_eq!(manager.member_one_rung_below(8, 42), None);
   }
 }

@@ -105,7 +105,7 @@ setting. The numbers are in the README's "What it does badly".
    what happens today. The research branch had a cancel-notify path for them. Decide
    whether the tail they finish sending is worth the machinery, once it shows up in
    a capture.
-3. **Four knobs: `wasd.reads`, `wasd.rho`, `wasd.umin` and `wasd.umax`.**
+3. **Four knobs: `backpressure.reads`, `backpressure.rho`, `backpressure.umin` and `backpressure.umax`.**
    Whether the inherited deadline is worth exposing (it should probably stay
    fixed — it is semantics, not tuning), and whether the monitor's depth
    thresholds deserve more knobs before someone asks for them.
@@ -144,4 +144,4 @@ setting. The numbers are in the README's "What it does badly".
 | the replay itself                                   | `Subscription::replay_cached_head`, `cached_head`           |
 | re-sent streams excluded from depth                 | `StreamSnapshot::resent`, `AbrInput::open_streams_at_track` |
 | re-overtaking a repair, the deadline it donates     | `streams_above`, `mark_group_resent`, `resend_deadline_ms`  |
-| the inherited deadline, "no buffer, no deadline"    | `algorithms::wasd::resend_deadline_ms`                     |
+| the inherited deadline, "no buffer, no deadline"    | `algorithms::backpressure::resend_deadline_ms`                     |

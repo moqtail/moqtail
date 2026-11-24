@@ -12,22 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! WASD (Within-tier Active Stream Depth): the depth measured at the quality
-//! actually being delivered, sampled
-//! while the group is still in flight, with a downshift that reaches back into
-//! the groups it overtook.
+//! Backpressure (formerly WASD): the depth measured at the quality actually
+//! being delivered, sampled while the group is still in flight, with an
+//! optional downshift that reaches back into the groups it overtook.
 //!
-//! One state machine, advertised under three ids — [`WASD_ALGORITHM_ID`]
-//! (`wasd`, the classic), [`WASD_V2_ALGORITHM_ID`] (`wasd-v2`) and
-//! [`WASD_V3_ALGORITHM_ID`] (`wasd-v3`) — that differ only in
-//! [`Reach`]: how far a downshift reaches back into the groups it overtook.
-//! Each version is declared, with its own documentation, in its own file:
-//! [`classic`], [`v2`], [`v3`]. Everything below is the behaviour all three
-//! versions share unless a sentence says otherwise;
-//! [`WasdAlgorithmFactory`] documents each reach.
+//! One state machine and one id ([`BACKPRESSURE_ALGORITHM_ID`]). The fourth
+//! algorithm parameter is the retroactive-supersede toggle: zero or absent is
+//! the classic, forward-looking behaviour; non-zero cancels the newest
+//! overtaken group and re-sends it at the new rung.
 //!
-//! Three changes over [`crate::algorithms::asd_v11`], and they belong
-//! together because each one is what makes the next one survivable.
+//! Three changes over [`crate::algorithms::asd`], and they belong together
+//! because each one is what makes the next one survivable.
 //!
 //! **Depth at the current tier.** The signal is not the connection's open
 //! forwarding streams; it is those of them still carrying the member the last
@@ -39,7 +34,7 @@
 //! rejected streams are no longer at the tier being measured. What it cannot
 //! drain is the queue a short dip leaves behind: the overlap that queue
 //! causes at the next group boundary still reads as congestion at the new
-//! tier, which is the retroactive versions' measured shortcoming the
+//! tier, which is the retroactive mode's measured shortcoming the
 //! README keeps under its own heading.
 //!
 //! A re-sent stream is out of the depth, but it still vetoes a clean boundary:
@@ -54,7 +49,7 @@
 //! and the monitor reads the pair as congestion one sample later. Classic,
 //! which leaves the streams a downshift abandoned to drain, hit this on every
 //! climb back to 1080p (three old 1080p streams, reverted in 27-51 ms); the
-//! guard is common to all three versions.
+//! guard is common to both modes.
 //
 //! **One clock, two certainties.** Groups are the algorithm's clock but not
 //! the path's: bandwidth moves faster than 25 groups a second, so the same
@@ -79,9 +74,8 @@
 //!
 //! **A downshift that reaches back.** When the tier falls, the groups still in
 //! flight at the higher member were overtaken by a decision they are still
-//! inside. This is what the versions tune: the classic issues no request at
-//! all, v2 names the set with [`Reach::Newest`], and v3 stages the re-send by
-//! age. Where a request is made, this relay's mechanism flips those groups to
+//! inside. The classic issues no request; the retroactive toggle names the set
+//! with [`Reach::Newest`]. Where a request is made, this relay's mechanism flips those groups to
 //! the member asked for, resets the streams still carrying the old one, and
 //! marks the groups as re-sent so the streams the subscriber then causes to be
 //! opened do not read as new congestion. Without the mark the downshift would
@@ -106,32 +100,24 @@ use crate::DecisionReason;
 use crate::Selection;
 use crate::SetSnapshot;
 use crate::Tuning;
-use crate::algorithms::wasd::state::LadderState;
-use crate::algorithms::wasd::state::SLOW_START_UPSHIFT_STREAK;
-use crate::algorithms::wasd::state::Step;
+use crate::algorithms::backpressure::state::LadderState;
+use crate::algorithms::backpressure::state::SLOW_START_UPSHIFT_STREAK;
+use crate::algorithms::backpressure::state::Step;
 
 #[cfg(test)]
 mod tests;
 
-pub mod classic;
-pub mod v2;
-pub mod v3;
-
 mod state;
 
-/// WASD, the within-tier depth read: the first of the three version ids in
-/// the range the specification leaves to implementations.
-pub const WASD_ALGORITHM_ID: u64 = crate::registry::PRIVATE_ALGORITHM_ID_BASE + 3;
+/// The one backpressure controller, at the first private id after ASD.
+pub const FACTORY: BackpressureAlgorithmFactory = BackpressureAlgorithmFactory;
 
-/// WASD v2, the retroactive downshift of the newest overtaken group.
-pub const WASD_V2_ALGORITHM_ID: u64 = crate::registry::PRIVATE_ALGORITHM_ID_BASE + 4;
+/// Backpressure, the within-tier depth read: one id in the range the
+/// specification leaves to implementations.
+pub const BACKPRESSURE_ALGORITHM_ID: u64 = crate::registry::PRIVATE_ALGORITHM_ID_BASE + 3;
 
-/// WASD v3, the retroactive double downshift: oldest overtaken groups one
-/// rung below the new one.
-pub const WASD_V3_ALGORITHM_ID: u64 = crate::registry::PRIVATE_ALGORITHM_ID_BASE + 5;
-
-/// How far a downshift reaches back into the groups it overtook — the one
-/// thing the three wasd versions differ in.
+/// How far a downshift reaches back into the groups it overtook. The wire
+/// toggle picks the retroactive form; tests construct either explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reach {
   /// Classic: the decision stands from this group on, and the groups already
@@ -140,72 +126,32 @@ pub enum Reach {
   /// Cancel the newest overtaken group and re-send it on the new rung; let
   /// the older ones finish where they are.
   Newest,
-  /// Cancel every overtaken group: the newest re-sent on the new rung, every
-  /// older one on the rung below that (the ladder's bottom being the floor).
-  AllStaged,
 }
 
-impl Reach {
-  /// The name this version is advertised and logged under.
-  pub fn variant(&self) -> &'static str {
-    match self {
-      Reach::Nothing => "wasd",
-      Reach::Newest => "wasd-v2",
-      Reach::AllStaged => "wasd-v3",
-    }
-  }
-}
+/// Factory for [`BackpressureAlgorithm`]: one instance per connection at
+/// [`BACKPRESSURE_ALGORITHM_ID`].
+pub struct BackpressureAlgorithmFactory;
 
-/// Factory for [`WasdAlgorithm`]: one instance per connection, the version
-/// told by the id it is registered under.
-///
-/// The three versions are the same state machine — the depth read at the
-/// delivered tier, the mid-group monitor, the same exploration and cautious
-/// streak, the same `wasd.reads` knob — and differ only in how far a
-/// downshift reaches back:
-///
-/// * [`Reach::Nothing`], advertised as `wasd` at
-///   [`WASD_ALGORITHM_ID`]: the classic. A downshift is forward-looking
-///   only.
-/// * [`Reach::Newest`], advertised as `wasd-v2` at [`WASD_V2_ALGORITHM_ID`]:
-///   the downshift also cancels the newest group it overtook and has it
-///   re-sent at the new rung. 1080p down to 720p at group 4 means group 3,
-///   still in flight at 1080p, is cancelled and re-sent at 720p; groups
-///   older than that keep their delivery.
-/// * [`Reach::AllStaged`], advertised as `wasd-v3` at
-///   [`WASD_V3_ALGORITHM_ID`]: the same, one step further back — groups
-///   older than the newest are cancelled too and re-sent a rung below the
-///   new one (1080p down to 720p: the newest overtaken group goes 720p,
-///   everything older goes 480p), because the older a group is, the less of
-///   its delivery window is left to a re-send.
-///
-/// Each version's own declaration, with its id, is in its file:
-/// [`classic::FACTORY`], [`v2::FACTORY`], [`v3::FACTORY`].
-pub struct WasdAlgorithmFactory {
-  id: u64,
-  reach: Reach,
-}
-
-impl AbrAlgorithmFactory for WasdAlgorithmFactory {
+impl AbrAlgorithmFactory for BackpressureAlgorithmFactory {
   fn id(&self) -> u64 {
-    self.id
+    BACKPRESSURE_ALGORITHM_ID
   }
 
   fn name(&self) -> &'static str {
-    self.reach.variant()
+    "backpressure"
   }
 
   fn create(&self, tuning: &Tuning) -> Box<dyn AbrAlgorithm> {
-    Box::new(WasdAlgorithm::with_reach_and_params(
-      self.reach,
-      WasdParams::from_tuning(tuning),
+    Box::new(BackpressureAlgorithm::with_reach_and_params(
+      Reach::Nothing,
+      BackpressureParams::from_tuning(tuning),
     ))
   }
 }
 
 /// How the climb is priced, and the rails around it.
 #[derive(Debug, Clone, Copy)]
-pub struct WasdParams {
+pub struct BackpressureParams {
   /// Consecutive mid-group readings at the downshift depth before the monitor
   /// acts. One is a reaction to a single sample; the default asks for the pattern.
   pub monitor_reads: u32,
@@ -232,7 +178,7 @@ pub struct WasdParams {
   pub u_max: Option<u64>,
 }
 
-impl WasdParams {
+impl BackpressureParams {
   /// The probing risk tolerance the draft fixes as the publisher default. On
   /// the 0.60/1.18/2.89/5.75 Mbps ladder it prices the three rungs at
   /// 5, 4 and 3 clean groups.
@@ -243,7 +189,7 @@ impl WasdParams {
   pub const DEFAULT_U_MIN: u64 = 2;
 }
 
-impl Default for WasdParams {
+impl Default for BackpressureParams {
   fn default() -> Self {
     Self {
       monitor_reads: state::DOWNSHIFT_SUBGROUP_READS,
@@ -254,25 +200,25 @@ impl Default for WasdParams {
   }
 }
 
-impl WasdParams {
-  /// From the operator's `key=value` pairs: `wasd.reads` for the monitor's
-  /// patience, `wasd.rho` for the probing risk tolerance, and `wasd.umin` /
-  /// `wasd.umax` for the rails, in clean groups.
+impl BackpressureParams {
+  /// From the operator's `key=value` pairs: `backpressure.reads` for the monitor's
+  /// patience, `backpressure.rho` for the probing risk tolerance, and `backpressure.umin` /
+  /// `backpressure.umax` for the rails, in clean groups.
   ///
-  /// The draft's floor is at least two clean groups, so `wasd.umin` values
-  /// below two are raised to two. `wasd.umax=0` and an unset `wasd.umax`
+  /// The draft's floor is at least two clean groups, so `backpressure.umin` values
+  /// below two are raised to two. `backpressure.umax=0` and an unset `backpressure.umax`
   /// both mean no cap.
   pub fn from_tuning(tuning: &Tuning) -> Self {
     let defaults = Self::default();
     Self {
-      monitor_reads: tuning.usize("wasd.reads", defaults.monitor_reads as usize) as u32,
-      rho: tuning.f64("wasd.rho", defaults.rho),
+      monitor_reads: tuning.usize("backpressure.reads", defaults.monitor_reads as usize) as u32,
+      rho: tuning.f64("backpressure.rho", defaults.rho),
       u_min: Some(
         tuning
-          .usize("wasd.umin", defaults.u_min.unwrap_or(2) as usize)
+          .usize("backpressure.umin", defaults.u_min.unwrap_or(2) as usize)
           .max(2) as u64,
       ),
-      u_max: match tuning.usize("wasd.umax", 0) {
+      u_max: match tuning.usize("backpressure.umax", 0) {
         0 => None,
         v => Some(v as u64),
       },
@@ -280,9 +226,23 @@ impl WasdParams {
   }
 }
 
+/// The fourth algorithm parameter: zero or absent keeps the classic
+/// behaviour, a non-zero value enables the newest-group supersede.
+const PARAM_RETROACTIVE_SUPERSEDE: usize = 3;
+
+/// The reach this set asked for on the wire, falling back to the instance's
+/// default for tests and older senders.
+fn reach_from_params(set: &SetSnapshot, default: Reach) -> Reach {
+  match signaled_param(set, PARAM_RETROACTIVE_SUPERSEDE) {
+    Some(0) => default,
+    Some(_) => Reach::Newest,
+    None => default,
+  }
+}
+
 /// The tier walk, measured at the tier it is on.
 #[derive(Debug)]
-pub struct WasdAlgorithm {
+pub struct BackpressureAlgorithm {
   ladder: LadderState,
   reach: Reach,
   /// The probing risk tolerance this instance climbs on.
@@ -300,15 +260,15 @@ pub struct WasdAlgorithm {
   last_selected_rate_kbps: Option<u64>,
 }
 
-impl WasdAlgorithm {
+impl BackpressureAlgorithm {
   /// The classic: a connection at the bottom tier, exploring, and a
   /// downshift that reaches back into nothing.
   pub fn new() -> Self {
     Self {
       ladder: LadderState::new(),
       reach: Reach::Nothing,
-      rho: WasdParams::DEFAULT_RHO,
-      u_min: Some(WasdParams::DEFAULT_U_MIN),
+      rho: BackpressureParams::DEFAULT_RHO,
+      u_min: Some(BackpressureParams::DEFAULT_U_MIN),
       u_max: None,
       last_set_id: None,
       last_selected_rate_kbps: None,
@@ -316,20 +276,14 @@ impl WasdAlgorithm {
   }
 
   /// The classic, with the monitor's patience set by the operator.
-  pub fn with_params(params: WasdParams) -> Self {
+  pub fn with_params(params: BackpressureParams) -> Self {
     Self::with_reach_and_params(Reach::Nothing, params)
   }
 
-  /// v2: the downshift cancels the newest overtaken group and has it re-sent
-  /// at the new rung.
-  pub fn v2() -> Self {
+  /// The retroactive form: the downshift cancels the newest overtaken group
+  /// and has it re-sent at the new rung.
+  pub fn retroactive() -> Self {
     Self::with_reach(Reach::Newest)
-  }
-
-  /// v3: the downshift reaches every overtaken group, staging the older ones
-  /// a rung below the new one.
-  pub fn v3() -> Self {
-    Self::with_reach(Reach::AllStaged)
   }
 
   /// The classic walk with a chosen reach.
@@ -337,17 +291,17 @@ impl WasdAlgorithm {
     Self {
       ladder: LadderState::new(),
       reach,
-      rho: WasdParams::DEFAULT_RHO,
-      u_min: Some(WasdParams::DEFAULT_U_MIN),
+      rho: BackpressureParams::DEFAULT_RHO,
+      u_min: Some(BackpressureParams::DEFAULT_U_MIN),
       u_max: None,
       last_set_id: None,
       last_selected_rate_kbps: None,
     }
   }
 
-  /// Any version, with the monitor's patience, the probing risk tolerance and
+  /// Any reach, with the monitor's patience, the probing risk tolerance and
   /// the `U_min` floor set by the operator.
-  pub fn with_reach_and_params(reach: Reach, params: WasdParams) -> Self {
+  pub fn with_reach_and_params(reach: Reach, params: BackpressureParams) -> Self {
     Self {
       ladder: LadderState::new_with_reads(params.monitor_reads),
       reach,
@@ -359,24 +313,19 @@ impl WasdAlgorithm {
     }
   }
 
-  /// The version this instance runs, which is also its advertised name.
-  pub fn reach(&self) -> Reach {
-    self.reach
-  }
-
   /// Whether the connection is still in its exploration phase.
   pub fn exploring(&self) -> bool {
     self.ladder.exploring()
   }
 }
 
-impl Default for WasdAlgorithm {
+impl Default for BackpressureAlgorithm {
   fn default() -> Self {
     Self::new()
   }
 }
 
-impl AbrAlgorithm for WasdAlgorithm {
+impl AbrAlgorithm for BackpressureAlgorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
     let max_index = input
       .sets
@@ -415,8 +364,8 @@ impl AbrAlgorithm for WasdAlgorithm {
     // draining — would make the new group's stream the second (or third) at
     // that rung, and the monitor would read the climb itself as congestion one
     // sample later. Classic has no re-sends to reset those streams, so it hit
-    // this on every climb attempt; v2's repair veto masks some of it, but the
-    // guard belongs to all versions.
+    // this on every climb attempt; the retroactive form's repair veto masks
+    // some of it, but the guard belongs to both modes.
     let target_occupied = before < max_index
       && input
         .sets
@@ -457,7 +406,7 @@ impl AbrAlgorithm for WasdAlgorithm {
           depth,
           resent_in_flight,
           target_occupied,
-          "SSTS wasd: depth reading"
+          "SSTS backpressure: depth reading"
         );
         match self.ladder.on_sample(
           depth,
@@ -481,7 +430,7 @@ impl AbrAlgorithm for WasdAlgorithm {
               upshift_streak.max(1)
             },
             exploring = self.ladder.exploring(),
-            "SSTS wasd: UPSHIFT"
+            "SSTS backpressure: UPSHIFT"
           ),
           Step::Downshift { from, to } => tracing::debug!(
             client_id = input.client_id,
@@ -489,12 +438,12 @@ impl AbrAlgorithm for WasdAlgorithm {
             from,
             to,
             depth,
-            "SSTS wasd: DOWNSHIFT"
+            "SSTS backpressure: DOWNSHIFT"
           ),
         }
       }
       // A reset stream is a consequence of a decision this algorithm already
-      // made, not an independent reading of the path, and wasd is the
+      // made, not an independent reading of the path, and backpressure is the
       // algorithm that says so: the depth already reflects the stream leaving.
       // Acting on the reset as well would count the same event twice.
       DecisionReason::StreamTimeout => {}
@@ -514,28 +463,22 @@ impl AbrAlgorithm for WasdAlgorithm {
     // The groups still in flight above the new rung were overtaken by this
     // decision. Naming the sets is all the algorithm can do; the host works out
     // which groups of that set are affected and what its own state allows.
-    // How far the request reaches is the one thing the versions differ in:
-    // the classic names nothing, v2 names the set with the newest-overtaken
-    // flag, and v3 stages the re-send by age — the newest overtaken group
-    // keeps the rung this decision landed on, every older one goes one rung
-    // below it, because the older a group is, the less of its delivery window
-    // the re-send has to finish inside.
+    // How far the request reaches is the one thing the toggle changes: the
+    // classic names nothing; the retroactive mode names the set with the
+    // newest-overtaken flag, because one correction is all it believes in.
     if after < before {
       for set in input
         .sets
         .iter()
         .filter(|set| set.active && !set.members.is_empty())
       {
-        match (self.reach, resend_deadline_ms(input, set, after)) {
+        let reach = reach_from_params(set, self.reach);
+        match (reach, resend_deadline_ms(input, set, after)) {
           (Reach::Nothing, _) => {}
           (Reach::Newest, Some(deadline)) => {
             selection.supersede_newest_with_deadline(set.id, deadline)
           }
           (Reach::Newest, None) => selection.supersede_newest(set.id),
-          (Reach::AllStaged, Some(deadline)) => {
-            selection.supersede_age_staged_with_deadline(set.id, deadline)
-          }
-          (Reach::AllStaged, None) => selection.supersede_age_staged(set.id),
         }
       }
     }
@@ -578,7 +521,7 @@ fn upshift_streak_needed(
   default_u_min: Option<u64>,
   default_u_max: Option<u64>,
 ) -> u64 {
-  // wasd serves one tier across every set on the connection, so the climb must
+  // backpressure serves one tier across every set on the connection, so the climb must
   // be as cautious as the most demanding ladder it carries: take the largest
   // U(k) any active set prices for this step. A connection with no active set
   // has nothing to price, and one clean group is all it can ask for.
@@ -588,7 +531,7 @@ fn upshift_streak_needed(
     .filter(|set| set.active && !set.members.is_empty())
     .map(|set| set_upshift_streak(set, current_tier, default_rho, default_u_min, default_u_max))
     .max()
-    .unwrap_or(WasdParams::DEFAULT_U_MIN)
+    .unwrap_or(BackpressureParams::DEFAULT_U_MIN)
 }
 
 /// The `U(k)` one set prices for the step out of `current_tier`: its own
@@ -606,7 +549,7 @@ fn set_upshift_streak(
   // shorter list is a sender that offered fewer fields, not a different
   // layout.
   let u_min = match signaled_param(set, PARAM_U_MIN) {
-    Some(0) => Some(WasdParams::DEFAULT_U_MIN),
+    Some(0) => Some(BackpressureParams::DEFAULT_U_MIN),
     Some(value) => Some(value.max(2)),
     None => default_u_min.map(|v| v.max(2)).or(Some(2)),
   };
@@ -615,7 +558,7 @@ fn set_upshift_streak(
   // Zero is the publisher default, and anything above 100 is clamped rather
   // than treated as malformed.
   let rho = match signaled_param(set, PARAM_RHO_PCT) {
-    Some(0) => WasdParams::DEFAULT_RHO,
+    Some(0) => BackpressureParams::DEFAULT_RHO,
     Some(pct) => (pct.min(100) as f64 / 100.0).clamp(0.01, 1.0),
     None => default_rho.clamp(0.01, 1.0),
   };
@@ -682,9 +625,8 @@ fn signaled_param(set: &SetSnapshot, index: usize) -> Option<u64> {
 /// that number; this is the measurement.
 ///
 /// The newest overtaken group donates its remaining time, because it is the
-/// group the re-send replaces in the delivery order — older overtaken groups
-/// have less of the window left, and v3's staging already prices them one rung
-/// lower for it. A re-send of a group whose stream had barely started inherits
+/// only group the re-send replaces in the delivery order. A re-send of a group
+/// whose stream had barely started inherits
 /// nearly the whole buffer, which is right: it has nearly the whole window. A
 /// stream that is itself a re-send donates too: its age runs from the moment
 /// the repair started, which is exactly what a second repair of the same group

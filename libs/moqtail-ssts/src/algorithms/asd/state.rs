@@ -124,16 +124,6 @@ impl TierState {
     self.current_index
   }
 
-  /// Change how many uncongested groups raise the tier.
-  ///
-  /// The walk is the same walk; how fast the ladder is explored at the start is
-  /// the one thing an algorithm built on top of this wants to differ about.
-  /// Zero is clamped to one, because a streak of zero would move the tier on
-  /// every group and never settle.
-  pub(crate) fn set_upshift_streak(&mut self, groups: u64) {
-    self.upshift_streak = groups.max(1);
-  }
-
   /// Whether the machine is in the settle-down period after a downshift.
   #[cfg(test)]
   pub(crate) fn in_cooldown(&self) -> bool {

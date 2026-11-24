@@ -400,16 +400,18 @@ impl SwitchingSetManager {
     // A single-set algorithm and any other set cannot coexist on the same
     // connection: the algorithm would see the second set's tracks through a
     // ladder that was built for one. The default algorithm keeps the draft's
-    // multi-set allocation.
+    // multi-set allocation. Join an existing set before creating a new one:
+    // otherwise a backpressure assignment could slip into one of several
+    // default sets without tripping the creating-set check.
     let creating_set = !self.sets.contains_key(&switching_set_id);
-    let existing_single_set = self
-      .sets
-      .values()
-      .any(|set| is_single_set_algorithm(set.algorithm_id));
-    if creating_set
-      && !self.sets.is_empty()
-      && (is_single_set_algorithm(algorithm_id) || existing_single_set)
-    {
+    let target_algorithm = self.sets.get(&switching_set_id).map(|set| set.algorithm_id);
+    let uses_single_set = is_single_set_algorithm(algorithm_id)
+      || target_algorithm.is_some_and(is_single_set_algorithm)
+      || self
+        .sets
+        .values()
+        .any(|set| is_single_set_algorithm(set.algorithm_id));
+    if uses_single_set && (self.sets.len() > 1 || (creating_set && !self.sets.is_empty())) {
       return Err(SwitchingSetError::SingleSetAlgorithm { algorithm_id });
     }
 
@@ -772,6 +774,30 @@ mod tests {
     // A default set cannot be added beside a backpressure set either.
     let error = manager
       .assign(default, 12, 3, 3, 0, 1000, 5, 1, 0, 0, vec![])
+      .unwrap_err();
+    assert!(matches!(
+      error,
+      SwitchingSetError::SingleSetAlgorithm { .. }
+    ));
+
+    // Nor can a backpressure track join one of several existing default sets.
+    let mut manager = SwitchingSetManager::new();
+    assign(&mut manager, &make_track("ns", "a"), 10, 1, 100);
+    assign(&mut manager, &make_track("ns", "b"), 11, 2, 200);
+    let error = manager
+      .assign(
+        make_track("ns", "dp"),
+        12,
+        3,
+        1,
+        WASD_ALGORITHM_ID,
+        1000,
+        5,
+        1,
+        0,
+        250,
+        vec![],
+      )
       .unwrap_err();
     assert!(matches!(
       error,

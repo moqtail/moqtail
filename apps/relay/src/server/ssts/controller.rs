@@ -24,6 +24,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::server::stream_id::StreamId;
+
 use moqtail::model::error::StreamResetCode;
 use moqtail_ssts::registry::registry;
 use moqtail_ssts::{
@@ -346,25 +348,78 @@ async fn supersede_overtaken(
   if request.newest_only {
     groups.retain(|group_id| *group_id == newest);
   }
-  // (group, the member its re-send runs on): this request reaches one member,
-  // the one the decision selected.
-  let staged: Vec<(u64, u64)> = groups
-    .iter()
-    .map(|group_id| (*group_id, track_id))
-    .collect();
+
+  // The draft's supersede is all-or-nothing: without a cached beginning on
+  // the new track there is no replacement stream, so the old delivery must
+  // not be reset. Plan the repairs first; only the ones that can be replaced
+  // are allowed to flip the group decision.
+  let Some(target_subscription) = subscription_for(client, track_id).await else {
+    tracing::debug!(
+      client_id = client.connection_id,
+      set_id,
+      relay_track_id = track_id,
+      "SSTS: skipping supersede; the new track has no subscription"
+    );
+    return;
+  };
+
+  // (group, old stream, last Object written on it)
+  let mut repairs: Vec<(u64, StreamId, Option<u64>)> = Vec::new();
+  for (group_id, stream_id) in &overtaken {
+    if !groups.contains(group_id) {
+      // A group this request does not reach keeps its delivery; resetting
+      // its stream would cancel the very thing newest-only asked to leave
+      // alone.
+      continue;
+    }
+    let Some(old_subscription) = subscription_for(client, stream_id.relay_track_id).await else {
+      continue;
+    };
+    let last_sent = old_subscription
+      .read()
+      .await
+      .last_object_sent_on(stream_id)
+      .await;
+    if !target_subscription
+      .read()
+      .await
+      .can_repair_group_from_cache(*group_id, stream_id.subgroup_id, last_sent)
+      .await
+    {
+      tracing::debug!(
+        client_id = client.connection_id,
+        set_id,
+        relay_track_id = track_id,
+        group = group_id,
+        subgroup = ?stream_id.subgroup_id,
+        "SSTS: skipping supersede; the replacement cache head is unavailable"
+      );
+      continue;
+    }
+    repairs.push((*group_id, stream_id.clone(), last_sent));
+  }
+
+  if repairs.is_empty() {
+    return;
+  }
+
+  let repair_count = repairs.len();
+  let mut repaired_groups: Vec<u64> = repairs.iter().map(|(group_id, _, _)| *group_id).collect();
+  repaired_groups.sort_unstable();
+  repaired_groups.dedup();
 
   let mut flipped = 0usize;
   {
     let mut group_decisions = client.ssts.group_decisions.write().await;
-    for (group_id, track) in &staged {
+    for group_id in &repaired_groups {
       if let Some(decision) = group_decisions.get_mut(group_id) {
-        decision.insert(set_id, Some(*track));
+        decision.insert(set_id, Some(track_id));
         flipped += 1;
       }
     }
   }
 
-  for (group_id, track) in &staged {
+  for group_id in &repaired_groups {
     // One line per re-sent group, not just the set-level summary below, so
     // the operator (and the run's dashboard) can see which groups a
     // decision overtook and at which member they are re-sent: the summary
@@ -373,7 +428,7 @@ async fn supersede_overtaken(
     tracing::debug!(
       client_id = client.connection_id,
       set_id,
-      relay_track_id = track,
+      relay_track_id = track_id,
       group = group_id,
       newest_only = request.newest_only,
       deadline_ms = request.resend_deadline_ms,
@@ -385,77 +440,49 @@ async fn supersede_overtaken(
       .await;
   }
 
-  for (group_id, stream_id) in &overtaken {
-    if !groups.contains(group_id) {
-      // A group this request does not reach keeps its delivery; resetting
-      // its stream would cancel the very thing newest-only asked to leave
-      // alone.
-      continue;
-    }
-
-    // Read the old stream's progress before resetting it: the close path
-    // clears the ledger, and the cache-only repair needs to know whether the
-    // Group had actually been sent.
-    let subscription = subscription_for(client, stream_id.relay_track_id).await;
-    let last_sent = match &subscription {
-      Some(subscription) => {
-        subscription
-          .read()
-          .await
-          .last_object_sent_on(stream_id)
-          .await
-      }
-      None => None,
-    };
-
+  for (group_id, stream_id, last_sent) in repairs {
     // The delivery was cancelled by a decision, not by a failure or a timeout,
     // and the code on the wire should say so.
-    if let Some(subscription) = &subscription {
-      subscription
+    if let Some(old_subscription) = subscription_for(client, stream_id.relay_track_id).await {
+      old_subscription
         .read()
         .await
-        .reset_stream(stream_id, StreamResetCode::Cancelled.to_u64())
+        .reset_stream(&stream_id, StreamResetCode::Cancelled.to_u64())
         .await;
     }
 
-    // If the Group is complete at the relay but the old stream was short of
-    // it, no live Object will arrive to arm the normal re-send. Arm it from
-    // the cache now. A Group whose last cached Object was already written is
-    // left alone by the repair itself.
-    if let Some(subscription) = subscription_for(client, track_id).await {
-      // The replay writes Objects on the wire; keep it off the decision loop,
-      // which must keep sampling the path while the repair drains.
-      let group_id = *group_id;
-      let subgroup_id = stream_id.subgroup_id;
-      let client_id = client.connection_id;
-      tokio::spawn(async move {
-        let replayed = subscription
-          .read()
-          .await
-          .repair_group_from_cache(group_id, subgroup_id, last_sent)
-          .await;
-        if replayed > 0 {
-          tracing::debug!(
-            client_id,
-            set_id,
-            relay_track_id = track_id,
-            group = group_id,
-            subgroup = ?subgroup_id,
-            objects = replayed,
-            "SSTS: repaired an overtaken group from the cache"
-          );
-        }
-      });
-    }
+    // The replay writes Objects on the wire; keep it off the decision loop,
+    // which must keep sampling the path while the repair drains.
+    let target_subscription = Arc::clone(&target_subscription);
+    let subgroup_id = stream_id.subgroup_id;
+    let client_id = client.connection_id;
+    tokio::spawn(async move {
+      let replayed = target_subscription
+        .read()
+        .await
+        .repair_group_from_cache(group_id, subgroup_id, last_sent)
+        .await;
+      if replayed > 0 {
+        tracing::debug!(
+          client_id,
+          set_id,
+          relay_track_id = track_id,
+          group = group_id,
+          subgroup = ?subgroup_id,
+          objects = replayed,
+          "SSTS: repaired an overtaken group from the cache"
+        );
+      }
+    });
   }
 
   tracing::debug!(
     client_id = client.connection_id,
     set_id,
     relay_track_id = track_id,
-    groups = groups.len(),
+    groups = repaired_groups.len(),
     newest_only = request.newest_only,
-    streams = overtaken.len(),
+    streams = repair_count,
     decisions_flipped = flipped,
     "SSTS: overtook the groups in flight for this set"
   );

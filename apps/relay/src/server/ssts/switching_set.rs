@@ -60,7 +60,8 @@ pub enum SwitchingSetError {
   TrackInDifferentSet,
   /// The track does not belong to any switching set.
   TrackNotInSet,
-  /// This algorithm currently keeps one switching set per connection.
+  /// This algorithm currently keeps one switching set assigned to it per
+  /// connection.
   SingleSetAlgorithm { algorithm_id: u64 },
 }
 
@@ -73,7 +74,7 @@ impl fmt::Display for SwitchingSetError {
       Self::TrackNotInSet => write!(f, "track is not in any switching set"),
       Self::SingleSetAlgorithm { algorithm_id } => write!(
         f,
-        "algorithm {algorithm_id} supports only one switching set per connection"
+        "algorithm {algorithm_id} supports only one switching set assigned to it per connection"
       ),
     }
   }
@@ -376,21 +377,16 @@ impl SwitchingSetManager {
       return Err(SwitchingSetError::TrackInDifferentSet);
     }
 
-    // A single-set algorithm and any other set cannot coexist on the same
-    // connection: the algorithm would see the second set's tracks through a
-    // ladder that was built for one. The default algorithm keeps the draft's
-    // multi-set allocation. Join an existing set before creating a new one:
-    // otherwise a backpressure assignment could slip into one of several
-    // default sets without tripping the creating-set check.
-    let creating_set = !self.sets.contains_key(&switching_set_id);
-    let target_algorithm = self.sets.get(&switching_set_id).map(|set| set.algorithm_id);
-    let uses_single_set = is_single_set_algorithm(algorithm_id)
-      || target_algorithm.is_some_and(is_single_set_algorithm)
-      || self
-        .sets
-        .values()
-        .any(|set| is_single_set_algorithm(set.algorithm_id));
-    if uses_single_set && (self.sets.len() > 1 || (creating_set && !self.sets.is_empty())) {
+    // The draft scopes backpressure to one switching set per connection but
+    // lets other switching sets use an allocation algorithm. Only a second
+    // set assigned to this algorithm is rejected; a default set may sit
+    // beside it, and a backpressure set may join a connection that already
+    // has default sets.
+    if is_single_set_algorithm(algorithm_id)
+      && self.sets.iter().any(|(set_id, set)| {
+        *set_id != switching_set_id && is_single_set_algorithm(set.algorithm_id)
+      })
+    {
       return Err(SwitchingSetError::SingleSetAlgorithm { algorithm_id });
     }
 
@@ -632,6 +628,32 @@ mod tests {
   }
 
   #[allow(clippy::too_many_arguments)]
+  fn assign_with_result(
+    manager: &mut SwitchingSetManager,
+    track: &FullTrackName,
+    relay_track_id: u64,
+    set_id: u64,
+    algorithm_id: u64,
+    threshold: u64,
+    subscriber_buffer_ms: u64,
+    algorithm_params: Vec<u64>,
+  ) -> Result<(), SwitchingSetError> {
+    manager.assign(
+      track.clone(),
+      relay_track_id,
+      relay_track_id,
+      set_id,
+      algorithm_id,
+      threshold,
+      5,
+      2,
+      0,
+      subscriber_buffer_ms,
+      algorithm_params,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
   fn assign_with(
     manager: &mut SwitchingSetManager,
     track: &FullTrackName,
@@ -642,21 +664,17 @@ mod tests {
     subscriber_buffer_ms: u64,
     algorithm_params: Vec<u64>,
   ) {
-    manager
-      .assign(
-        track.clone(),
-        relay_track_id,
-        relay_track_id,
-        set_id,
-        algorithm_id,
-        threshold,
-        5,
-        2,
-        0,
-        subscriber_buffer_ms,
-        algorithm_params,
-      )
-      .unwrap();
+    assign_with_result(
+      manager,
+      track,
+      relay_track_id,
+      set_id,
+      algorithm_id,
+      threshold,
+      subscriber_buffer_ms,
+      algorithm_params,
+    )
+    .unwrap();
   }
 
   /// The negotiated buffer is the subscriber's permission to discard its own
@@ -707,81 +725,55 @@ mod tests {
   }
 
   #[test]
-  fn a_backpressure_set_keeps_the_connection_to_one_set() {
+  fn backpressure_allows_one_set_but_other_algorithms_can_coexist() {
     let mut manager = SwitchingSetManager::new();
-    let first = make_track("ns", "first");
-    let second = make_track("ns", "second");
-    let default = make_track("ns", "default");
+    assign_with(
+      &mut manager,
+      &make_track("ns", "video"),
+      10,
+      1,
+      BACKPRESSURE_ALGORITHM_ID,
+      1000,
+      250,
+      vec![25, 2, 0, 1],
+    );
+    // A default set beside the backpressure set is the draft's recommended
+    // shape: the single-set scope is per algorithm, not per connection.
+    assign(&mut manager, &make_track("ns", "audio"), 11, 2, 100);
+    assert_eq!(manager.sets.len(), 2);
 
-    manager
-      .assign(
-        first,
-        10,
-        1,
-        1,
-        BACKPRESSURE_ALGORITHM_ID,
-        1000,
-        5,
-        1,
-        0,
-        250,
-        vec![],
-      )
-      .unwrap();
-
-    let error = manager
-      .assign(
-        second,
-        11,
-        2,
-        2,
-        BACKPRESSURE_ALGORITHM_ID,
-        1000,
-        5,
-        1,
-        0,
-        250,
-        vec![],
-      )
-      .unwrap_err();
+    let error = assign_with_result(
+      &mut manager,
+      &make_track("ns", "second-video"),
+      12,
+      3,
+      BACKPRESSURE_ALGORITHM_ID,
+      1000,
+      250,
+      vec![25, 2, 0, 1],
+    )
+    .unwrap_err();
     assert!(matches!(
       error,
       SwitchingSetError::SingleSetAlgorithm { algorithm_id }
         if algorithm_id == BACKPRESSURE_ALGORITHM_ID
     ));
 
-    // A default set cannot be added beside a backpressure set either.
-    let error = manager
-      .assign(default, 12, 3, 3, 0, 1000, 5, 1, 0, 0, vec![])
-      .unwrap_err();
-    assert!(matches!(
-      error,
-      SwitchingSetError::SingleSetAlgorithm { .. }
-    ));
-
-    // Nor can a backpressure track join one of several existing default sets.
+    // The reverse order works too: a backpressure set may join a connection
+    // that already has default sets.
     let mut manager = SwitchingSetManager::new();
-    assign(&mut manager, &make_track("ns", "a"), 10, 1, 100);
-    assign(&mut manager, &make_track("ns", "b"), 11, 2, 200);
-    let error = manager
-      .assign(
-        make_track("ns", "dp"),
-        12,
-        3,
-        1,
-        BACKPRESSURE_ALGORITHM_ID,
-        1000,
-        5,
-        1,
-        0,
-        250,
-        vec![],
-      )
-      .unwrap_err();
-    assert!(matches!(
-      error,
-      SwitchingSetError::SingleSetAlgorithm { .. }
-    ));
+    assign(&mut manager, &make_track("ns", "audio"), 10, 1, 100);
+    assign_with(
+      &mut manager,
+      &make_track("ns", "video"),
+      11,
+      2,
+      BACKPRESSURE_ALGORITHM_ID,
+      1000,
+      250,
+      vec![25, 2, 0, 1],
+    );
+    assert_eq!(manager.sets.len(), 2);
   }
 
   #[test]

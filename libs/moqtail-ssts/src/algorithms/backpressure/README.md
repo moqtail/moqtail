@@ -69,5 +69,5 @@ field falls back to the operator value.
   the monitor can read it as a second congestion.
 - The supersede is newest-only. Older overtaken groups finish on the member
   they were carrying even when their delivery window is nearly gone.
-- The family keeps one switching set per connection until the per-set ladder
-  work is done.
+- Only one switching set may be assigned to the family per connection. Other
+  sets on the connection may use an allocation algorithm such as the default.

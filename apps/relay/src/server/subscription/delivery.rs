@@ -577,6 +577,30 @@ impl Subscription {
       .await;
   }
 
+  /// Whether a supersede can replace this Group on this subscription's track
+  /// from its cached beginning: the cache must hold the Subgroup's first
+  /// Object, and the old stream must still be short of the cached tail. A
+  /// reset without such a replacement would drop the Group.
+  pub async fn can_repair_group_from_cache(
+    &self,
+    group_id: u64,
+    subgroup_id: Option<u64>,
+    last_sent: Option<u64>,
+  ) -> bool {
+    if self.finished.load(Ordering::Relaxed) {
+      return false;
+    }
+    let Some(subgroup_id) = subgroup_id else {
+      return false;
+    };
+    let Some(group_objects) = self.cache.get_group(group_id).await else {
+      return false;
+    };
+    let objects = group_objects.read().await;
+    cached_head_available(&objects, subgroup_id)
+      && cache_repair_needed(&objects, subgroup_id, last_sent).is_some()
+  }
+
   /// Re-send a Group from the cache when the live tail will never arrive.
   ///
   /// A downshift at a Group boundary overtakes a Group that is already complete
@@ -880,6 +904,15 @@ impl Subscription {
   }
 }
 
+/// Whether the cache holds the first Object of this Subgroup, which is what a
+/// replacement stream has to start from. A cache that begins mid-Subgroup
+/// cannot be replayed as the draft's replacement.
+fn cached_head_available(objects: &[FetchObjectPayload], subgroup_id: u64) -> bool {
+  objects
+    .iter()
+    .any(|object| object.subgroup_id == subgroup_id && object.object_id == 0)
+}
+
 /// The last cached Object of one subgroup that still needs a re-send, or
 /// `None` when there is nothing cached or the old stream already carried all
 /// of it. `last_sent` is the last Object written on the overtaken stream.
@@ -1054,6 +1087,21 @@ mod tests {
       None,
       "a sibling subgroup is not this stream's repair"
     );
+  }
+
+  /// A replacement stream has to start at the Subgroup's first Object. A
+  /// cache whose earliest object is later cannot be replayed as that
+  /// replacement, and the supersede must leave the old stream alone.
+  #[test]
+  fn a_replacement_needs_the_cached_head() {
+    let mid_subgroup = [cached(7, 0, 1), cached(7, 0, 2)];
+    assert!(!cached_head_available(&mid_subgroup, 0));
+    assert!(!cached_head_available(&[cached(7, 1, 0)], 0));
+    assert!(cached_head_available(&[cached(7, 0, 0)], 0));
+    assert!(cached_head_available(
+      &[cached(7, 0, 1), cached(7, 0, 0)],
+      0
+    ));
   }
 
   /// A cache-only replay starts at the subgroup's first Object, so it can

@@ -16,8 +16,9 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { KeyValuePair, serializeKvpList } from '../common/pair'
+import { ProtocolViolationError } from '../error/error'
 import { ObjectProperty } from '../property/object_property'
-import { ObjectStatus } from './constant'
+import { ObjectStatus, SubgroupHeaderType } from './constant'
 
 function normalizeProperties(properties: KeyValuePair[] | null): KeyValuePair[] | null {
   if (properties === null || properties.length === 0) {
@@ -55,16 +56,28 @@ export class SubgroupObject {
     return new SubgroupObject(objectId, normalizeProperties(properties), null, payload)
   }
 
-  serialize(previousObjectId: bigint | undefined): FrozenByteBuffer {
+  /**
+   * With `headerType`, the stream's header decides whether the object carries a properties
+   * field: on a header type with properties every object does, a length of 0 when it has none.
+   * Without it, the field is written when the object has properties.
+   * @throws ProtocolViolationError for an object with properties under a header type without them.
+   */
+  serialize(previousObjectId: bigint | undefined, headerType?: SubgroupHeaderType): FrozenByteBuffer {
     // the first object's object id is encoded as is
     // for the subsequent objects, the object id is encoded
     // as the delta to the previous object id
     let objectIdDelta = previousObjectId !== undefined ? this.objectId - previousObjectId - BigInt(1) : this.objectId
 
+    const hasProperties =
+      headerType === undefined ? this.properties !== null : SubgroupHeaderType.hasProperties(headerType)
+    if (!hasProperties && this.properties !== null) {
+      throw new ProtocolViolationError('SubgroupObject.serialize', 'properties under a header type without them')
+    }
+
     const buf = new ByteBuffer()
     buf.putVI(objectIdDelta)
-    if (this.properties !== null) {
-      buf.putLengthPrefixedBytes(serializeKvpList(this.properties).toUint8Array())
+    if (hasProperties) {
+      buf.putLengthPrefixedBytes(serializeKvpList(this.properties ?? []).toUint8Array())
     }
     if (this.payload) {
       buf.putLengthPrefixedBytes(this.payload)
@@ -174,6 +187,37 @@ if (import.meta.vitest) {
       expect(parsed.payload).toEqual(payload)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
+    })
+    test('under a header type with properties, an object without them carries an empty field', () => {
+      const withProperties = 0x10 | SubgroupHeaderType.PROPERTIES
+      const properties = [KeyValuePair.tryNewVarInt(0, 10)]
+      const objects = [
+        SubgroupObject.newWithPayload(0, properties, new Uint8Array([0xab])),
+        SubgroupObject.newWithPayload(1, null, new Uint8Array([0xcd])),
+        SubgroupObject.newWithStatus(2, null, ObjectStatus.EndOfGroup),
+      ]
+      const buf = new ByteBuffer()
+      let previous: bigint | undefined
+      for (const object of objects) {
+        buf.putBytes(object.serialize(previous, withProperties).toUint8Array())
+        previous = object.objectId
+      }
+      const frozen = buf.freeze()
+
+      previous = undefined
+      const parsed = objects.map(() => {
+        const object = SubgroupObject.deserialize(frozen, true, previous)
+        previous = object.objectId
+        return object
+      })
+
+      expect(parsed.map((o) => o.properties)).toEqual([properties, null, null])
+      expect(parsed[2]!.objectStatus).toBe(ObjectStatus.EndOfGroup)
+      expect(frozen.remaining).toBe(0)
+    })
+    test('refuses properties under a header type without them', () => {
+      const object = SubgroupObject.newWithPayload(0, [KeyValuePair.tryNewVarInt(0, 10)], new Uint8Array([0xab]))
+      expect(() => object.serialize(undefined, 0x10)).toThrow(ProtocolViolationError)
     })
     test('partial message fails', () => {
       const objectId = 10n

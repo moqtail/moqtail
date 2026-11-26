@@ -86,7 +86,9 @@ export class SendStream {
             `Attempted to write objectId=${object.objectId}, but lastObjectId=${this.#lastObjectId}.`,
         )
       }
-      serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
+      // The header decides whether every object carries a properties field, not the object
+      const headerType = Header.isFetch(this.header) ? undefined : this.header.type
+      serializedObject = object.serialize(this.#lastObjectId, headerType).toUint8Array()
       this.#lastObjectId = object.objectId
     }
 

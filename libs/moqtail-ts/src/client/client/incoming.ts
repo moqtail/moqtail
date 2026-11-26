@@ -525,7 +525,7 @@ if (import.meta.vitest) {
       bytes.putBytes(Header.newSubgroup(0x10, 7n, 1n, undefined, 0).serialize().toUint8Array())
       bytes.putBytes(
         SubgroupObject.newWithPayload(0, null, new Uint8Array([1]))
-          .serialize(undefined)
+          .serialize(undefined, 0x10)
           .toUint8Array(),
       )
       transport.openIncomingUniStream(bytes.toUint8Array())

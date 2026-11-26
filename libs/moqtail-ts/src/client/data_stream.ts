@@ -86,7 +86,11 @@ export class SendStream {
             `Attempted to write objectId=${object.objectId}, but lastObjectId=${this.#lastObjectId}.`,
         )
       }
-      serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
+      if (Header.isFetch(this.header)) {
+        throw new TypeError('SendStream.write: a subgroup object on a fetch stream')
+      }
+
+      serializedObject = object.serialize(this.#lastObjectId, this.header.type).toUint8Array()
       this.#lastObjectId = object.objectId
     }
 

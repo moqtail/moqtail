@@ -16,7 +16,7 @@
 
 import type { MOQtailClient } from '@/client/client'
 import type { Track } from '@/client/track/track'
-import { InternalError, Location } from '@/model'
+import { InternalError, Location, ProtocolViolationError } from '@/model'
 import type { Publish, RequestUpdate } from '@/model/messages'
 import { applyParameterUpdate } from '@/model/parameters'
 import type { MessageParameters } from '@/model/parameters'
@@ -292,6 +292,11 @@ export class PublishPublication {
         try {
           await sendStream.write(obj.tryIntoSubgroupObject())
         } catch (err) {
+          // Encoding failed: not a stopped stream, so fail the publication
+          if (err instanceof ProtocolViolationError) {
+            throw err
+          }
+
           // The peer stopped this one subgroup stream (STOP_SENDING). That ends this subgroup,
           // not the track: the stream stays mapped so the rest of the group is skipped, and
           // later groups still go out on new streams.

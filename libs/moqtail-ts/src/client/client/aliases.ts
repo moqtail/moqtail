@@ -130,7 +130,7 @@ if (import.meta.vitest) {
       bytes.putBytes(Header.newSubgroup(0x10, 7n, 4n, undefined, 0).serialize().toUint8Array())
 
       const payload = new TextEncoder().encode('early')
-      bytes.putBytes(SubgroupObject.newWithPayload(0, null, payload).serialize(undefined).toUint8Array())
+      bytes.putBytes(SubgroupObject.newWithPayload(0, null, payload).serialize(undefined, 0x10).toUint8Array())
 
       transport.openIncomingUniStream(bytes.toUint8Array())
 
@@ -160,7 +160,9 @@ if (import.meta.vitest) {
       const bytes = new ByteBuffer()
       bytes.putBytes(Header.newSubgroup(0x10, 9n, 4n, undefined, 0).serialize().toUint8Array())
       bytes.putBytes(
-        SubgroupObject.newWithPayload(0, null, new TextEncoder().encode('orphan')).serialize(undefined).toUint8Array(),
+        SubgroupObject.newWithPayload(0, null, new TextEncoder().encode('orphan'))
+          .serialize(undefined, 0x10)
+          .toUint8Array(),
       )
 
       transport.openIncomingUniStream(bytes.toUint8Array())

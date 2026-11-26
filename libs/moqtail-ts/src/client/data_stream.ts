@@ -90,7 +90,6 @@ export class SendStream {
         throw new TypeError('SendStream.write: a subgroup object on a fetch stream')
       }
 
-      // The header decides whether every object carries a properties field, not the object
       serializedObject = object.serialize(this.#lastObjectId, this.header.type).toUint8Array()
       this.#lastObjectId = object.objectId
     }

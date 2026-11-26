@@ -68,8 +68,7 @@ export function subgroupHeaderFor(
   publisherPriority: number,
   firstObject: boolean,
 ): SubgroupHeader {
-  // A header without properties bars them from every later object too, so it always
-  // promises them: an object without any carries an empty field.
+  // Always set, so a later object can carry properties
   let headerType = (obj.getSubgroupHeaderType(true, false, firstObject) |
     SubgroupHeaderType.PROPERTIES) as SubgroupHeaderType
   if (obj.subgroupId === null && subgroupId !== obj.location.object) {

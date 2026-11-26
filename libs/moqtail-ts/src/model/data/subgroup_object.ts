@@ -57,8 +57,6 @@ export class SubgroupObject {
   }
 
   /**
-   * The stream's header type decides whether the object carries a properties field: on a
-   * header type with properties every object does, a length of 0 when it has none.
    * @throws ProtocolViolationError for an object with properties under a header type without them.
    */
   serialize(previousObjectId: bigint | undefined, headerType: SubgroupHeaderType): FrozenByteBuffer {

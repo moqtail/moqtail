@@ -292,7 +292,7 @@ export class PublishPublication {
         try {
           await sendStream.write(obj.tryIntoSubgroupObject())
         } catch (err) {
-          // An object this stream cannot encode is our mistake, not the peer's
+          // Encoding failed: not a stopped stream, so fail the publication
           if (err instanceof ProtocolViolationError) {
             throw err
           }

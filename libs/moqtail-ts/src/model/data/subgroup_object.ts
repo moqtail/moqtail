@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair, serializeKvpList } from '../common/pair'
-import { ProtocolViolationError } from '../error/error'
-import { ObjectProperty } from '../property/object_property'
+import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '@/model/common/byte_buffer'
+import { KeyValuePair, serializeKvpList } from '@/model/common/pair'
+import { ProtocolViolationError } from '@/model/error/error'
+import { ObjectProperty } from '@/model/property/object_property'
 import { ObjectStatus, SubgroupHeaderType } from './constant'
 
 function normalizeProperties(properties: KeyValuePair[] | null): KeyValuePair[] | null {
@@ -57,19 +57,17 @@ export class SubgroupObject {
   }
 
   /**
-   * With `headerType`, the stream's header decides whether the object carries a properties
-   * field: on a header type with properties every object does, a length of 0 when it has none.
-   * Without it, the field is written when the object has properties.
+   * The stream's header type decides whether the object carries a properties field: on a
+   * header type with properties every object does, a length of 0 when it has none.
    * @throws ProtocolViolationError for an object with properties under a header type without them.
    */
-  serialize(previousObjectId: bigint | undefined, headerType?: SubgroupHeaderType): FrozenByteBuffer {
+  serialize(previousObjectId: bigint | undefined, headerType: SubgroupHeaderType): FrozenByteBuffer {
     // the first object's object id is encoded as is
     // for the subsequent objects, the object id is encoded
     // as the delta to the previous object id
     let objectIdDelta = previousObjectId !== undefined ? this.objectId - previousObjectId - BigInt(1) : this.objectId
 
-    const hasProperties =
-      headerType === undefined ? this.properties !== null : SubgroupHeaderType.hasProperties(headerType)
+    const hasProperties = SubgroupHeaderType.hasProperties(headerType)
     if (!hasProperties && this.properties !== null) {
       throw new ProtocolViolationError('SubgroupObject.serialize', 'properties under a header type without them')
     }
@@ -116,6 +114,8 @@ export class SubgroupObject {
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('SubgroupObject', () => {
+    const withProperties = SubgroupHeaderType.fromProperties(true, 0, false)
+    const withoutProperties = SubgroupHeaderType.fromProperties(false, 0, false)
     test('roundtrip', () => {
       const objectId = 10n
       const properties = [
@@ -123,7 +123,7 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const frozen = SubgroupObject.newWithPayload(objectId, properties, payload).serialize(undefined)
+      const frozen = SubgroupObject.newWithPayload(objectId, properties, payload).serialize(undefined, withProperties)
       const parsed = SubgroupObject.deserialize(frozen, true, undefined)
       expect(parsed.objectId).toBe(objectId)
       expect(parsed.properties).toEqual(properties)
@@ -134,8 +134,12 @@ if (import.meta.vitest) {
       const objectId = 10n
       const payload = new Uint8Array([0xab])
 
-      const withNoHeaders = SubgroupObject.newWithPayload(objectId, null, payload).serialize(undefined).toUint8Array()
-      const withEmptyHeaders = SubgroupObject.newWithPayload(objectId, [], payload).serialize(undefined).toUint8Array()
+      const withNoHeaders = SubgroupObject.newWithPayload(objectId, null, payload)
+        .serialize(undefined, withoutProperties)
+        .toUint8Array()
+      const withEmptyHeaders = SubgroupObject.newWithPayload(objectId, [], payload)
+        .serialize(undefined, withoutProperties)
+        .toUint8Array()
 
       expect(Array.from(withEmptyHeaders)).toEqual(Array.from(withNoHeaders))
     })
@@ -143,7 +147,7 @@ if (import.meta.vitest) {
       const payload = new Uint8Array([0xab])
       const previousObjectIds = [undefined, 0n, 1n]
       const deltas = previousObjectIds.map((previousObjectId, objectId) =>
-        SubgroupObject.newWithPayload(objectId, null, payload).serialize(previousObjectId).getVI(),
+        SubgroupObject.newWithPayload(objectId, null, payload).serialize(previousObjectId, withoutProperties).getVI(),
       )
       expect(deltas).toEqual([0n, 0n, 0n])
     })
@@ -153,7 +157,11 @@ if (import.meta.vitest) {
       const buf = new ByteBuffer()
       let previousObjectId: bigint | undefined = undefined
       for (const objectId of objectIds) {
-        buf.putBytes(SubgroupObject.newWithPayload(objectId, null, payload).serialize(previousObjectId).toUint8Array())
+        buf.putBytes(
+          SubgroupObject.newWithPayload(objectId, null, payload)
+            .serialize(previousObjectId, withoutProperties)
+            .toUint8Array(),
+        )
         previousObjectId = objectId
       }
       const frozen = buf.freeze()
@@ -174,7 +182,7 @@ if (import.meta.vitest) {
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
       const serialized = SubgroupObject.newWithPayload(objectId, properties, payload)
-        .serialize(undefined)
+        .serialize(undefined, withProperties)
         .toUint8Array()
       const buf = new ByteBuffer()
       buf.putBytes(serialized)
@@ -189,7 +197,6 @@ if (import.meta.vitest) {
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
     test('under a header type with properties, an object without them carries an empty field', () => {
-      const withProperties = 0x10 | SubgroupHeaderType.PROPERTIES
       const properties = [KeyValuePair.tryNewVarInt(0, 10)]
       const objects = [
         SubgroupObject.newWithPayload(0, properties, new Uint8Array([0xab])),
@@ -217,7 +224,7 @@ if (import.meta.vitest) {
     })
     test('refuses properties under a header type without them', () => {
       const object = SubgroupObject.newWithPayload(0, [KeyValuePair.tryNewVarInt(0, 10)], new Uint8Array([0xab]))
-      expect(() => object.serialize(undefined, 0x10)).toThrow(ProtocolViolationError)
+      expect(() => object.serialize(undefined, withoutProperties)).toThrow(ProtocolViolationError)
     })
     test('partial message fails', () => {
       const objectId = 10n
@@ -227,7 +234,7 @@ if (import.meta.vitest) {
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
       const serialized = SubgroupObject.newWithPayload(objectId, properties, payload)
-        .serialize(undefined)
+        .serialize(undefined, withProperties)
         .toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

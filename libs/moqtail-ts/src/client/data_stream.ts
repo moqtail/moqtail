@@ -86,9 +86,12 @@ export class SendStream {
             `Attempted to write objectId=${object.objectId}, but lastObjectId=${this.#lastObjectId}.`,
         )
       }
+      if (Header.isFetch(this.header)) {
+        throw new TypeError('SendStream.write: a subgroup object on a fetch stream')
+      }
+
       // The header decides whether every object carries a properties field, not the object
-      const headerType = Header.isFetch(this.header) ? undefined : this.header.type
-      serializedObject = object.serialize(this.#lastObjectId, headerType).toUint8Array()
+      serializedObject = object.serialize(this.#lastObjectId, this.header.type).toUint8Array()
       this.#lastObjectId = object.objectId
     }
 

@@ -846,7 +846,7 @@ if (import.meta.vitest) {
         const live = (group: bigint, object: number) => {
           const bytes = new ByteBuffer()
           bytes.putBytes(Header.newSubgroup(0x10, 7n, group, undefined, 0).serialize().toUint8Array())
-          bytes.putBytes(SubgroupObject.newWithPayload(object, null, payload).serialize(undefined).toUint8Array())
+          bytes.putBytes(SubgroupObject.newWithPayload(object, null, payload).serialize(undefined, 0x10).toUint8Array())
           transport.openIncomingUniStream(bytes.toUint8Array())
         }
 

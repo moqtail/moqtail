@@ -231,6 +231,23 @@ fn the_depth_counts_only_the_streams_at_the_current_tier() {
   assert_eq!(tier_of(&selection, 1), 2);
 }
 
+/// The depth is scoped to the backpressure switching set. A second set on the
+/// connection, assigned to the default algorithm, has its own delivery and
+/// must not raise this algorithm's depth.
+#[test]
+fn depth_ignores_sets_owned_by_other_algorithms() {
+  let mut other = set(2, true);
+  other.algorithm_id = 0;
+  let streams = [stream(1, track_at(1, 0), 7), stream(2, track_at(2, 0), 8)];
+  let sets = [set(1, true), other];
+  let input = input(&sets, &streams, DecisionReason::GroupBoundary, 9);
+  assert_eq!(
+    super::depth_at_current_tier(&input, 0),
+    1,
+    "the default set's stream is not part of the backpressure depth"
+  );
+}
+
 /// The other half of a clean climb: the rung above must have no delivery of
 /// its own still open. An old stream there is not depth at the current tier,
 /// so it never calls for a downshift, but climbing beside it makes the new

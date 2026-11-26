@@ -116,6 +116,13 @@ pub const FACTORY: BackpressureAlgorithmFactory = BackpressureAlgorithmFactory;
 /// specification leaves to implementations.
 pub const BACKPRESSURE_ALGORITHM_ID: u64 = crate::registry::PRIVATE_ALGORITHM_ID_BASE + 3;
 
+/// Whether a set is assigned to this algorithm. The controller already hands
+/// each algorithm only its own sets, but the depth and its guards are defined
+/// per switching set and must stay correct if a host passes a wider slice.
+fn is_own_set(set: &SetSnapshot) -> bool {
+  set.algorithm_id == BACKPRESSURE_ALGORITHM_ID
+}
+
 /// How far a downshift reaches back into the groups it overtook. The wire
 /// toggle picks the retroactive form; tests construct either explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,7 +364,10 @@ impl AbrAlgorithm for BackpressureAlgorithm {
     // (a re-sent stream does not count), but it is not a clean read either:
     // the boundary that arrives with one in flight cannot buy a climb until
     // the repair is over.
-    let resent_in_flight = input.has_resent_in_flight();
+    let resent_in_flight = input
+      .streams
+      .iter()
+      .any(|stream| stream.resent && input.sets.iter().any(|set| set.id == stream.set_id));
     let before = self.ladder.tier();
     // A climb also needs the rung above it to be clear. An old delivery still
     // open there — a group an earlier downshift abandoned, or one still
@@ -370,7 +380,7 @@ impl AbrAlgorithm for BackpressureAlgorithm {
       && input
         .sets
         .iter()
-        .filter(|set| set.active && !set.members.is_empty())
+        .filter(|set| is_own_set(set) && set.active && !set.members.is_empty())
         .any(|set| {
           let rung = (before + 1).min(set.members.len() - 1);
           input.open_streams_at_track(set.id, set.members[rung].1) > 0
@@ -521,14 +531,13 @@ fn upshift_streak_needed(
   default_u_min: Option<u64>,
   default_u_max: Option<u64>,
 ) -> u64 {
-  // backpressure serves one tier across every set on the connection, so the climb must
-  // be as cautious as the most demanding ladder it carries: take the largest
-  // U(k) any active set prices for this step. A connection with no active set
-  // has nothing to price, and one clean group is all it can ask for.
+  // This algorithm owns one switching set. Take its ladder's U(k); a connection
+  // with no active backpressure set has nothing to price, and one clean group
+  // is all it can ask for.
   input
     .sets
     .iter()
-    .filter(|set| set.active && !set.members.is_empty())
+    .filter(|set| is_own_set(set) && set.active && !set.members.is_empty())
     .map(|set| set_upshift_streak(set, current_tier, default_rho, default_u_min, default_u_max))
     .max()
     .unwrap_or(BackpressureParams::DEFAULT_U_MIN)
@@ -674,12 +683,17 @@ fn ladder_owner<'a>(input: &'a AbrInput<'_>, last_set_id: Option<u64>) -> Option
   input
     .sets
     .iter()
-    .find(|set| set.active && !set.members.is_empty() && last_set_id.is_none_or(|id| set.id == id))
+    .find(|set| {
+      is_own_set(set)
+        && set.active
+        && !set.members.is_empty()
+        && last_set_id.is_none_or(|id| set.id == id)
+    })
     .or_else(|| {
       input
         .sets
         .iter()
-        .find(|set| set.active && !set.members.is_empty())
+        .find(|set| is_own_set(set) && set.active && !set.members.is_empty())
     })
 }
 
@@ -690,11 +704,11 @@ fn any_active(input: &AbrInput) -> bool {
   input
     .sets
     .iter()
-    .any(|set| set.active && !set.members.is_empty())
+    .any(|set| is_own_set(set) && set.active && !set.members.is_empty())
 }
 
 /// The congestion signal: live forwarding streams carrying the member each
-/// active set holds at `tier`, re-sends excluded.
+/// active set assigned to this algorithm holds at `tier`, re-sends excluded.
 ///
 /// A re-sent stream is the relay's own reaction to the previous downshift. That
 /// is the whole reason the depth is measured at one rung: if the streams the
@@ -706,14 +720,14 @@ fn any_active(input: &AbrInput) -> bool {
 ///
 /// The exclusion is only half the rule: the state machine also refuses to count
 /// a boundary clean while a re-sent stream is still open
-/// ([`AbrInput::has_resent_in_flight`], `LadderState::on_sample`). Leaving one
-/// out of the depth lets it stay silent about congestion, not pretend the
-/// pipeline is clear.
+/// (the per-decision `resent_in_flight` guard, `LadderState::on_sample`).
+/// Leaving one out of the depth lets it stay silent about congestion, not
+/// pretend the pipeline is clear.
 fn depth_at_current_tier(input: &AbrInput, tier: usize) -> u64 {
   input
     .sets
     .iter()
-    .filter(|set| set.active && !set.members.is_empty())
+    .filter(|set| is_own_set(set) && set.active && !set.members.is_empty())
     .map(|set| {
       let rung = tier.min(set.members.len() - 1);
       input.open_streams_at_track(set.id, set.members[rung].1)

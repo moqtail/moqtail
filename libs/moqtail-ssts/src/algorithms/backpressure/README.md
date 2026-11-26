@@ -2,8 +2,8 @@
 
 **Backpressure** counts the depth signal only at the rung actually being
 delivered, reads it again while a group is still in flight, and can reach back
-into the groups a downshift overtook. It was named `wasd` / `eeasd` in earlier
-versions of the tree; the public name is backpressure.
+into the groups a downshift overtook. It is the within-tier successor to the
+relay's earlier connection-wide depth controller.
 
 It exists because the earlier algorithms share an assumption: that a group is
 the unit of time. Groups are the unit the _media_ offers, but the path changes
@@ -21,12 +21,12 @@ algorithm id.
 
 The extension fields follow the subscriber's latency budget:
 
-| Position | Field | Meaning |
-| --- | --- | --- |
-| 0 | `rho_pct` | Probing risk tolerance, 0 default, 1–100 |
-| 1 | `U_min` | Floor under the clean-group wait; 0 is the draft default |
-| 2 | `U_max` | Cap on the wait; 0 means unbounded |
-| 3 | `retroactive_supersede` | 0/absent: classic; non-zero: cancel and re-send the newest overtaken group |
+| Position | Field                   | Meaning                                                                    |
+| -------- | ----------------------- | -------------------------------------------------------------------------- |
+| 0        | `rho_pct`               | Probing risk tolerance, 0 default, 1–100                                   |
+| 1        | `U_min`                 | Floor under the clean-group wait; 0 is the draft default                   |
+| 2        | `U_max`                 | Cap on the wait; 0 means unbounded                                         |
+| 3        | `retroactive_supersede` | 0/absent: classic; non-zero: cancel and re-send the newest overtaken group |
 
 ## The toggle
 

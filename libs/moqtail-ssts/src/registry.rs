@@ -50,8 +50,6 @@ impl Registry {
         // forwarding streams, at the first private id. Opt-in: it is only
         // advertised when --ssts-algorithms asks for it.
         Arc::new(AsdAlgorithmFactory),
-        // Id 0xff03 is deliberately left unused: it belonged to the BNB
-        // experiment, which was removed rather than shipped.
         // BACKPRESSURE: the depth read at the tier being delivered, sampled
         // inside the group. One id; the fourth assignment parameter toggles
         // the retroactive newest-group supersede.

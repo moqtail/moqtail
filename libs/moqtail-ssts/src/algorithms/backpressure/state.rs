@@ -34,11 +34,8 @@ pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;
 /// flight; congestion shows it on every reading until it is dealt with. The
 /// streak re-arms when it fires, so one burst cannot chain.
 ///
-/// Two, which is the value every measured run used: the October suites took
-/// it from this default, the November suites pinned `backpressure.reads=2`. The draft
-/// alignment briefly raised it to three (commit ec8bcf6); that is not the
-/// configuration the results in the paper come from, so the default is back
-/// to two and the paper's numbers stay reproducible without a flag.
+/// Two is the default: one reading is the normal handoff overlap, and a
+/// second confirms the congestion without waiting for the next boundary.
 pub(crate) const DOWNSHIFT_SUBGROUP_READS: u32 = 2;
 
 /// What one depth sample did.
@@ -182,17 +179,16 @@ impl LadderState {
         self.monitor_streak = 0;
         // A repair is still open: the depth excludes it (so this is not
         // congestion), but the boundary has not proved the delivery clean
-        // either. Climbing here is how the ladder walked back onto a rung
-        // whose overtaken group was still being repaired — 900 -> 1080 at
-        // t=31.99 in PROFILE_LANCSD1, 40 ms before the same two streams
-        // pushed it back down. Hold, and restart the streak: a climb has to
-        // be bought after the repair is over, not across it.
+        // either. Climbing here can walk back onto a rung whose overtaken
+        // group is still being repaired, and the repair streams can push it
+        // back down a sample later. Hold, and restart the streak: a climb has
+        // to be bought after the repair is over, not across it.
         //
         // The rung above is the same question from the other side: an old
         // stream still open there is not depth, but it is not a clear climb
-        // target either. On classic this was the dominant flap — 900 -> 1080
-        // with three old 1080p streams still draining, reverted 27-51 ms
-        // later because the new stream made it four.
+        // target either. On classic, old streams draining at that rung can
+        // make the new stream the next congestion sample; the climb waits
+        // until the rung is clear.
         if resent_in_flight || target_occupied {
           self.clear_streak = 0;
           return Step::Held;

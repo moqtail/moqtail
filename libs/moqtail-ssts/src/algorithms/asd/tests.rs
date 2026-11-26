@@ -252,7 +252,7 @@ fn a_timeout_during_cooldown_drops_the_tier_again() {
 
 #[test]
 fn a_timeout_burst_inside_one_group_drops_once_at_the_boundary() {
-  // The paper decides on the new-group boundary. The host also asks on every
+  // ASD decides on the new-group boundary. The host also asks on every
   // stream timeout; if the state machine walked on those, a burst of resets
   // inside one group would drop one tier per reset. The tier must hold during
   // the burst and fall once at the boundary that sees the accumulated count.

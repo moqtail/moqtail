@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Backpressure (formerly WASD): the depth measured at the quality actually
+//! Backpressure: the depth measured at the quality actually
 //! being delivered, sampled while the group is still in flight, with an
 //! optional downshift that reaches back into the groups it overtook.
 //!
@@ -33,23 +33,20 @@
 //! fix. What it drains is the signal the decision itself produced — the
 //! rejected streams are no longer at the tier being measured. What it cannot
 //! drain is the queue a short dip leaves behind: the overlap that queue
-//! causes at the next group boundary still reads as congestion at the new
-//! tier, which is the retroactive mode's measured shortcoming the
-//! README keeps under its own heading.
+//! causes at the next group boundary can still read as congestion at the new
+//! tier, a known shortcoming of the retroactive mode.
 //!
 //! A re-sent stream is out of the depth, but it still vetoes a clean boundary:
 //! while a repair is in flight the delivery it replaced has not resolved, so
 //! the boundary cannot buy a climb. Without the veto the ladder walks back onto
-//! the rung the repair came from — on `PROFILE_LANCSD1`, 900p -> 1080p at
-//! t=31.99 s, 40 ms before the same pair of streams pushed it back down.
+//! the rung the repair came from while the repair is still open.
 //!
 //! The climb is also held while an old stream is still open at the rung above
 //! it. That stream is not depth at the current tier, so it never calls for a
 //! downshift, but climbing onto its rung puts the new group's stream beside it
 //! and the monitor reads the pair as congestion one sample later. Classic,
-//! which leaves the streams a downshift abandoned to drain, hit this on every
-//! climb back to 1080p (three old 1080p streams, reverted in 27-51 ms); the
-//! guard is common to both modes.
+//! which leaves the streams a downshift abandoned to drain, can hit this on a
+//! climb back to an occupied rung; the guard is common to both modes.
 //
 //! **One clock, two certainties.** Groups are the algorithm's clock but not
 //! the path's: bandwidth moves faster than 25 groups a second, so the same
@@ -81,17 +78,10 @@
 //! opened do not read as new congestion. Without the mark the downshift would
 //! manufacture the evidence for the next one.
 //!
-//! Two parts of the original experiment are deliberately not here, because they
-//! are mechanism and this crate has none. The re-sent group is *not* replayed in
-//! full from the relay's cache: the overtaken delivery is cancelled and the new
-//! member's own objects resume from wherever that group had got to, which means
-//! the subscriber receives a group that starts mid-way and may not decode. The
-//! replay belongs in the host's forwarding path, where the track cache is, and
-//! it has conformance consequences (the `FIRST_OBJECT` flag on a stream that
-//! does not start at the subgroup's first object) that are not this algorithm's
-//! to settle. The stream-discard timeout is likewise not halved for re-sent
-//! groups; it stays the negotiated value for the set, which is the subscriber's
-//! permission and not the algorithm's to spend.
+//! The algorithm is deliberately mechanism-free. It names the set whose
+//! delivery a downshift overtook; the host decides how to reset, replay or
+//! re-send it. Cache replay and stream deadlines belong to the host, where the
+//! track cache and the transport state live.
 
 use crate::AbrAlgorithm;
 use crate::AbrAlgorithmFactory;
@@ -714,9 +704,9 @@ fn any_active(input: &AbrInput) -> bool {
 /// is the whole reason the depth is measured at one rung: if the streams the
 /// downshift itself caused counted, every downshift would report the congestion
 /// it was meant to relieve. Measured, not theorised: with the re-sends in the
-/// depth, a 500 ms dip on `PROFILE_JITTER` cost three rungs (3 to 0) instead of
-/// one, each repair overlapping the next group manufacturing the evidence for
-/// the next step down.
+/// depth, every downshift would manufacture the evidence for the next one:
+/// a repair still in flight would overlap the next group and count as new
+/// congestion.
 ///
 /// The exclusion is only half the rule: the state machine also refuses to count
 /// a boundary clean while a re-sent stream is still open

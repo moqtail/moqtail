@@ -67,7 +67,7 @@ pub struct AsdAlgorithm {
   state: TierState,
   /// Discards reported by decisions that are not the group boundary.
   ///
-  /// The paper reads `discards_since_last_decision` once, on the new-group
+  /// ASD reads `discards_since_last_decision` once, on the new-group
   /// boundary. The host also re-evaluates on a stream timeout, and that
   /// decision clears the host's counter; the discards are kept here until the
   /// boundary that is supposed to see them.
@@ -93,7 +93,7 @@ impl Default for AsdAlgorithm {
 
 impl AbrAlgorithm for AsdAlgorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
-    // The paper's algorithm decides on the new-group boundary: one
+    // ASD decides on the new-group boundary: one
     // observation per group, with `d = open_streams + discards_since_last`.
     // The host also calls this on a stream timeout and on the object-paced
     // sample. Those decisions serve the tier in hand, but they must not walk
@@ -101,7 +101,7 @@ impl AbrAlgorithm for AsdAlgorithm {
     // group's discards once per reset, and a burst inside one group would
     // fall several tiers for one group's evidence. The discards are not lost;
     // they are accumulated and read at the next boundary, which is where the
-    // paper reads them.
+    // boundary reads them.
     self.pending_timeouts += input.total_stream_timeouts_since_last_decision();
 
     if input.reason == DecisionReason::GroupBoundary {

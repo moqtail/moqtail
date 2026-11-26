@@ -68,10 +68,12 @@ export function subgroupHeaderFor(
   publisherPriority: number,
   firstObject: boolean,
 ): SubgroupHeader {
-  let headerType = obj.getSubgroupHeaderType(true, false, firstObject)
+  // A header without properties bars them from every later object too, so it always
+  // promises them: an object without any carries an empty field.
+  let headerType = (obj.getSubgroupHeaderType(true, false, firstObject) |
+    SubgroupHeaderType.PROPERTIES) as SubgroupHeaderType
   if (obj.subgroupId === null && subgroupId !== obj.location.object) {
-    const hasProperties = !!obj.properties && obj.properties.length > 0
-    headerType = SubgroupHeaderType.fromProperties(hasProperties, 2, true, false, firstObject)
+    headerType = SubgroupHeaderType.fromProperties(true, 2, true, false, firstObject)
   }
   const explicit = SubgroupHeaderType.hasExplicitSubgroupId(headerType) ? subgroupId : undefined
   return new SubgroupHeader(headerType, trackAlias, obj.location.group, explicit, publisherPriority)
@@ -118,6 +120,13 @@ if (import.meta.vitest) {
       const header = subgroupHeaderFor(object(3n, 5n), 2n, 1n, 128, false)
       expect(SubgroupHeaderType.hasExplicitSubgroupId(header.type)).toBe(true)
       expect(header.subgroupId).toBe(2n)
+    })
+
+    test('promises properties when the first object has none', () => {
+      for (const firstObject of [true, false]) {
+        const header = subgroupHeaderFor(object(3n, 5n), 2n, 1n, 128, firstObject)
+        expect(SubgroupHeaderType.hasProperties(header.type)).toBe(true)
+      }
     })
   })
 }

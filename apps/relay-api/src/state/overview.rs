@@ -128,7 +128,7 @@ pub struct Upstream {
   remote: String,
   tracks: usize,
   announced_namespaces: usize,
-  rtt_ms: f64,
+  rtt_ms: Option<f64>,
   #[serde(flatten)]
   requests: UpstreamCounts,
 }
@@ -155,7 +155,7 @@ pub async fn upstreams(State(state): State<Arc<ApiState>>) -> Json<Vec<Upstream>
         remote: c.remote.clone(),
         tracks: c.published_tracks.len(),
         announced_namespaces: c.announced_namespaces.len(),
-        rtt_ms: c.quic.rtt_ms,
+        rtt_ms: c.stats.rtt_ms,
         requests: counts.unwrap_or_default(),
       })
     })

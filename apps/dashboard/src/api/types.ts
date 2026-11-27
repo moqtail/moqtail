@@ -80,16 +80,17 @@ export interface Overview {
   };
 }
 
-export interface QuicStats {
-  rtt_ms: number;
-  cwnd: number;
-  congestion_events: number;
-  lost_packets: number;
-  lost_bytes: number;
+/** A field the transport cannot measure is `null`. */
+export interface TransportStats {
+  rtt_ms: number | null;
+  cwnd: number | null;
+  congestion_events: number | null;
+  lost_packets: number | null;
+  lost_bytes: number | null;
   sent_bytes: number;
   received_bytes: number;
-  sent_datagrams: number;
-  received_datagrams: number;
+  sent_packets: number;
+  received_packets: number;
 }
 
 export interface CloseInfo {
@@ -124,7 +125,7 @@ export interface ConnectionSummary {
   announced_namespaces: number;
   published_tracks: number;
   subscriptions: number;
-  quic: QuicStats;
+  stats: TransportStats;
   close: CloseInfo | null;
   control_messages: MessageCounts;
   requests: RequestCounts;
@@ -195,7 +196,7 @@ export interface Upstream {
   remote: string;
   tracks: number;
   announced_namespaces: number;
-  rtt_ms: number;
+  rtt_ms: number | null;
   in_flight: number;
   ok: number;
   failed: number;

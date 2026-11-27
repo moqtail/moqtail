@@ -30,17 +30,16 @@ use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::parameter::constant::SetupOptionType;
-use moqtail::transport::connection::TransportConnection;
+use moqtail::transport::connection::{CloseReason, TransportConnection};
 use relay_hooks::{
-  CloseInfo, ConnectionInfo, ConnectionState, PublishedTrackInfo, QuicStats, Role, SetupOptionInfo,
-  SubscriptionInfo,
+  CloseInfo, ConnectionInfo, ConnectionState, PublishedTrackInfo, Role, SetupOptionInfo,
+  SubscriptionInfo, TransportStats,
 };
 #[cfg(feature = "observability")]
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use wtransport::quinn::ConnectionError;
 
 #[cfg(feature = "observability")]
 pub(crate) use relay::RelayInspect;
@@ -141,6 +140,7 @@ mod relay {
   use crate::server::session::client::MOQTClient;
   use crate::server::track::track_manager::{SubscribeKind, TrackManager};
   use crate::server::track::{Track, TrackOrigin, TrackStatus};
+  use crate::server::utils::CloseSession;
   use moqtail::model::control::control_message::ControlMessage;
   use moqtail::model::control::goaway::GoAway;
   use moqtail::model::error::TerminationCode;
@@ -316,7 +316,7 @@ mod relay {
           );
           client
             .connection
-            .close(TerminationCode::GoawayTimeout as u32, b"GOAWAY timeout");
+            .close_session(TerminationCode::GoawayTimeout as u32, b"GOAWAY timeout");
         }
       });
     }
@@ -346,7 +346,7 @@ mod relay {
         // for any other close.
         client
           .connection
-          .close(TerminationCode::NoError as u32, b"closed by the operator");
+          .close_session(TerminationCode::NoError as u32, b"closed by the operator");
         true
       })
     }
@@ -579,7 +579,7 @@ async fn connection_info(
     announced_namespaces,
     published_tracks,
     subscriptions,
-    quic: quic_stats(&client.connection),
+    stats: transport_stats(&client.connection),
     close,
   }
 }
@@ -644,38 +644,29 @@ fn setup_options(options: &[KeyValuePair]) -> (Option<String>, Vec<SetupOptionIn
   (implementation, infos)
 }
 
-fn quic_stats(connection: &TransportConnection) -> QuicStats {
-  let stats = connection.quic_stats();
-  QuicStats {
-    rtt_ms: stats.path.rtt.as_secs_f64() * 1000.0,
-    cwnd: stats.path.cwnd,
-    congestion_events: stats.path.congestion_events,
-    lost_packets: stats.path.lost_packets,
-    lost_bytes: stats.path.lost_bytes,
-    sent_bytes: stats.udp_tx.bytes,
-    received_bytes: stats.udp_rx.bytes,
-    sent_datagrams: stats.udp_tx.datagrams,
-    received_datagrams: stats.udp_rx.datagrams,
+fn transport_stats(connection: &TransportConnection) -> TransportStats {
+  let stats = connection.transport_stats();
+  TransportStats {
+    rtt_ms: stats.rtt.map(|rtt| rtt.as_secs_f64() * 1000.0),
+    cwnd: stats.cwnd,
+    congestion_events: stats.congestion_events,
+    lost_packets: stats.lost_packets,
+    lost_bytes: stats.lost_bytes,
+    sent_bytes: stats.sent_bytes,
+    received_bytes: stats.received_bytes,
+    sent_packets: stats.sent_packets,
+    received_packets: stats.received_packets,
   }
 }
 
 pub(crate) fn close_info(connection: &TransportConnection) -> CloseInfo {
   let at_ms = millis_since_epoch(SystemTime::now());
   let (by, code, reason) = match connection.close_reason() {
-    Some(ConnectionError::ApplicationClosed(close)) => (
-      "peer",
-      Some(close.error_code.into_inner()),
-      String::from_utf8_lossy(&close.reason).into_owned(),
-    ),
-    Some(ConnectionError::ConnectionClosed(close)) => (
-      "peer",
-      Some(u64::from(close.error_code)),
-      String::from_utf8_lossy(&close.reason).into_owned(),
-    ),
-    Some(ConnectionError::LocallyClosed) => ("relay", None, "closed by the relay".to_string()),
-    Some(ConnectionError::TimedOut) => ("network", None, "idle timeout".to_string()),
-    Some(ConnectionError::Reset) => ("network", None, "reset".to_string()),
-    Some(other) => ("relay", None, other.to_string()),
+    Some(CloseReason::ByPeer { code, reason }) => ("peer", Some(code), reason),
+    Some(CloseReason::Local) => ("relay", None, "closed by the relay".to_string()),
+    Some(CloseReason::IdleTimeout) => ("network", None, "idle timeout".to_string()),
+    Some(CloseReason::Reset) => ("network", None, "reset".to_string()),
+    Some(CloseReason::Other(reason)) => ("relay", None, reason),
     None => ("relay", None, "unknown".to_string()),
   };
   CloseInfo {

@@ -228,8 +228,8 @@ pub struct ConnectionInfo {
   pub announced_namespaces: Vec<String>,
   pub published_tracks: Vec<PublishedTrackInfo>,
   pub subscriptions: Vec<SubscriptionInfo>,
-  /// The QUIC connection's statistics.
-  pub quic: QuicStats,
+  /// The connection's transport statistics.
+  pub stats: TransportStats,
   /// Set once the connection has closed.
   pub close: Option<CloseInfo>,
 }
@@ -276,18 +276,20 @@ pub struct SubscriptionInfo {
   pub queued_bytes: u64,
 }
 
-/// QUIC-level statistics of a connection.
+/// Transport-level statistics of a connection. A field the transport cannot
+/// measure is `None`, serialized as `null`.
 #[derive(Debug, Clone, Default, Serialize)]
-pub struct QuicStats {
-  pub rtt_ms: f64,
-  pub cwnd: u64,
-  pub congestion_events: u64,
-  pub lost_packets: u64,
-  pub lost_bytes: u64,
+pub struct TransportStats {
+  pub rtt_ms: Option<f64>,
+  pub cwnd: Option<u64>,
+  pub congestion_events: Option<u64>,
+  pub lost_packets: Option<u64>,
+  pub lost_bytes: Option<u64>,
   pub sent_bytes: u64,
   pub received_bytes: u64,
-  pub sent_datagrams: u64,
-  pub received_datagrams: u64,
+  /// UDP datagrams for QUIC.
+  pub sent_packets: u64,
+  pub received_packets: u64,
 }
 
 /// Why and when a connection closed.

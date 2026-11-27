@@ -34,6 +34,7 @@ async fn connections_are_sorted_paged_and_filtered() {
 
   let (_, body) = client.get("/api/v1/connections?sort=rtt").await;
   assert_eq!(body["items"][0]["conn_id"], 9);
+  assert_eq!(body["items"][0]["stats"]["rtt_ms"], 2.0);
 
   let (_, body) = client.get("/api/v1/connections?prefix=live").await;
   assert_eq!(body["total"], 1);

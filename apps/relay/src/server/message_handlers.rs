@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::utils::CloseSession;
 use bytes::Bytes;
 use moqtail::{
   model::{
@@ -50,7 +51,7 @@ pub(crate) fn close_on_unexpected_request_update(publisher: &MOQTClient, request
     "REQUEST_UPDATE from publisher {} on an upstream {} stream; closing its session",
     publisher.connection_id, request
   );
-  publisher.connection.close(
+  publisher.connection.close_session(
     TerminationCode::ProtocolViolation.to_u32(),
     b"Unexpected REQUEST_UPDATE on request bi-stream",
   );

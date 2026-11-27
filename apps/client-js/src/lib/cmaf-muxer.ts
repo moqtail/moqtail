@@ -112,11 +112,18 @@ export class CMAFMuxer {
     this._lastIsKey = chunk.type === 'key';
     this._lastTimestamp = chunk.timestamp;
 
-    this.file.addSample(this.trackId, data, {
+    const sample = this.file.addSample(this.trackId, data, {
       duration,
       cts: dts,
       dts,
       is_sync: chunk.type === 'key',
     });
+
+    // onSegment has had the sample's fragment by now. mp4box otherwise keeps every sample's data,
+    // and a moof and mdat per sample, for the life of the file: a live publisher runs out of memory.
+    if (sample) this.file.releaseUsedSamples(this.trackId, sample.number + 1);
+    this.file.boxes = this.file.boxes.filter(box => box.type !== 'moof' && box.type !== 'mdat');
+    this.file.moofs = [];
+    this.file.mdats = [];
   }
 }

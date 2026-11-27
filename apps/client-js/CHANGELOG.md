@@ -1,5 +1,21 @@
 # client-js
 
+## 0.2.4
+
+### Patch Changes
+
+- [#506](https://github.com/moqtail/moqtail/pull/506) [`3a43083`](https://github.com/moqtail/moqtail/commit/3a43083a7f10063612e8374358684d785b580791) Thanks [@DenizUgur](https://github.com/DenizUgur)! - add canvas rendering option to support LOC until it is integrated in the web component
+
+- [#513](https://github.com/moqtail/moqtail/pull/513) [`af2bc0d`](https://github.com/moqtail/moqtail/commit/af2bc0de0f76ce75fd3b0c596ec20ac98ea524cd) Thanks [@zafergurel](https://github.com/zafergurel)! - The CMAF muxer releases each sample once its segment is out. mp4box kept every encoded frame twice for the life of the publisher, so a long-running publisher ran out of memory.
+
+- [`926171a`](https://github.com/moqtail/moqtail/commit/926171a2356299d0455cae34001b0703910a1742) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Control messages, message parameters and setup options are plain data, coded by one table-driven codec: `MOQtailPlayer` is about 6 kB gzip smaller.
+
+  - Messages are objects tagged by `kind` (`{ kind: 'subscribe', requestId, fullTrackName, parameters }`) instead of classes. Test a request's result with `isRequestError(result)` instead of `instanceof RequestError`. `reasonPhrase` and `errorReason` are strings.
+  - `MessageParameters` is an object keyed by parameter (`{ forward: true, fillParameters: { locationFilter } }`) instead of an array of parameter classes. `subscribe`, `fetch`, `subscribeUpdate`, `publish` and the namespace calls take it as `parameters`.
+  - `SetupOptions` is an object (`{ maxFilterRanges: 8n, moqtImplementation: 'app' }`) instead of a builder. Options of other types go in `extensions`.
+  - `locationFilter(type, …)` builds a `LocationFilter`; `startLocation`, `endLocation`, `absoluteStart` and `fetchRange` are functions of one.
+  - `ObjectDatagramType` and `SubgroupHeaderType` are numbers; their bit helpers are unchanged.
+
 ## 0.2.3
 
 ### Patch Changes

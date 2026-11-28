@@ -144,6 +144,8 @@ pub async fn handle_request_update(
       set_throughput_weight,
       activate_switching,
       set_rank,
+      subscriber_buffer_ms,
+      algorithm_params,
       ..
     } = p
   {
@@ -155,6 +157,8 @@ pub async fn handle_request_update(
       Some(*set_throughput_weight),
       Some(*activate_switching),
       Some(*set_rank),
+      Some(*subscriber_buffer_ms),
+      Some(algorithm_params.clone()),
     ) {
       Ok(warnings) => {
         for warning in warnings {

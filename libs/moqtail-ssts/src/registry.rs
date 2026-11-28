@@ -20,9 +20,9 @@
 
 use std::sync::{Arc, OnceLock};
 
-use crate::algorithms::backpressure::BackpressureAlgorithmFactory;
+use crate::algorithms::asd::AsdAlgorithmFactory;
 use crate::algorithms::default::DefaultAlgorithmFactory;
-use crate::{AbrAlgorithm, AbrAlgorithmFactory};
+use crate::{AbrAlgorithm, AbrAlgorithmFactory, Tuning};
 
 /// First algorithm id an implementation may use for its own experiments.
 ///
@@ -46,9 +46,19 @@ impl Registry {
       factories: vec![
         // The default allocation, id 0, which every implementation must run.
         Arc::new(DefaultAlgorithmFactory),
-        // MOQtail's own tier selector, at the first private id. Opt-in: it is
-        // only advertised when `ssts_algorithms` asks for it.
-        Arc::new(BackpressureAlgorithmFactory),
+        // ASD (Active Stream Depth): the tier walk driven by the count of open
+        // forwarding streams, at the first private id. Opt-in: it is only
+        // advertised when --ssts-algorithms asks for it.
+        Arc::new(AsdAlgorithmFactory),
+        // BACKPRESSURE: the depth read at the tier being delivered, sampled
+        // inside the group. One id; the fourth assignment parameter toggles
+        // the retroactive newest-group supersede.
+        Arc::new(crate::algorithms::backpressure::FACTORY),
+        // The perfect-knowledge oracle: the rung each group window could
+        // simply carry, predestined from the trace. Experimental: it exists to
+        // be measured, and it is only advertised when --ssts-algorithms asks
+        // for it.
+        Arc::new(crate::algorithms::oracle::OracleAlgorithmFactory),
       ],
     }
   }
@@ -68,8 +78,8 @@ impl Registry {
   }
 
   /// A fresh, stateless-history instance of `id` for one connection.
-  pub fn create(&self, id: u64) -> Option<Box<dyn AbrAlgorithm>> {
-    self.get(id).map(|f| f.create())
+  pub fn create(&self, id: u64, tuning: &Tuning) -> Option<Box<dyn AbrAlgorithm>> {
+    self.get(id).map(|f| f.create(tuning))
   }
 }
 
@@ -108,7 +118,7 @@ mod tests {
   #[test]
   fn the_default_algorithm_is_always_available() {
     assert!(registry().get(0).is_some(), "algorithm 0 is mandatory");
-    assert!(registry().create(0).is_some());
+    assert!(registry().create(0, &Tuning::empty()).is_some());
   }
 
   #[test]
@@ -122,6 +132,6 @@ mod tests {
   #[test]
   fn unknown_ids_are_rejected() {
     assert!(registry().get(12345).is_none());
-    assert!(registry().create(12345).is_none());
+    assert!(registry().create(12345, &Tuning::empty()).is_none());
   }
 }

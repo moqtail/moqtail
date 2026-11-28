@@ -347,6 +347,8 @@ async fn handle_subscribe_message(
     set_throughput_weight,
     activate_switching,
     set_rank,
+    subscriber_buffer_ms,
+    algorithm_params,
   }) = sub
     .subscribe_parameters
     .iter()
@@ -381,6 +383,8 @@ async fn handle_subscribe_message(
         *set_throughput_weight,
         *activate_switching,
         *set_rank,
+        *subscriber_buffer_ms,
+        algorithm_params.clone(),
       ) {
         warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
         // A track MUST only be assigned to one switching set at a time; the

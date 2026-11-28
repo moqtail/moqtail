@@ -250,12 +250,12 @@ pub struct AppConfig {
   #[default(vec![0])]
   #[validate(custom(function = "super::ssts::check_algorithm_ids"))]
   pub ssts_algorithms: Vec<u64>,
-  /// How long an SSTS client's subgroup stream waits for a graceful finish
-  /// before it is reset and its stream slot is freed again. Only applies to
-  /// connections that negotiated SSTS; 0s always closes gracefully.
-  #[default(Duration::from_millis(1600))]
-  #[serde(with = "humantime_serde")]
-  pub ssts_discard_timeout: Duration,
+  /// `key=value` tuning handed to the SSTS algorithms when their instances are
+  /// created, for example `backpressure.reads=3`. A key belongs to the algorithm
+  /// that reads it; the relay only carries the values, so an unknown key is
+  /// inert rather than a startup error.
+  #[default(vec![])]
+  pub ssts_algorithm_params: Vec<String>,
   /// This relay's Hop ID in a relay mesh, declared in SETUP. Setting it turns
   /// clustering on; 0 joins the mesh while withholding an identity.
   pub hop_id: Option<u64>,
@@ -629,6 +629,27 @@ mod tests {
     assert_eq!(
       ssts_algorithms_for(&yaml),
       vec![0, moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE]
+    );
+  }
+
+  /// What the experiments actually run: every controller this implementation
+  /// has, on one command line, mixing decimal and hex because the standard id is
+  /// written one way and the private ones the other.
+  #[test]
+  fn the_whole_experimental_set_starts_together() {
+    let ids = moqtail_ssts::registry::registry().ids();
+    let list = ids
+      .iter()
+      .map(|id| format!("{id:#x}"))
+      .collect::<Vec<_>>()
+      .join(", ");
+    let running = ssts_algorithms_for(&format!("ssts_enable: true\nssts_algorithms: [{list}]"));
+    let mut expected = ids;
+    expected.sort_unstable();
+    expected.dedup();
+    assert_eq!(
+      running, expected,
+      "every registered controller is startable at once, and each is advertised"
     );
   }
 

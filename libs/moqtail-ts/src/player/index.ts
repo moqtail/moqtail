@@ -42,7 +42,7 @@ export {
   type Observation,
   type ModelBlob,
 } from '@/player/plugins/abr'
-export { ssts, SstsSource, SSTS_ALGORITHMS, type SstsConfig } from '@/player/plugins/ssts'
+export { ssts, SstsSource, SSTS_ALGORITHMS, type SstsAssignmentOptions, type SstsConfig } from '@/player/plugins/ssts'
 export type { MSEOptions } from '@/player/elements/mse/sink'
 export type { PlayoutOptions } from '@/player/elements/playout/sink'
 export {

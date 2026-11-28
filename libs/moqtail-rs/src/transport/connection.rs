@@ -273,23 +273,35 @@ impl TransportRecvStream {
   }
 
   /// Asks the peer to stop sending on this stream (QUIC STOP_SENDING) with an
-  /// application error code, consuming the stream. Simply dropping the stream
-  /// instead sends STOP_SENDING with code 0, which the peer decodes as
-  /// InternalError; passing an explicit code keeps a cancellation coherent with
-  /// the RESET_STREAM sent on the peer's paired send half.
-  pub fn stop(self, code: u64) {
+  /// application error code, without consuming the stream. Used when the stream
+  /// is behind a shared handle, such as a data-stream read task, where taking it
+  /// out would drop the read half mid-flight.
+  pub fn stop_by_ref(&mut self, code: u64) {
     match self {
       Self::WebTransport(s) => {
-        if let Ok(vi) = wtransport::VarInt::try_from_u64(code) {
-          s.stop(vi);
+        if let Ok(vi) = quinn::VarInt::from_u64(code) {
+          // wtransport's `RecvStream::stop(self)` is a thin wrapper around
+          // quinn's `stop(&mut self)`; go through the mutable QUIC handle so a
+          // shared read task can cancel the stream it still owns.
+          let _ = s.quic_stream_mut().stop(vi);
         }
       }
-      Self::Quic(mut s) => {
+      Self::Quic(s) => {
         if let Ok(vi) = quinn::VarInt::from_u64(code) {
           let _ = s.stop(vi);
         }
       }
     }
+  }
+
+  /// Asks the peer to stop sending on this stream (QUIC STOP_SENDING) with an
+  /// application error code, consuming the stream. Simply dropping the stream
+  /// instead sends STOP_SENDING with code 0, which the peer decodes as
+  /// InternalError; passing an explicit code keeps a cancellation coherent with
+  /// the RESET_STREAM sent on the peer's paired send half. See
+  /// [`Self::stop_by_ref`] for the shared-handle form.
+  pub fn stop(mut self, code: u64) {
+    self.stop_by_ref(code);
   }
 }
 

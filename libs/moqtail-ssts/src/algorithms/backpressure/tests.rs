@@ -1,7 +1,7 @@
 // Copyright 2026 The MOQtail Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
+// you may not use it except in compliance with the License.
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
@@ -12,369 +12,1485 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tests for the tier state machine, including the two behaviours that are
-//! surprising on purpose: summed depth across sets, and the fact that a tier
-//! can be recovered as soon as the streams that caused the downshift are gone.
+//! Tests for the three things backpressure changes: where the depth is measured, when
+//! it is read, and — the one thing the versions differ in — how far a downshift
+//! reaches back into the groups it overtook.
 
 use std::collections::HashMap;
 
-use crate::algorithms::backpressure::{BackpressureAlgorithm, BackpressureAlgorithmFactory};
-use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, SetSnapshot};
+use super::set_upshift_streak;
+use crate::AbrAlgorithm;
+use crate::AbrInput;
+use crate::DecisionReason;
+use crate::SetSnapshot;
+use crate::StreamSnapshot;
+use crate::algorithms::backpressure::BackpressureAlgorithm;
+use crate::algorithms::backpressure::BackpressureParams;
+use crate::algorithms::backpressure::Reach;
 
-/// A set with a three-rung ladder: 500, 1000 and 2000 kbps.
+/// A set with a four-rung ladder. The rungs are addressed by index, so tier
+/// `n` of set `id` is track `id * 10 + n`.
 fn set(id: u64, active: bool) -> SetSnapshot {
   SetSnapshot {
     id,
-    algorithm_id: crate::algorithms::backpressure::BACKPRESSURE_ALGORITHM_ID,
+    algorithm_id: super::BACKPRESSURE_ALGORITHM_ID,
     rank: 0,
     weight: 1,
     active,
-    members: vec![(500, id * 10), (1000, id * 10 + 1), (2000, id * 10 + 2)],
+    members: vec![
+      (300, id * 10),
+      (600, id * 10 + 1),
+      (1000, id * 10 + 2),
+      (1500, id * 10 + 3),
+    ],
+    subscriber_buffer_ms: 0,
+    algorithm_params: vec![],
   }
 }
 
-fn streams(entries: &[(u64, u64)]) -> HashMap<u64, u64> {
-  entries.iter().copied().collect()
+/// The same set with the subscriber's reorder buffer filled in, which is the
+/// budget a re-send inherits the remainder of.
+fn set_with_buffer(id: u64, subscriber_buffer_ms: u64) -> SetSnapshot {
+  SetSnapshot {
+    subscriber_buffer_ms,
+    ..set(id, true)
+  }
 }
 
-/// Run one group through the algorithm and return what the first set forwards.
-fn decide_once(
-  algorithm: &mut BackpressureAlgorithm,
-  sets: &[SetSnapshot],
-  open: &HashMap<u64, u64>,
-  timeouts: u64,
-  group: u64,
-) -> Option<u64> {
-  decide(&mut *algorithm, sets, open, timeouts, group)[&sets[0].id]
+/// A set with a chosen ladder, buffer and group cadence: the three numbers
+/// The same set with the fourth algorithm parameter — the retroactive
+/// supersede toggle — set by the subscriber.
+fn set_with_supersede(id: u64, buffer_ms: u64, enabled: bool) -> SetSnapshot {
+  let mut set = set_with_buffer(id, buffer_ms);
+  set.algorithm_params = vec![0, 0, 0, u64::from(enabled)];
+
+  set
 }
 
-/// Run one group through the algorithm and return the whole selection.
-fn decide(
-  algorithm: &mut dyn AbrAlgorithm,
-  sets: &[SetSnapshot],
-  open: &HashMap<u64, u64>,
-  timeouts: u64,
-  group: u64,
-) -> crate::Selection {
-  let input = AbrInput {
-    client_id: 7,
+/// the dynamic upshift threshold `U(k)` reads.
+fn ladder_set(id: u64, bitrates: &[u64], subscriber_buffer_ms: u64) -> SetSnapshot {
+  SetSnapshot {
+    id,
+    algorithm_id: super::BACKPRESSURE_ALGORITHM_ID,
+    rank: 0,
+    weight: 1,
+    active: true,
+    members: bitrates
+      .iter()
+      .enumerate()
+      .map(|(k, &b)| (b, id * 10 + k as u64))
+      .collect(),
+    subscriber_buffer_ms,
+    algorithm_params: vec![],
+  }
+}
+
+/// The track a set serves at `tier`.
+fn track_at(set_id: u64, tier: usize) -> u64 {
+  set_id * 10 + tier as u64
+}
+
+/// A live stream of `set_id` carrying `track`.
+fn stream(set_id: u64, track: u64, group: u64) -> StreamSnapshot {
+  StreamSnapshot {
+    set_id,
+    relay_track_id: track,
     group_id: group,
+    age_ms: 0,
+    resent: false,
+  }
+}
+
+/// A live stream of `set_id` carrying `track`, `age_ms` into its delivery.
+fn stream_with_age(set_id: u64, track: u64, group: u64, age_ms: u64) -> StreamSnapshot {
+  StreamSnapshot {
+    age_ms,
+    ..stream(set_id, track, group)
+  }
+}
+
+/// The same, marked as a re-send of an overtaken group.
+fn resent(set_id: u64, track: u64, group: u64) -> StreamSnapshot {
+  StreamSnapshot {
+    resent: true,
+    ..stream(set_id, track, group)
+  }
+}
+
+/// The timeout evidence for a connection whose transport has given up on nothing.
+fn no_timeouts() -> &'static HashMap<u64, u64> {
+  static EMPTY: std::sync::OnceLock<HashMap<u64, u64>> = std::sync::OnceLock::new();
+  EMPTY.get_or_init(HashMap::new)
+}
+
+fn input<'a>(
+  sets: &'a [SetSnapshot],
+  streams: &'a [StreamSnapshot],
+  reason: DecisionReason,
+  group_id: u64,
+) -> AbrInput<'a> {
+  AbrInput {
+    client_id: 1,
+    group_id,
     bandwidth_estimate_kbps: 0,
     configured_cap_kbps: 0,
     sets,
-    open_streams_per_set: open,
-    stream_timeouts_since_last_decision: timeouts,
-  };
-  algorithm.decide(&input)
+    reason,
+    now_ms: 0,
+    now_unix_ms: 0,
+    streams,
+    stream_timeouts_since_last_decision: no_timeouts(),
+  }
 }
 
-fn climb(algorithm: &mut BackpressureAlgorithm, sets: &[SetSnapshot], groups: usize) {
-  let open = streams(&[(1, 1)]);
+/// The tier the algorithm is serving, read off what set 1 forwards.
+fn tier_of(selection: &crate::Selection, set_id: u64) -> usize {
+  match selection[&set_id] {
+    Some(track) => (track % 10) as usize,
+    None => panic!("set {set_id} was expected to forward something"),
+  }
+}
+
+/// `groups` clean boundary readings: the exploration climbs one tier per group.
+fn climb(algorithm: &mut BackpressureAlgorithm, sets: &[SetSnapshot], groups: u64) -> usize {
+  let mut tier = 0;
   for group in 0..groups {
-    decide_once(algorithm, sets, &open, 0, group as u64);
+    let empty: Vec<StreamSnapshot> = Vec::new();
+    let selection = algorithm.decide(&input(sets, &empty, DecisionReason::GroupBoundary, group));
+    tier = tier_of(&selection, 1);
+  }
+  tier
+}
+
+/// An algorithm whose climb waits exactly `u` clean groups.
+///
+/// `u_min == u_max` pins `U(k)` to a constant and makes `rho` inert, which is
+/// what a test about the monitor or a version's reach needs: those measure
+/// something other than how the default prices a climb, so they must not move
+/// when that default changes.
+fn pinned_u(reach: Reach, u: u64) -> BackpressureAlgorithm {
+  BackpressureAlgorithm::with_reach_and_params(
+    reach,
+    BackpressureParams {
+      u_min: Some(u),
+      u_max: Some(u),
+      ..BackpressureParams::default()
+    },
+  )
+}
+
+#[test]
+fn the_exploration_climbs_one_tier_per_clean_group() {
+  let sets = [set(1, true)];
+  let mut algorithm = BackpressureAlgorithm::new();
+
+  for expected in 1usize..=3 {
+    let empty: Vec<StreamSnapshot> = Vec::new();
+    let selection = algorithm.decide(&input(
+      &sets,
+      &empty,
+      DecisionReason::GroupBoundary,
+      expected as u64,
+    ));
+    assert_eq!(tier_of(&selection, 1), expected);
   }
 }
 
+/// The whole point of measuring at one rung: streams left behind by an earlier
+/// quality are not this tier's congestion.
 #[test]
-fn starts_at_the_lowest_tier() {
+fn the_depth_counts_only_the_streams_at_the_current_tier() {
   let sets = [set(1, true)];
   let mut algorithm = BackpressureAlgorithm::new();
-  // Depth one is the target, so nothing moves: the connection stays where it
-  // started until it has shown it can hold a higher tier.
+  // Two clean groups: the tier is 2, and six streams are in flight at other
+  // rungs of the same set.
+  climb(&mut algorithm, &sets, 2);
+
+  // Rungs below the one being served: qualities the algorithm has already
+  // rejected. They are not depth and do not downshift it. (Streams at the
+  // *next* rung are a different question - see the climb guard test below.)
+  let elsewhere = [
+    stream(1, track_at(1, 0), 7),
+    stream(1, track_at(1, 0), 8),
+    stream(1, track_at(1, 1), 11),
+    stream(1, track_at(1, 1), 12),
+  ];
+  let selection = algorithm.decide(&input(&sets, &elsewhere, DecisionReason::GroupBoundary, 20));
   assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 0),
-    Some(10)
+    tier_of(&selection, 1),
+    3,
+    "streams at qualities the algorithm has already rejected are not depth"
+  );
+
+  // The same count at the tier being delivered is congestion, and the tier
+  // falls: two streams of the delivered tier still open when a group's first
+  // Object arrives is two groups behind, and the boundary needs no streak to
+  // know it.
+  let here = [stream(1, track_at(1, 3), 13), stream(1, track_at(1, 3), 14)];
+  let selection = algorithm.decide(&input(&sets, &here, DecisionReason::GroupBoundary, 21));
+  assert_eq!(tier_of(&selection, 1), 2);
+}
+
+/// The depth is scoped to the backpressure switching set. A second set on the
+/// connection, assigned to the default algorithm, has its own delivery and
+/// must not raise this algorithm's depth.
+#[test]
+fn depth_ignores_sets_owned_by_other_algorithms() {
+  let mut other = set(2, true);
+  other.algorithm_id = 0;
+  let streams = [stream(1, track_at(1, 0), 7), stream(2, track_at(2, 0), 8)];
+  let sets = [set(1, true), other];
+  let input = input(&sets, &streams, DecisionReason::GroupBoundary, 9);
+  assert_eq!(
+    super::depth_at_current_tier(&input, 0),
+    1,
+    "the default set's stream is not part of the backpressure depth"
   );
 }
 
+/// The other half of a clean climb: the rung above must have no delivery of
+/// its own still open. An old stream there is not depth at the current tier,
+/// so it never calls for a downshift, but climbing beside it makes the new
+/// group's stream the second at that rung and the monitor reads the climb as
+/// congestion one sample later. Classic, which never resets the streams a
+/// downshift abandoned, hit this on every climb back to 1080p.
 #[test]
-fn rises_one_tier_per_five_clear_groups() {
+fn a_climb_into_an_occupied_rung_is_held() {
   let sets = [set(1, true)];
   let mut algorithm = BackpressureAlgorithm::new();
-  let clear = streams(&[(1, 1)]);
+  climb(&mut algorithm, &sets, 2);
 
-  for group in 0..4 {
+  // An old delivery still open at tier 3, nothing at tier 2.
+  let stale = [stream(1, track_at(1, 3), 7)];
+  let selection = algorithm.decide(&input(&sets, &stale, DecisionReason::GroupBoundary, 30));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "the climb waits for the rung above to clear; this is not a downshift"
+  );
+
+  // It closes: the next clean boundary climbs.
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 31));
+  assert_eq!(
+    tier_of(&selection, 1),
+    3,
+    "the climb resumes when the rung above is clear"
+  );
+}
+
+/// A re-send is the relay's own doing. It is not depth — it must not call for
+/// the next downshift — and it is not a clean boundary either: the climb waits
+/// until the repair is over. The second half of this test is the rule that
+/// matters: without the veto, the boundary that arrives while the repaired
+/// group is still open buys the rung above and the ladder walks straight back
+/// into the congestion that caused the repair.
+#[test]
+fn a_resent_stream_is_not_depth_and_vetoes_the_climb() {
+  let sets = [set(1, true)];
+  let mut algorithm = BackpressureAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  let re_sends = [resent(1, track_at(1, 2), 5), resent(1, track_at(1, 2), 6)];
+  let selection = algorithm.decide(&input(&sets, &re_sends, DecisionReason::GroupBoundary, 30));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "the streams a downshift caused do not call for another one, and do not buy a climb"
+  );
+
+  // The same repair still open at the next boundary: still held.
+  let selection = algorithm.decide(&input(&sets, &re_sends, DecisionReason::GroupBoundary, 31));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "still repairing, still not clean"
+  );
+
+  // The repair is over: one clean boundary buys the rung (slow start).
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 32));
+  assert_eq!(
+    tier_of(&selection, 1),
+    3,
+    "the climb resumes as soon as no repair is in flight"
+  );
+
+  // And the same two streams, fresh, at the tier now served, are congestion.
+  let fresh = [stream(1, track_at(1, 3), 33), stream(1, track_at(1, 3), 34)];
+  let selection = algorithm.decide(&input(&sets, &fresh, DecisionReason::GroupBoundary, 35));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "the same two streams, at the tier now being served, are"
+  );
+}
+
+/// The descent waits for real congestion, not for its own repair: after a
+/// step from tier 2 to tier 1, the re-sent group still open at the tier now
+/// served is the downshift's own doing. Counting it walked the ladder one
+/// rung further per repair - three rungs for a half-second dip on the
+/// measured profile - so the second step must come from fresh streams, or
+/// not come at all.
+#[test]
+fn a_repair_in_flight_is_not_a_second_congestion() {
+  let sets = [set(1, true)];
+  let mut algorithm = BackpressureAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  // Step one: a congested boundary at tier 2 falls to tier 1.
+  let congested = [stream(1, track_at(1, 2), 30), stream(1, track_at(1, 2), 31)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 32));
+  assert_eq!(tier_of(&selection, 1), 1, "the first step");
+
+  // The repair: group 31 re-sent at tier 1, still open when group 33's
+  // boundary is read next to group 32's fresh stream at the same tier.
+  // Only the fresh stream is depth: one group in flight is on target.
+  let in_flight = [resent(1, track_at(1, 1), 31), stream(1, track_at(1, 1), 32)];
+  let selection = algorithm.decide(&input(&sets, &in_flight, DecisionReason::GroupBoundary, 33));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the repair does not call for the next step"
+  );
+}
+
+/// The veto is on the climb only. Real congestion at the tier still steps
+/// down while a repair is open: the repair is excluded from the depth, but it
+/// does not shield the fresh streams that are actually behind.
+#[test]
+fn a_repair_in_flight_does_not_block_a_real_downshift() {
+  let sets = [set(1, true)];
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  climb(&mut algorithm, &sets, 2);
+
+  // Congested boundary at tier 2: down to 1, and the retroactive mode requests a re-send.
+  let congested = deep_at(2);
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  assert_eq!(tier_of(&selection, 1), 1, "the first step");
+
+  // A repair still open at tier 1, next to two fresh streams at that tier.
+  // The fresh streams are depth; the repair is not.
+  let mixed = [
+    resent(1, track_at(1, 1), 41),
+    stream(1, track_at(1, 1), 42),
+    stream(1, track_at(1, 1), 43),
+  ];
+  let selection = algorithm.decide(&input(&sets, &mixed, DecisionReason::GroupBoundary, 44));
+  assert_eq!(
+    tier_of(&selection, 1),
+    0,
+    "two fresh streams behind are congestion even while a repair is open"
+  );
+}
+
+/// A repair breaks the clean streak, so the climb has to be bought again
+/// after it is over: the boundary samples that arrive while the repair is
+/// open are not evidence, and they must not be counted as though they were.
+#[test]
+fn a_repair_in_flight_breaks_the_clean_streak() {
+  let sets = [set(1, true)];
+  let mut algorithm = pinned_u(Reach::Newest, 2);
+
+  // One clean group, then congestion: tier 1 falls to 0, and the cautious
+  // climb starts from zero clean groups.
+  climb(&mut algorithm, &sets, 1);
+  let selection = algorithm.decide(&input(
+    &sets,
+    &deep_at(1),
+    DecisionReason::GroupBoundary,
+    10,
+  ));
+  assert_eq!(tier_of(&selection, 1), 0, "the exploration ends here");
+
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 11));
+  assert_eq!(tier_of(&selection, 1), 0, "one clean group, U is two");
+
+  // A repair at the tier being served: not clean, so the streak restarts.
+  let repairs = [resent(1, track_at(1, 0), 12)];
+  let selection = algorithm.decide(&input(&sets, &repairs, DecisionReason::GroupBoundary, 13));
+  assert_eq!(tier_of(&selection, 1), 0, "a repair is not a clean read");
+
+  // Two clean boundaries after the repair: the first restarts the streak,
+  // the second completes it.
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 14));
+  assert_eq!(tier_of(&selection, 1), 0, "the streak restarted at one");
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 15));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the climb resumes after the repair is over, not across it"
+  );
+}
+
+/// The retroactive request stops at the newest overtaken group.
+#[test]
+fn a_retroactive_downshift_reaches_only_the_newest_overtaken_group() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [
+    stream_with_age(1, track_at(1, 2), 4, 500),
+    stream_with_age(1, track_at(1, 2), 5, 250),
+  ];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the tier fell, as in every version"
+  );
+  assert!(
+    selection.supersede.contains_key(&1),
+    "the newest overtaken group is named"
+  );
+  assert!(
+    selection.supersede[&1].newest_only,
+    "and the older ones are left to finish where they are"
+  );
+  assert_eq!(
+    selection.resend_deadline_ms(1),
+    Some(550),
+    "the re-send inherits the remaining budget of the newest overtaken group: 800 - 250"
+  );
+}
+
+/// And the one thing classic is: it asks for nothing.
+#[test]
+fn a_classic_downshift_asks_for_nothing() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = BackpressureAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the downshift itself is the same walk as in every version"
+  );
+  assert!(
+    selection.supersede.is_empty(),
+    "and the groups already in flight keep delivering the member they were carrying"
+  );
+}
+
+/// The unified algorithm listens to the fourth algorithm parameter rather
+/// than to a version id: zero/absent is classic, non-zero is the newest-group
+/// supersede.
+#[test]
+fn the_wire_toggle_picks_classic_or_newest_supersede() {
+  let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
+
+  for (enabled, wants_supersede) in [(false, false), (true, true)] {
+    let sets = [set_with_supersede(1, 800, enabled)];
+    let mut algorithm = BackpressureAlgorithm::new();
+    climb(&mut algorithm, &sets, 2);
+
+    let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+    assert_eq!(tier_of(&selection, 1), 1, "the tier falls in both modes");
     assert_eq!(
-      decide_once(&mut algorithm, &sets, &clear, 0, group),
-      Some(10),
-      "tier should not move before the streak is complete"
+      selection.supersede.contains_key(&1),
+      wants_supersede,
+      "toggle {enabled} must {} a supersede request",
+      if wants_supersede { "issue" } else { "skip" }
+    );
+    if wants_supersede {
+      assert!(selection.supersede[&1].newest_only);
+    }
+  }
+}
+
+/// Classic and the retroactive toggle walk the same ladder: same readings,
+/// same tier; they differ in one request, not in the decision.
+#[test]
+fn classic_and_retroactive_pick_the_same_tiers_from_the_same_readings() {
+  let sets = [set(1, true)];
+  let mut classic = BackpressureAlgorithm::new();
+  let mut retroactive = BackpressureAlgorithm::retroactive();
+
+  let events = [
+    (0u64, DecisionReason::GroupBoundary, Vec::new()),
+    (1, DecisionReason::GroupBoundary, Vec::from(deep_at(1))),
+    (2, DecisionReason::GroupBoundary, Vec::new()),
+    (3, DecisionReason::GroupBoundary, Vec::new()),
+    (4, DecisionReason::GroupBoundary, Vec::new()),
+    (5, DecisionReason::GroupBoundary, Vec::new()),
+    (6, DecisionReason::GroupBoundary, Vec::new()),
+    // Mid-group samples repeat the group in flight: the new group id is
+    // the boundary.
+    (6, DecisionReason::PeriodicSample, Vec::from(deep_at(1))),
+    (6, DecisionReason::PeriodicSample, Vec::from(deep_at(1))),
+  ];
+  for (group, reason, streams) in events {
+    let input = input(&sets, &streams, reason, group);
+    let a = classic.decide(&input);
+    let b = retroactive.decide(&input);
+    assert_eq!(
+      a.tracks, b.tracks,
+      "classic and retroactive chose different tiers"
     );
   }
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &clear, 0, 4),
-    Some(11),
-    "the fifth clear group raises the tier"
-  );
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &clear, 0, 5),
-    Some(11),
-    "the streak restarts after an upshift"
-  );
 }
 
 #[test]
-fn falls_one_tier_at_the_downshift_depth() {
+fn an_upshift_asks_for_nothing() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
-  climb(&mut algorithm, &sets, 10);
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 10),
-    Some(12),
-    "two streaks should have reached the top of the ladder"
-  );
-
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, 11),
-    Some(11),
-    "depth two drops one tier"
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 1));
+  assert_eq!(tier_of(&selection, 1), 1);
+  assert!(
+    selection.supersede.is_empty(),
+    "climbing overtakes nothing: the deliveries below the new rung are not rejected"
   );
 }
 
-#[test]
-fn recovers_as_soon_as_the_streams_that_caused_the_drop_are_gone() {
-  // The point of the stream accounting being live rather than cumulative: a
-  // connection that drained its queue can climb again immediately, instead of
-  // carrying the memory of a closed stream forever.
-  let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
-  climb(&mut algorithm, &sets, 5);
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 5),
-    Some(11)
-  );
-
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, 6),
-    Some(10),
-    "congested: back to the bottom rung"
-  );
-
-  let drained = streams(&[]);
-  for group in 7..11 {
-    assert_eq!(
-      decide_once(&mut algorithm, &sets, &drained, 0, group),
-      Some(10),
-      "counting up again"
-    );
-  }
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &drained, 0, 11),
-    Some(11),
-    "a drained queue is enough to climb again"
-  );
+/// Two streams in flight at one tier of set 1: the depth, at that rung.
+fn deep_at(tier: usize) -> [StreamSnapshot; 2] {
+  [
+    stream(1, track_at(1, tier), 4),
+    stream(1, track_at(1, tier), 5),
+  ]
 }
 
-#[test]
-fn a_timeout_during_cooldown_drops_the_tier_again() {
-  let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
-  climb(&mut algorithm, &sets, 15);
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 15),
-    Some(12)
-  );
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, 16),
-    Some(11),
-    "first drop, cooldown starts"
-  );
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 1, 17),
-    Some(10),
-    "a stream that timed out on the tier just tried is enough to drop again"
-  );
-}
-
-#[test]
-fn rising_depth_during_cooldown_drops_the_tier_after_two_groups() {
-  let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
-  climb(&mut algorithm, &sets, 15);
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 15),
-    Some(12)
-  );
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, 16),
-    Some(11)
-  );
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 3)]), 0, 17),
-    Some(11),
-    "one deeper group is a transient, not a trend"
-  );
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 4)]), 0, 18),
-    Some(10),
-    "two deeper groups in a row is a trend"
-  );
-}
-
-#[test]
-fn steady_depth_during_cooldown_never_drops_further() {
-  let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
-  climb(&mut algorithm, &sets, 15);
-  decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, 15);
-  for group in 16..25 {
-    assert_eq!(
-      decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, group),
-      Some(11),
-      "depth that stopped rising should hold the tier"
-    );
+/// A connection past its exploration, with room to fall.
+///
+/// It climbs one rung, meets congestion at a boundary — which ends the
+/// exploration and drops it to the bottom — and then sees `clean_groups`
+/// uncongested boundaries, five of which buy one rung on the cautious streak.
+fn settle(algorithm: &mut BackpressureAlgorithm, sets: &[SetSnapshot], clean_groups: u64) {
+  climb(algorithm, sets, 1);
+  let congested = deep_at(1);
+  algorithm.decide(&input(sets, &congested, DecisionReason::GroupBoundary, 10));
+  let clear: Vec<StreamSnapshot> = Vec::new();
+  for group in 20..20 + clean_groups {
+    algorithm.decide(&input(sets, &clear, DecisionReason::GroupBoundary, group));
   }
 }
 
+/// A healthy group's tail shows one deep reading, because the next group's
+/// stream opens before the previous one has drained. The streak is what
+/// separates that blip from an overload.
 #[test]
-fn never_drops_below_the_lowest_tier() {
+fn one_deep_reading_inside_a_group_is_not_enough() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
-  for group in 0..20 {
+  let mut algorithm = pinned_u(Reach::Newest, 5);
+  settle(&mut algorithm, &sets, 5);
+
+  let inside = deep_at(1);
+  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 24));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "a single mid-group reading is the group's tail, not an overload"
+  );
+
+  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 24));
+  assert_eq!(
+    tier_of(&selection, 1),
+    0,
+    "two of them, one after another, are"
+  );
+  assert!(
+    selection.supersede.contains_key(&1),
+    "and the groups it overtook are named, as on a boundary downshift"
+  );
+}
+
+/// The other half of the same truth: a mid-group reading that does not fire
+/// must touch nothing. The handoff overlap is one deep sample right after
+/// the new group's stream opens, and if it cost the climb its accumulated
+/// clean streak, a connection on a healthy-but-overlapping path could never
+/// gather the cautious five and would sit at the bottom rung forever.
+#[test]
+fn a_transient_mid_group_overlap_does_not_cost_the_climb_streak() {
+  let sets = [set(1, true)];
+  let mut algorithm = pinned_u(Reach::Newest, 5);
+  // Four clean boundaries after the fall: one short of the cautious five.
+  settle(&mut algorithm, &sets, 4);
+
+  // The handoff overlap: one deep mid-group reading, short of the streak.
+  let overlap = deep_at(0);
+  let selection = algorithm.decide(&input(&sets, &overlap, DecisionReason::PeriodicSample, 23));
+  assert_eq!(
+    tier_of(&selection, 1),
+    0,
+    "one reading does not fire the monitor"
+  );
+
+  // The streak it found standing is the streak it left standing: this fifth
+  // clean boundary is the one the four before it paid for.
+  let clear: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 24));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the transient reading did not zero the clean streak it passed through"
+  );
+}
+
+/// Boundary detection is strictly monotonic: a late reading naming an
+/// older group — a tail object still draining after the gate moved on — is
+/// a mid-group reading, not a second boundary, and it never moves the
+/// boundary clock back.
+#[test]
+fn an_old_group_reading_is_never_a_boundary() {
+  let sets = [set(1, true)];
+  let mut algorithm = pinned_u(Reach::Nothing, 5);
+  // Exploration climbs to tier 1 at group 0; a congested boundary at group
+  // 10 falls back to tier 0; four clean boundaries (20..=23) and this
+  // fifth (24) climb back to tier 1 with the streak reset.
+  settle(&mut algorithm, &sets, 4);
+  let clear: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 24));
+  assert_eq!(tier_of(&selection, 1), 1, "the fifth clean boundary climbs");
+
+  // A tail object of the old group 4, deep at the delivered tier, while
+  // the newest group decided was 24. Taken for a boundary this is a
+  // congested one — a downshift. It is a mid-group reading, one short of
+  // the monitor's streak, and nothing fires.
+  let overlap = deep_at(1);
+  let selection = algorithm.decide(&input(&sets, &overlap, DecisionReason::PeriodicSample, 4));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "an older group's reading cannot open a congested boundary"
+  );
+
+  // And the clock did not move back to 4: a clean reading for the newest
+  // group is still mid-group, so it is not a fifth-plus-one clean
+  // boundary either.
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::PeriodicSample, 24));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the newest group is still judged against the newest group"
+  );
+
+  // The next climb waits the full cautious five from where the upshift
+  // left it: the old reading and the mid-group clean one are not clean
+  // boundaries, so four are not enough...
+  for group in 25..29 {
+    let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, group));
     assert_eq!(
-      decide_once(&mut algorithm, &sets, &streams(&[(1, 9)]), group * 3, group),
-      Some(10),
-      "the bottom rung is all this algorithm can offer"
+      tier_of(&selection, 1),
+      1,
+      "tails do not count as clean groups"
     );
   }
+  // ...and the fifth is.
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 29));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "the clock never moved back to the draining tail"
+  );
 }
 
 #[test]
-fn an_inactive_set_forwards_nothing() {
-  let sets = [set(1, false), set(2, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+fn the_monitor_rearms_after_it_fires() {
+  let sets = [set(1, true)];
+  let mut algorithm = pinned_u(Reach::Nothing, 5);
+  settle(&mut algorithm, &sets, 10);
+
+  // Two readings at the tier being served, and the monitor steps down.
+  // Mid-group samples repeat the group in flight: the new group id is the
+  // boundary.
+  let at_two = deep_at(2);
+  algorithm.decide(&input(&sets, &at_two, DecisionReason::PeriodicSample, 29));
+  let selection = algorithm.decide(&input(&sets, &at_two, DecisionReason::PeriodicSample, 29));
+  assert_eq!(tier_of(&selection, 1), 1, "the monitor fired");
+
+  // The step drained the signal it was reading: those same streams are at a
+  // rung the algorithm has now rejected. One fresh reading at the new tier must
+  // not be enough, because a streak left standing at the threshold would make it
+  // so, and the ladder would walk itself down tick by tick.
+  let at_one = deep_at(1);
+  let selection = algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
+  assert_eq!(tier_of(&selection, 1), 1, "the streak re-armed");
+
+  algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
+  let selection = algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
+  assert_eq!(
+    tier_of(&selection, 1),
+    0,
+    "a full second streak costs a full second streak"
+  );
+}
+
+/// The exploration walks the ladder one group at a time, and a reading taken
+/// inside a group is not a group: the monitor never fires mid-exploration.
+/// The boundary is where the exploration learns the ladder is taller than the
+/// path, and it needs only its one reading to say so.
+#[test]
+fn the_monitor_never_interrupts_the_exploration() {
+  let sets = [set(1, true)];
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  climb(&mut algorithm, &sets, 1);
+
+  let inside = [stream(1, track_at(1, 1), 9), stream(1, track_at(1, 1), 10)];
+  for _ in 0..5 {
+    let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 0));
+    assert_eq!(
+      tier_of(&selection, 1),
+      1,
+      "the exploration is walked in whole groups"
+    );
+    assert!(selection.supersede.is_empty());
+  }
+
+  // The boundary reading is where the exploration learns the ladder is taller
+  // than the path, and from there the monitor is armed.
+  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::GroupBoundary, 11));
+  assert_eq!(tier_of(&selection, 1), 0);
+  assert!(selection.supersede.contains_key(&1));
+}
+
+/// A stream the transport gave up on is a consequence of a decision the
+/// algorithm already made. Acting on it as well would count the same event
+/// twice, and the depth has already changed by the time anyone asks.
+#[test]
+fn a_stream_timeout_is_not_a_reading() {
+  let sets = [set(1, true)];
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  climb(&mut algorithm, &sets, 2);
+
+  let timeouts = [(1u64, 3u64)].into_iter().collect::<HashMap<u64, u64>>();
+  let empty: Vec<StreamSnapshot> = Vec::new();
   let input = AbrInput {
-    client_id: 7,
-    group_id: 0,
+    client_id: 1,
+    group_id: 40,
     bandwidth_estimate_kbps: 0,
     configured_cap_kbps: 0,
     sets: &sets,
-    open_streams_per_set: &streams(&[(1, 4)]),
-    stream_timeouts_since_last_decision: 0,
+    reason: DecisionReason::StreamTimeout,
+    now_ms: 0,
+    now_unix_ms: 0,
+    streams: &empty,
+    stream_timeouts_since_last_decision: &timeouts,
   };
   let selection = algorithm.decide(&input);
-  assert_eq!(selection[&1], None);
-  assert_eq!(selection[&2], Some(20));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "the reset is not evidence of a tier that is too high"
+  );
+  assert!(selection.supersede.is_empty());
 }
 
+/// The exploration is over for good at the top of the ladder: the cautious
+/// streak is what the rest of the connection climbs on, and one clean group is
+/// not enough again.
 #[test]
-fn every_active_set_moves_to_the_same_tier() {
-  // One index for the whole connection: both sets change quality together,
-  // which is what a subscriber with two tracks in two sets should perceive.
-  let sets = [set(1, true), set(2, true)];
+fn the_cautious_streak_returns_after_the_exploration_is_over() {
+  let sets = [set(1, true)];
   let mut algorithm = BackpressureAlgorithm::new();
-  // Only set 1 has a stream in flight, so the summed depth stays at the target
-  // and the tier can climb.
-  let clear = streams(&[(1, 1)]);
-  for group in 0..5 {
-    decide_once(&mut algorithm, &sets, &clear, 0, group);
+  // Four clean groups reach the top of a four-rung ladder and end the
+  // exploration there.
+  let top = climb(&mut algorithm, &sets, 4);
+  assert_eq!(top, 3);
+
+  // Fall one rung: a congested boundary reading is certain on its own.
+  let congested = [stream(1, track_at(1, 3), 20), stream(1, track_at(1, 3), 21)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 30));
+  assert_eq!(tier_of(&selection, 1), 2);
+
+  // One clean group does not climb back: the second climb is the cautious one.
+  let clear: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 31));
+  assert_eq!(tier_of(&selection, 1), 2);
+
+  // Five are.
+  for group in 32..36 {
+    algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, group));
   }
-  let selection = decide(&mut algorithm, &sets, &clear, 0, 5);
-  // Both sets have the same ladder, so the same tier means the same rung.
-  assert_eq!(selection[&1], Some(11));
-  assert_eq!(selection[&2], Some(21));
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 36));
+  assert_eq!(tier_of(&selection, 1), 3);
 }
 
+/// The floor is not derived from the subscriber's buffer any more. `U(k)` is
+/// the step's own price under the draft defaults, so a 1600 ms buffer over a
+/// 500 ms cadence grants no floor of four: at rho = 0.25 the 850 -> 1800 jump
+/// (112 %) costs ceil(1.118 / 0.25) = 5 clean groups, and the draft's U_min
+/// floor of two sits below it.
 #[test]
-fn two_active_sets_are_pinned_to_the_lowest_tier() {
-  // One forwarding stream per set is normal operation, not congestion. Depth
-  // is summed across the connection's active sets, though, so two sets already
-  // read as DOWNSHIFT_DEPTH: the tier can neither rise (a clear streak needs
-  // depth at or below DEPTH_TARGET) nor fall below the rung it starts on. A
-  // connection with two switching sets therefore stays on the bottom rung
-  // however healthy the link is.
-  //
-  // This is a known limitation of the ported thresholds, which were written
-  // for a single set; the fix is to scale them with the number of active sets.
-  // Recorded as a test so the behaviour cannot be mistaken for a regression.
-  let sets = [set(1, true), set(2, true)];
+fn the_default_floor_is_two_and_rho_prices_the_step() {
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
   let mut algorithm = BackpressureAlgorithm::new();
-  let one_each = streams(&[(1, 1), (2, 1)]);
-  for group in 0..30 {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  // Explore to tier 1, then meet congestion there: the exploration ends and
+  // the ladder falls back to tier 0.
+  algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 0));
+  let congested = [stream(1, track_at(1, 1), 1), stream(1, track_at(1, 1), 2)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 1));
+
+  // U(0) = max(2, ceil(1.118 / 0.25)) = 5: the buffer buys nothing here.
+  for group in 2..6 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
     assert_eq!(
-      decide_once(&mut algorithm, &sets, &one_each, 0, group),
-      Some(10),
-      "group {group}: summed depth keeps the tier pinned to the bottom rung"
+      tier_of(&selection, 1),
+      0,
+      "the step's five, not the buffer's four"
     );
   }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
+  assert_eq!(tier_of(&selection, 1), 1, "the fifth clean group buys it");
+
+  // U(1) = max(2, ceil(0.944 / 0.25)) = 4.
+  for group in 7..10 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 1);
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 10));
+  assert_eq!(tier_of(&selection, 1), 2, "and the next step waits four");
 }
 
+/// A smaller rho pays for its caution in groups: the step 850 -> 1800 is a
+/// 112% jump, and at rho = 0.15 it costs ceil(1.1176 / 0.15) = 8 clean
+/// groups - the step term ruling above the U_min floor of 4.
 #[test]
-fn the_tier_is_capped_by_the_longest_ladder() {
-  let sets = [set(1, true)];
+fn smaller_rho_increases_upshift_streak_for_large_bitrate_jumps() {
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
+    monitor_reads: 2,
+    rho: 0.15,
+    ..BackpressureParams::default()
+  });
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  // Congestion at the bottom tier ends the exploration without a fall.
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  for group in 1..8 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "rho = 0.15 prices this step at 8"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the eighth clean group buys the jump"
+  );
+}
+
+/// The subscriber's own signalled tolerance overrides the operator's default
+/// for its own set: a trailing `algorithm_params` percentage (`1..=100`)
+/// becomes rho. Here the algorithm is built at the default rho = 1.0, but the
+/// set carries `15`, so the 850 -> 1800 jump is priced at rho = 0.15 - eight
+/// clean groups - not the four the default would allow.
+#[test]
+fn a_signalled_algorithm_param_overrides_rho() {
+  let sets = [SetSnapshot {
+    algorithm_params: vec![15],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
+  }];
   let mut algorithm = BackpressureAlgorithm::new();
-  // Far more clear groups than the ladder has rungs.
-  climb(&mut algorithm, &sets, 40);
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  // Congestion at the bottom tier ends the exploration without a fall.
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  // At the default rho = 1.0 this step would cost max(4, ceil(1.118)) = 4; the
+  // signalled 15 drives it to rho = 0.15, so seven clean groups are not enough.
+  for group in 1..8 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the signalled rho = 0.15 prices this step at 8, not the default 4"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));
   assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 40),
-    Some(12),
-    "the top rung, not an index past it"
-  );
-  assert_eq!(
-    decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, 41),
-    Some(11),
-    "a downshift from the clamped index still lands on a real rung"
+    tier_of(&selection, 1),
+    1,
+    "the eighth clean group buys the jump"
   );
 }
 
+/// A subscriber that sends the two-slot layout signals `U_min` in slot 0, in
+/// units of media groups: the signalled 6 rules over the derived
+/// `ceil(1600 / 500) = 4` floor, so the climb waits six clean groups where
+/// the clock alone would have allowed four. (The step's own price, at the
+/// signalled rho = 100 % giving ceil(1.118 / 1.0) = 2, stays under both.)
 #[test]
-fn instances_do_not_share_state() {
-  // The old implementation kept one state machine per client id in a shared
-  // map; instances must now be independent, which is what makes the contract
-  // usable from a single-threaded decision loop without a lock.
-  let sets = [set(1, true)];
-  let factory = BackpressureAlgorithmFactory;
-  let mut first = factory.create();
-  let mut second = factory.create();
+fn a_signalled_u_min_overrides_the_buffer_floor() {
+  let sets = [SetSnapshot {
+    algorithm_params: vec![100, 6],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
+  }];
+  let mut algorithm = BackpressureAlgorithm::new();
+  let empty: Vec<StreamSnapshot> = Vec::new();
 
-  let clear = streams(&[(1, 1)]);
-  let input = AbrInput {
-    client_id: 7,
-    group_id: 0,
-    bandwidth_estimate_kbps: 0,
-    configured_cap_kbps: 0,
-    sets: &sets,
-    open_streams_per_set: &clear,
-    stream_timeouts_since_last_decision: 0,
+  // Congestion at the bottom tier ends the exploration without a fall.
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  for group in 1..6 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the signalled U_min = 6, not the derived 4"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the sixth clean group buys the jump"
+  );
+}
+
+/// A zero in the `U_min` slot means "not signalled", so the operator's rail
+/// stands. There is no clock-derived fallback any more: the cadence here is
+/// unknown and it changes nothing. With the subscriber's rho signalled at
+/// 100 % the 850 -> 1800 jump costs ceil(1.118 / 1.0) = 2, and the default
+/// floor of one does not raise it.
+#[test]
+fn a_zero_u_min_slot_falls_back_to_the_operator_rail() {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  let sets = [SetSnapshot {
+    algorithm_params: vec![100, 0],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
+  }];
+  let mut algorithm = BackpressureAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 1));
+  assert_eq!(
+    tier_of(&selection, 1),
+    0,
+    "one clean group is not the step's two"
+  );
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 2));
+  assert_eq!(tier_of(&selection, 1), 1, "the second clean group buys it");
+}
+
+/// With both slots signalled, slot 0 is the floor and the trailing one is
+/// the tolerance, and `U(k)` is the max of the floor and the step's price:
+/// at rho = 0.15 the 850 -> 1800 jump costs ceil(1.118 / 0.15) = 8, so
+/// `vec![15, 10]` waits the signalled 10 and `vec![15, 3]` waits the step's 8.
+#[test]
+fn u_min_and_rho_signalled_together_take_the_max() {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  // The floor rules the step: max(10, 8) = 10.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![15, 10],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
+  }];
+  let mut algorithm = BackpressureAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..10 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the signalled floor of 10 rules the step's 8"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 10));
+  assert_eq!(tier_of(&selection, 1), 1, "the tenth clean group buys it");
+
+  // The step rules the floor: max(3, 8) = 8.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![15, 3],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
+  }];
+  let mut algorithm = BackpressureAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..8 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the step's 8 rules the signalled 3"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));
+  assert_eq!(tier_of(&selection, 1), 1, "the eighth clean group buys it");
+}
+
+/// The operator's rails parse through the tuning. The draft floor is two
+/// clean groups, so a lower value (including zero) is raised to it; leaving
+/// the key out keeps the default floor, and `backpressure.umax` is the cap (`0` or
+/// absent = uncapped).
+#[test]
+fn the_operator_tuning_parses_the_rails() {
+  let tuned = crate::Tuning::from_pairs(["backpressure.umin=6"]);
+  assert_eq!(BackpressureParams::from_tuning(&tuned).u_min, Some(6));
+
+  let no_floor = crate::Tuning::from_pairs(["backpressure.umin=0"]);
+  assert_eq!(
+    BackpressureParams::from_tuning(&no_floor).u_min,
+    Some(2),
+    "zero is raised to the draft floor, not treated as no floor"
+  );
+
+  let untouched = crate::Tuning::from_pairs(std::iter::empty::<&str>());
+  assert_eq!(
+    BackpressureParams::from_tuning(&untouched).u_min,
+    Some(2),
+    "an untouched key keeps the draft default floor"
+  );
+  assert_eq!(BackpressureParams::from_tuning(&untouched).u_max, None);
+
+  let capped = crate::Tuning::from_pairs(["backpressure.umax=8"]);
+  assert_eq!(BackpressureParams::from_tuning(&capped).u_max, Some(8));
+  let uncapped = crate::Tuning::from_pairs(["backpressure.umax=0"]);
+  assert_eq!(BackpressureParams::from_tuning(&uncapped).u_max, None);
+}
+
+/// The operator's `backpressure.umin` replaces the derived horizon for a subscriber
+/// that signals none — and loses to one that does: the same ladder climbs
+/// after six clean groups under the operator's floor of 6, and after three
+/// under the signalled `vec![100, 3]`.
+#[test]
+fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  // Operator floor 6, subscriber silent: max(6, 2) = 6, not the derived 4.
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600)];
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
+    u_min: Some(6),
+    ..BackpressureParams::default()
+  });
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..6 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the operator's floor of 6, not the derived 4"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
+  assert_eq!(tier_of(&selection, 1), 1, "the sixth clean group buys it");
+
+  // The subscriber's signalled 3 outranks the operator's 6: max(3, 2) = 3.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![100, 3],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600)
+  }];
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
+    u_min: Some(6),
+    ..BackpressureParams::default()
+  });
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..3 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the signalled 3 outranks the operator's 6"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 3));
+  assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
+}
+
+/// The same connection pays per step, not per ladder: a 3x jump costs eight
+/// clean groups at rho = 0.25 while the 1.2x step right behind it costs only
+/// the U_min floor of two.
+#[test]
+fn non_uniform_ladder_requires_more_groups_for_larger_relative_jumps() {
+  let sets = [ladder_set(1, &[500, 1500, 1800], 1000)];
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
+    monitor_reads: 2,
+    rho: 0.25,
+    u_min: Some(2),
+    ..BackpressureParams::default()
+  });
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  // U(0) = max(2, ceil(2.0 / 0.25)) = 8 for the 500 -> 1500 step.
+  for group in 1..8 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 0);
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));
+  assert_eq!(tier_of(&selection, 1), 1, "the 3x jump costs eight");
+
+  // U(1) = max(2, ceil(0.8)) = 2 for the 1500 -> 1800 step.
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 9));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the small step starts on the floor"
+  );
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 10));
+  assert_eq!(tier_of(&selection, 1), 2, "and takes only two");
+}
+
+/// A re-sent group inherits the remaining buffer budget of the overtaken
+/// stream it replaces. The overtaken stream has already spent part of the
+/// subscriber's window on the wire; what it has left is exactly what its
+/// replacement has left, so the newest overtaken group donates its remainder.
+#[test]
+fn a_downshift_inherits_the_remaining_buffer_of_the_newest_overtaken_stream() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [
+    stream_with_age(1, track_at(1, 2), 7, 500),
+    stream_with_age(1, track_at(1, 2), 8, 300),
+  ];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  assert_eq!(tier_of(&selection, 1), 1, "the tier fell");
+  assert_eq!(
+    selection.resend_deadline_ms(1),
+    Some(500),
+    "the re-send's deadline is the newest overtaken group's remainder: 800 - 300"
+  );
+}
+
+/// A stream that is itself a re-send donates a deadline too: its age runs
+/// from the moment the repair started, which is exactly what a second
+/// repair of the same group has left of the subscriber's window. The depth
+/// exclusion does not apply here - the depth asks what the network is
+/// doing, the deadline asks what the delivery has left - so the filter
+/// that keeps the re-send out of the depth must not reach this one.
+#[test]
+fn a_re_sent_stream_donates_its_remaining_buffer_to_the_next_repair() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  climb(&mut algorithm, &sets, 2);
+
+  // Two fresh streams at tier 2 make the depth that steps the ladder. The
+  // newest stream above the new rung is then a re-send from an earlier
+  // step, 200 ms into its delivery: newest group, so it donates - the
+  // depth exclusion must not reach here.
+  let congested = [
+    stream_with_age(1, track_at(1, 2), 7, 500),
+    stream_with_age(1, track_at(1, 2), 8, 100),
+    StreamSnapshot {
+      age_ms: 200,
+      ..resent(1, track_at(1, 2), 9)
+    },
+  ];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  assert_eq!(tier_of(&selection, 1), 1, "the tier fell");
+  assert_eq!(
+    selection.resend_deadline_ms(1),
+    Some(600),
+    "the newest overtaken group is the re-send: 800 - 200, not the fresh 700"
+  );
+}
+
+/// A set that negotiated no buffer granted no permission to discard its media,
+/// and there is nothing to halve. Asking for no deadline leaves the relay's rule
+/// of never discarding in charge; inventing a short one would spend a budget the
+/// subscriber never offered, and 0 in this contract means never, not immediately.
+#[test]
+fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
+  let sets = [set_with_buffer(1, 0)];
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  assert!(
+    selection.supersede.contains_key(&1),
+    "the overtaken groups are still named"
+  );
+  assert_eq!(
+    selection.resend_deadline_ms(1),
+    None,
+    "and nothing is asked of their deadlines"
+  );
+}
+
+/// An overtaken stream whose age already meets or exceeds the buffer has no
+/// remaining budget to donate, and the re-send must expire immediately rather
+/// than fall through to 0 — 0 means "never" in this contract, so running out
+/// of arithmetic room must not turn an expired deadline into an infinite one.
+#[test]
+fn exhausted_remaining_buffer_clamps_to_one_millisecond_not_never() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = BackpressureAlgorithm::retroactive();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [
+    stream_with_age(1, track_at(1, 2), 7, 850),
+    stream_with_age(1, track_at(1, 2), 8, 850),
+  ];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  assert_eq!(selection.resend_deadline_ms(1), Some(1));
+}
+
+/// The unified path prices the whole group: an upshift recorded at the start
+/// of group N and the congestion found at the end of that same group are two
+/// readings of one clock. The downshift acts on the group in flight — the
+/// supersede names it — and the climb starts over from zero, so the next
+/// group does not bounce straight back up.
+#[test]
+fn a_downshift_inside_a_group_undoes_the_upshift_recorded_at_its_start() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = pinned_u(Reach::Newest, 5);
+  settle(&mut algorithm, &sets, 5);
+
+  // The cautious streak buys one rung: group 34 opens clean and is served one
+  // tier up.
+  let clear: Vec<StreamSnapshot> = Vec::new();
+  let mut selection = None;
+  for group in 30..35 {
+    selection = Some(algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, group)));
+  }
+  assert_eq!(
+    tier_of(&selection.unwrap(), 1),
+    2,
+    "group 34 was recorded one rung up"
+  );
+
+  // Congestion at the end of the same group: the monitor's two readings, and
+  // the downshift lands on group 34 itself.
+  let inside = deep_at(2);
+  algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
+  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the tier falls back down inside the group it was raised in"
+  );
+  assert!(
+    selection.supersede.contains_key(&1) && selection.supersede[&1].newest_only,
+    "and the upshifted group in flight is overtaken like any other"
+  );
+
+  // The dip has to earn a full fresh clean streak before the ladder climbs
+  // back: the next group stays at the downshifted tier.
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 35));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "clear_streak was zeroed by the congestion: one clean group does not undo the fall"
+  );
+}
+
+/// `u_min == u_max` pins `U(k)` to that constant, so the climb stops
+/// depending on rho: the deliberate "no rho" setting, available without a
+/// separate switch.
+#[test]
+fn u_min_equal_to_u_max_pins_the_climb_and_makes_rho_inert() {
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0)];
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  for rho in [0.05_f64, 1.0] {
+    let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
+      rho,
+      u_min: Some(4),
+      u_max: Some(4),
+      ..BackpressureParams::default()
+    });
+    algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+    for group in 1..4 {
+      let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+      assert_eq!(tier_of(&selection, 1), 0, "pinned to four at rho {rho}");
+    }
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 4));
+    assert_eq!(tier_of(&selection, 1), 1, "four clean groups at rho {rho}");
+  }
+}
+
+/// The cap bounds a very cautious rho: at rho = 0.05 the 850 -> 1800 jump
+/// prices at ceil(1.118 / 0.05) = 23 clean groups, which on a short trace is
+/// never; `backpressure.umax` brings it back to a climbable six.
+#[test]
+fn u_max_caps_a_very_cautious_rho() {
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0)];
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
+    rho: 0.05,
+    u_max: Some(6),
+    ..BackpressureParams::default()
+  });
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..6 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the cap is six, not twenty-three"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
+  assert_eq!(tier_of(&selection, 1), 1, "the sixth clean group buys it");
+}
+
+/// The subscriber's `U_max` is the third extension field, and it outranks the
+/// operator's cap. A signalled zero is "unbounded", not "fall back to the
+/// operator": the same set climbs at three clean groups under `[5, 2, 3]`, and
+/// ignores an operator cap of two under `[50, 2, 0]` because the step alone
+/// prices at three.
+#[test]
+fn a_signalled_u_max_is_the_third_field_and_zero_means_unbounded() {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  let sets = [SetSnapshot {
+    algorithm_params: vec![5, 2, 3],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0)
+  }];
+  let mut algorithm = BackpressureAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..3 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 0, "the signalled cap is three");
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 3));
+  assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
+
+  // Signalled zero: unbounded, so the operator's cap of two must not apply.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![50, 2, 0],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0)
+  }];
+  let mut algorithm = BackpressureAlgorithm::with_params(BackpressureParams {
+    u_max: Some(2),
+    ..BackpressureParams::default()
+  });
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..3 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the step prices at three, and zero removed the operator cap"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 3));
+  assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
+}
+
+/// The draft's formula, directly: `U(i) = min(U_max, max(2, U_min,
+/// ceil(step/rho)))`, with a zero nominal rate counting as a 100 % step, the
+/// top rung fixed at two, and a cap below the floor raised to the floor.
+#[test]
+fn the_slow_climb_formula_matches_the_draft() {
+  let set = ladder_set(1, &[850, 1800, 3500, 6000], 0);
+  let u = |tier| set_upshift_streak(&set, tier, 0.25, Some(2), None);
+  assert_eq!(u(0), 5, "850 -> 1800 is a 112 % step");
+  assert_eq!(u(1), 4, "1800 -> 3500 is a 94 % step");
+  assert_eq!(u(2), 3, "3500 -> 6000 is a 71 % step");
+  assert_eq!(u(3), 2, "the top rung is the draft's fixed two");
+
+  let zero = ladder_set(1, &[0, 1000, 2000, 3000], 0);
+  assert_eq!(
+    set_upshift_streak(&zero, 0, 0.25, Some(2), None),
+    4,
+    "a zero nominal rate is treated as a 100 % step"
+  );
+
+  assert_eq!(
+    set_upshift_streak(&set, 0, 0.25, Some(5), Some(1)),
+    5,
+    "a cap below the floor is raised to the floor"
+  );
+  assert_eq!(
+    set_upshift_streak(&set, 0, 0.25, Some(2), Some(3)),
+    3,
+    "a cap above the floor bounds the step"
+  );
+}
+
+/// A membership change is not a reading: the tier follows the nominal rate
+/// that was selected, not the index it used to occupy. Inserting a rung below
+/// the selection must not silently move the delivery down, and removing the
+/// selected rung must fall to the highest rate that still fits.
+#[test]
+fn a_ladder_change_preserves_the_selected_nominal_rate() {
+  let mut algorithm = BackpressureAlgorithm::new();
+  let start = SetSnapshot {
+    members: vec![(300, 10), (600, 11), (1000, 12), (1500, 13)],
+    ..set(1, true)
   };
-  for _ in 0..20 {
-    first.decide(&input);
-  }
+  assert_eq!(climb(&mut algorithm, &[start], 2), 2);
+
+  // Insert 900 below the selected 1000: the index moves from 2 to 3, the
+  // selected track stays the 1000 kbps one.
+  let inserted = SetSnapshot {
+    members: vec![(300, 10), (600, 11), (900, 14), (1000, 12), (1500, 13)],
+    ..set(1, true)
+  };
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(
+    &[inserted],
+    &empty,
+    DecisionReason::PeriodicSample,
+    1,
+  ));
   assert_eq!(
-    second.decide(&input)[&1],
-    Some(10),
-    "fresh instance, bottom rung"
+    selection[&1],
+    Some(12),
+    "the selected nominal rate is still 1000 kbps, now at index 3"
+  );
+
+  // Remove the selected 1000 rung: fall to the highest rate that fits, 900.
+  let selected_removed = SetSnapshot {
+    members: vec![(300, 10), (600, 11), (900, 14), (1500, 13)],
+    ..set(1, true)
+  };
+  let selection = algorithm.decide(&input(
+    &[selected_removed],
+    &empty,
+    DecisionReason::PeriodicSample,
+    1,
+  ));
+  assert_eq!(
+    selection[&1],
+    Some(14),
+    "the highest rung at or below the lost 1000 kbps is the 900 kbps one"
+  );
+
+  // Remove that too: the next rung down is the new selection.
+  let second_removed = SetSnapshot {
+    members: vec![(300, 10), (600, 11), (1500, 13)],
+    ..set(1, true)
+  };
+  let selection = algorithm.decide(&input(
+    &[second_removed],
+    &empty,
+    DecisionReason::PeriodicSample,
+    1,
+  ));
+  assert_eq!(
+    selection[&1],
+    Some(11),
+    "the rate walks down with the ladder"
   );
 }
 
+/// A signalled zero is the draft's default, not the operator's override:
+/// `[0, 0, 0]` pins rho to 25 %, U_min to two and U_max to unbounded even when
+/// the operator tuned all three.
 #[test]
-fn cooldown_brackets_the_settle_down_period() {
-  // The state machine on its own, without sets or tracks: cooldown is what
-  // stops one congested group from cascading the tier to the bottom.
-  use super::state::{Observation, TierState};
-
-  let mut state = TierState::default();
-  for _ in 0..5 {
-    state.observe(Observation::new(1, 0));
-  }
-  assert_eq!(state.tier(), 1);
-  assert!(!state.in_cooldown());
-
-  state.observe(Observation::new(2, 0));
-  assert_eq!(state.tier(), 0);
-  assert!(state.in_cooldown(), "a downshift starts the cooldown");
-
-  state.observe(Observation::new(1, 0));
-  assert!(!state.in_cooldown(), "depth at the target ends it");
-}
-
-#[test]
-fn a_timeout_counts_as_depth_and_as_evidence() {
-  use super::state::Observation;
-  let observation = Observation::new(1, 2);
+fn a_signalled_zero_uses_the_draft_defaults_not_the_operator_rails() {
+  let set = SetSnapshot {
+    algorithm_params: vec![0, 0, 0],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0)
+  };
   assert_eq!(
-    observation.depth, 3,
-    "a timed-out stream counts like an open one"
+    set_upshift_streak(&set, 0, 0.4, Some(6), Some(2)),
+    5,
+    "rho 0 -> 25 %, U_min 0 -> 2, U_max 0 -> unbounded"
   );
-  assert!(observation.timed_out);
-  assert!(!Observation::new(1, 0).timed_out);
 }

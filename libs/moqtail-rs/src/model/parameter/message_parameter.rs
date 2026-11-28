@@ -105,6 +105,23 @@ pub enum MessageParameter {
     activate_switching: u64,
     /// Degradation priority; lower values are protected first. Default 0.
     set_rank: u8,
+    /// The subscriber's reorder buffer in ms, for the algorithms that need a
+    /// latency budget to switch against. Section 5 of the draft lets a
+    /// non-default algorithm extend this serialization, and this is the first
+    /// field of that extension: the relay resets a group stream left
+    /// unacknowledged this long after the group closes, and 0 means never
+    /// discard. Always 0 for algorithm 0, whose serialization the draft fixes
+    /// exactly, so the default algorithm can never be told to discard.
+    subscriber_buffer_ms: u64,
+    /// The rest of the extension, as raw varints, in the order the algorithm
+    /// defines them. The host carries these without interpreting them: which
+    /// knob is which belongs to the algorithm that asked for them, and
+    /// inventing a field here for every algorithm would put that knowledge
+    /// in the transport. An empty list means the sender offered nothing.
+    ///
+    /// The draft backpressure algorithm fixes this order as
+    /// `[rho_pct, U_min, U_max]`, immediately after `subscriber_buffer_ms`.
+    algorithm_params: Vec<u64>,
   },
   /// Cluster extension: the Hop IDs an advertisement passed through, original
   /// publisher first. Never empty, and no non-zero Hop ID repeats.
@@ -209,6 +226,31 @@ impl MessageParameter {
     activate_switching: u64,
     set_rank: u8,
   ) -> Self {
+    Self::new_switching_set_assignment_extended(
+      switching_set_id,
+      algorithm_id,
+      throughput_threshold_kbps,
+      set_throughput_weight,
+      activate_switching,
+      set_rank,
+      0,
+      Vec::new(),
+    )
+  }
+
+  /// The same assignment with a non-default algorithm's extension: the
+  /// subscriber buffer and the algorithm's own parameters.
+  #[allow(clippy::too_many_arguments)]
+  pub fn new_switching_set_assignment_extended(
+    switching_set_id: u64,
+    algorithm_id: u64,
+    throughput_threshold_kbps: u64,
+    set_throughput_weight: u64,
+    activate_switching: u64,
+    set_rank: u8,
+    subscriber_buffer_ms: u64,
+    algorithm_params: Vec<u64>,
+  ) -> Self {
     Self::SwitchingSetAssignment {
       switching_set_id,
       algorithm_id,
@@ -216,6 +258,8 @@ impl MessageParameter {
       set_throughput_weight,
       activate_switching,
       set_rank,
+      subscriber_buffer_ms,
+      algorithm_params,
     }
   }
 
@@ -587,6 +631,19 @@ impl MessageParameter {
             } else {
               0 // Default
             };
+            // The extension belongs to the non-default algorithms only, and a
+            // peer that predates it sends nothing here, so a missing field is
+            // 0 (no discard) and an empty parameter list, not an error.
+            let mut subscriber_buffer_ms = 0;
+            let mut algorithm_params = Vec::new();
+            if algorithm_id != 0 {
+              if payload.has_remaining() {
+                subscriber_buffer_ms = payload.get_vi()?;
+              }
+              while payload.has_remaining() {
+                algorithm_params.push(payload.get_vi()?);
+              }
+            }
             if payload.has_remaining() {
               return Err(ParseError::ProtocolViolation {
                 context: "MessageParameter::deserialize",
@@ -601,6 +658,8 @@ impl MessageParameter {
               set_throughput_weight,
               activate_switching,
               set_rank,
+              subscriber_buffer_ms,
+              algorithm_params,
             })
           }
           MessageParameterType::SubgroupFilter
@@ -795,6 +854,8 @@ impl TryInto<KeyValuePair> for MessageParameter {
         set_throughput_weight,
         activate_switching,
         set_rank,
+        subscriber_buffer_ms,
+        algorithm_params,
       } => {
         let mut buf = BytesMut::new();
         buf.put_vi(switching_set_id)?;
@@ -803,6 +864,15 @@ impl TryInto<KeyValuePair> for MessageParameter {
         buf.put_vi(set_throughput_weight)?;
         buf.put_vi(activate_switching)?;
         buf.put_u8(set_rank);
+        // Algorithm 0 gets the draft's exact six fields and nothing else.
+        // Anything it were to carry would be a private extension wearing a
+        // standards-assigned id, and a conformant peer would have to guess.
+        if algorithm_id != 0 {
+          buf.put_vi(subscriber_buffer_ms)?;
+          for value in algorithm_params {
+            buf.put_vi(value)?;
+          }
+        }
 
         KeyValuePair::try_new_bytes(
           MessageParameterType::SwitchingSetAssignment as u64,
@@ -1239,6 +1309,96 @@ mod tests {
   /// Build a parameter's KeyValuePair straight from bytes, so a test can put a
   /// field sequence on the wire that this crate's own serializer would never
   /// produce.
+  /// Algorithm 0's serialization is fixed by the draft, so the relay must not
+  /// extend it even when a caller asks for the extension: a private field
+  /// wearing the standards-assigned id would be read as THROUGHPUT WEIGHT or
+  /// ACTIVATE SWITCHING by a conformant peer.
+  #[test]
+  fn the_default_algorithm_never_carries_the_extension() {
+    let asked =
+      MessageParameter::new_switching_set_assignment_extended(7, 0, 100, 5, 2, 1, 4000, vec![9, 9]);
+    let pair: KeyValuePair = asked.try_into().unwrap();
+    let draft = assignment_payload(&[7, 0, 100, 5, 2, 1]);
+    assert_eq!(
+      pair.serialize().unwrap(),
+      draft.serialize().unwrap(),
+      "algorithm 0 must serialize exactly the draft's six fields"
+    );
+
+    let parsed = MessageParameter::deserialize(&draft).unwrap();
+    let MessageParameter::SwitchingSetAssignment {
+      subscriber_buffer_ms,
+      algorithm_params,
+      ..
+    } = parsed
+    else {
+      panic!("expected an assignment");
+    };
+    assert_eq!(subscriber_buffer_ms, 0);
+    assert!(algorithm_params.is_empty());
+  }
+
+  #[test]
+  fn the_extension_roundtrips_for_a_non_default_algorithm() {
+    let orig = MessageParameter::new_switching_set_assignment_extended(
+      3,
+      0xff02,
+      1200,
+      7,
+      1,
+      0,
+      250,
+      vec![25, 2, 0],
+    );
+    assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  /// The extension order is the latency budget followed by `rho_pct`, `U_min`,
+  /// `U_max` and the retroactive-supersede toggle; the codec carries the
+  /// varints verbatim and must not reorder or pad them.
+  #[test]
+  fn the_backpressure_extension_fields_keep_their_wire_order() {
+    let orig = MessageParameter::new_switching_set_assignment_extended(
+      3,
+      0xff04,
+      1200,
+      7,
+      1,
+      0,
+      250,
+      vec![25, 2, 0, 1],
+    );
+    let pair: KeyValuePair = orig.try_into().unwrap();
+    let expected = assignment_payload(&[3, 0xff04, 1200, 7, 1, 0, 250, 25, 2, 0, 1]);
+    assert_eq!(
+      pair.serialize().unwrap(),
+      expected.serialize().unwrap(),
+      "the extension must stay B, rho_pct, U_min, U_max, supersede"
+    );
+  }
+
+  /// A peer that predates the extension sends the six fields for a
+  /// non-default algorithm too. That is an offered nothing, not a malformed
+  /// message: the relay runs the algorithm with no latency budget rather than
+  /// dropping the connection.
+  #[test]
+  fn a_sender_offering_no_extension_reads_as_no_buffer() {
+    let parsed =
+      MessageParameter::deserialize(&assignment_payload(&[3, 0xff02, 1200, 7, 1, 0])).unwrap();
+    let MessageParameter::SwitchingSetAssignment {
+      subscriber_buffer_ms,
+      algorithm_params,
+      set_rank,
+      ..
+    } = parsed
+    else {
+      panic!("expected an assignment");
+    };
+    assert_eq!(subscriber_buffer_ms, 0);
+    assert!(algorithm_params.is_empty());
+    assert_eq!(set_rank, 0);
+  }
+
   fn assignment_payload(fields: &[u64]) -> KeyValuePair {
     let mut payload = BytesMut::new();
     for field in fields {

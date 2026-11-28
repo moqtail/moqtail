@@ -41,13 +41,166 @@ pub mod registry;
 
 use std::collections::HashMap;
 
-/// What an algorithm decided: switching set id -> the `relay_track_id` of the
-/// member to forward for this group, or `None` when the set forwards nothing.
+/// What an algorithm decided, per switching set: which member to forward for
+/// this group, and what to do with the groups already in flight.
 ///
-/// Every set handed to [`AbrAlgorithm::decide`] must appear in the map. A set
-/// the selection leaves out is treated as `None` by the host and reported,
+/// Every set handed to [`AbrAlgorithm::decide`] must appear in [`Selection::tracks`].
+/// A set the selection leaves out is treated as `None` by the host and reported,
 /// never waited on forever.
-pub type Selection = HashMap<u64, Option<u64>>;
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+  /// Switching set id -> the `relay_track_id` of the member to forward for this
+  /// group, or `None` when the set forwards nothing.
+  pub tracks: HashMap<u64, Option<u64>>,
+  /// The sets whose groups are already in flight at a member above the one just
+  /// selected, and were therefore overtaken by the decision.
+  ///
+  /// This is a request, not an action: the algorithm names the sets, and the
+  /// host decides what its own state allows. An algorithm cannot reset a stream,
+  /// re-send an object or reach a cache through this contract, and it should not
+  /// have to: what it knows is that the delivery it just downgraded is no longer
+  /// the one it would have chosen. What the host does about it — cancel and
+  /// re-send, finish the old delivery and switch at the next group, or ignore the
+  /// request because the group is already closed — is mechanism, and differs
+  /// between relays.
+  pub supersede: HashMap<u64, Supersede>,
+}
+
+/// What a decision asks the host to do about the deliveries it overtook.
+///
+/// The request is per set, because the algorithm decides per set; it is the
+/// host that works out which groups of that set are still in flight above the
+/// rung the decision landed on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Supersede {
+  /// The deadline, in ms, for the groups this decision causes to be re-sent.
+  ///
+  /// `None` leaves whatever the set negotiated in charge. An algorithm that
+  /// defines a tighter deadline for a re-send — because it is about to find out
+  /// whether the lighter delivery makes it, not whether the heavy one did —
+  /// says so here, and the host applies it to the streams it opens for those
+  /// groups and to nothing else.
+  ///
+  /// `Some(0)` means never discard. That is also what a set with no negotiated
+  /// buffer means, and it is not something a deadline can grant: an algorithm
+  /// that wants a shorter deadline than "never" has to have been given a buffer
+  /// to shorten, and returns `None` when there was none.
+  pub resend_deadline_ms: Option<u64>,
+  /// Reach only the newest of the overtaken groups.
+  ///
+  /// Without this flag the request covers every group the decision overtook;
+  /// with it, only the newest one is dealt with, and every older group keeps
+  /// being delivered on the member it was already carrying. It is the shape of
+  /// the request an algorithm makes when one retroactive correction is all it
+  /// believes in: the group closest to the decision is the one whose fresh
+  /// objects are still a small share of the delivery, and reaching further
+  /// back spends bytes the subscriber may already have given up on.
+  pub newest_only: bool,
+}
+
+impl Selection {
+  /// An empty selection: nothing answered yet.
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// The capacity form, for an algorithm that answers every set it was shown.
+  pub fn with_capacity(sets: usize) -> Self {
+    Self {
+      tracks: HashMap::with_capacity(sets),
+      supersede: HashMap::new(),
+    }
+  }
+
+  /// Answer for one set.
+  pub fn insert(&mut self, set_id: u64, track: impl Into<Option<u64>>) {
+    self.tracks.insert(set_id, track.into());
+  }
+
+  /// The answer for one set, or `None` if the algorithm did not answer it.
+  pub fn get(&self, set_id: u64) -> Option<&Option<u64>> {
+    self.tracks.get(&set_id)
+  }
+
+  /// Whether the algorithm answered this set at all, which is not the same as
+  /// answering it with `None`: a set left out is a bug in the algorithm, a set
+  /// answered with `None` is a decision to forward nothing.
+  pub fn contains_key(&self, set_id: u64) -> bool {
+    self.tracks.contains_key(&set_id)
+  }
+
+  /// Ask the host to deal with the groups this decision overtook, leaving the
+  /// deadline those groups were negotiated with in charge.
+  pub fn supersede(&mut self, set_id: u64) {
+    self.supersede.insert(set_id, Supersede::default());
+  }
+
+  /// Ask the host to deal with the groups this decision overtook, and give the
+  /// re-sent ones a deadline of their own.
+  pub fn supersede_with_deadline(&mut self, set_id: u64, resend_deadline_ms: u64) {
+    self.supersede.insert(
+      set_id,
+      Supersede {
+        resend_deadline_ms: Some(resend_deadline_ms),
+        ..Default::default()
+      },
+    );
+  }
+
+  /// Ask the host to reach back into the newest overtaken group only, leaving
+  /// the older ones to finish on the member they were already carrying.
+  pub fn supersede_newest(&mut self, set_id: u64) {
+    self.supersede.insert(
+      set_id,
+      Supersede {
+        newest_only: true,
+        ..Default::default()
+      },
+    );
+  }
+
+  /// Newest-overtaken-only, and with the re-send's own deadline.
+  pub fn supersede_newest_with_deadline(&mut self, set_id: u64, resend_deadline_ms: u64) {
+    self.supersede.insert(
+      set_id,
+      Supersede {
+        resend_deadline_ms: Some(resend_deadline_ms),
+        newest_only: true,
+      },
+    );
+  }
+
+  /// The deadline requested for a set's re-sent groups, or `None` when the
+  /// request said nothing about deadlines.
+  pub fn resend_deadline_ms(&self, set_id: u64) -> Option<u64> {
+    self
+      .supersede
+      .get(&set_id)
+      .and_then(|request| request.resend_deadline_ms)
+  }
+
+  /// Whether every set was answered; the host reports the ones that were not.
+  pub fn len(&self) -> usize {
+    self.tracks.len()
+  }
+
+  /// Whether nothing was answered.
+  pub fn is_empty(&self) -> bool {
+    self.tracks.is_empty()
+  }
+}
+
+/// Reading one set's answer, for tests and for callers that treat a selection as
+/// a lookup. A set the algorithm never answered reads as `None`, which is what
+/// the host does with it as well: forward nothing, and say so.
+impl std::ops::Index<&u64> for Selection {
+  type Output = Option<u64>;
+
+  fn index(&self, set_id: &u64) -> &Self::Output {
+    static NOTHING: Option<u64> = None;
+    self.tracks.get(set_id).unwrap_or(&NOTHING)
+  }
+}
 
 /// One switching set, copied out of the host at decision time.
 ///
@@ -70,6 +223,17 @@ pub struct SetSnapshot {
   pub active: bool,
   /// `(throughput threshold kbps, relay track id)`, ascending by threshold.
   pub members: Vec<(u64, u64)>,
+  /// The subscriber's reorder buffer in ms, negotiated for this set: how long
+  /// the subscriber is willing to hold a group stream before the relay may
+  /// discard it. `0` means no latency budget, and an algorithm that switches
+  /// against a deadline has nothing to switch against.
+  pub subscriber_buffer_ms: u64,
+  /// The set's own negotiated knobs, handed over exactly as the subscriber
+  /// sent them and in the order the algorithm defined. The host never reads
+  /// them, which is what lets an algorithm add a knob without a change here:
+  /// `params[0]` means whatever the algorithm with this id says it means.
+  /// Shorter lists are allowed; a subscriber that offered nothing sends none.
+  pub algorithm_params: Vec<u64>,
 }
 
 impl SetSnapshot {
@@ -131,14 +295,78 @@ pub struct AbrInput<'a> {
   /// The sets assigned to this algorithm, in the order the host holds them.
   /// Empty means the connection currently has no switching sets.
   pub sets: &'a [SetSnapshot],
-  /// Live forwarding streams per switching set, including streams still
-  /// draining their last Object. A set the host has no counter for is absent
-  /// and reads as zero; see [`AbrInput::open_streams`].
-  pub open_streams_per_set: &'a HashMap<u64, u64>,
+  /// Why the host is asking. A periodic sample of the same group is not a new
+  /// group: an algorithm that reacts to the state inside a group takes its
+  /// evidence differently for the two, and one that does not care can ignore
+  /// this field entirely.
+  pub reason: DecisionReason,
+  /// A monotonic clock in milliseconds, on an epoch of the host's choosing.
+  /// Only differences are meaningful, and an algorithm that needs to know how
+  /// long something took takes the difference between two decisions. It is an
+  /// input rather than a call to the clock so that a test can hand the
+  /// algorithm the elapsed time it wants to exercise a timeout.
+  pub now_ms: u64,
+  /// The same instant on the Unix epoch, in ms. `now_ms` is monotonic and
+  /// means nothing outside the host; an algorithm handed an external schedule
+  /// in wall-clock terms (the oracle's trace t0) joins the two with this.
+  /// A host that has no wall clock may set it to `now_ms`; an algorithm that
+  /// needs it says so in its documentation.
+  pub now_unix_ms: u64,
+  /// The live forwarding streams of every set this connection has, one entry
+  /// per stream. The count of a set's streams, the age of its oldest, and
+  /// which groups are in flight are all read from here; see the helpers on
+  /// [`AbrInput`]. Empty on a connection that has forwarded nothing yet.
+  pub streams: &'a [StreamSnapshot],
   /// Streams reset for delivery timeout since this instance's previous
-  /// decision. Congestion evidence: the transport dropped objects it had
-  /// already committed to, which is how an algorithm learns it overran.
-  pub stream_timeouts_since_last_decision: u64,
+  /// decision, per switching set. Congestion evidence: the transport dropped
+  /// objects it had already committed to, which is how an algorithm learns it
+  /// overran.
+  ///
+  /// Keyed by set because the evidence belongs to the set that lost the stream:
+  /// a timeout on a subscriber's audio ladder says nothing about whether its
+  /// video ladder should climb. A timeout on a stream whose track belongs to no
+  /// set is not reported, because there is no switching decision for it to be
+  /// evidence about. See [`AbrInput::stream_timeouts`] and
+  /// [`AbrInput::total_stream_timeouts_since_last_decision`].
+  pub stream_timeouts_since_last_decision: &'a HashMap<u64, u64>,
+}
+
+/// One live forwarding stream, as the host saw it open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamSnapshot {
+  /// The set the stream carries, resolved by the host from its relay track.
+  /// A stream whose track belongs to no set is not reported at all.
+  pub set_id: u64,
+  /// The member being forwarded.
+  pub relay_track_id: u64,
+  /// The media group being carried.
+  pub group_id: u64,
+  /// How long the stream has been open, in ms: `now_ms - when it opened`.
+  /// A stream that finished and is only draining its last Object is still
+  /// open in this sense, which is the point: it still occupies the pipeline.
+  pub age_ms: u64,
+  /// The stream was opened to re-send a group an earlier decision overtook,
+  /// not to carry new media. Such a stream is the consequence of a downshift,
+  /// so a depth that counted it would let the downshift report itself as new
+  /// congestion and downshift again.
+  pub resent: bool,
+}
+
+/// Why [`AbrAlgorithm::decide`] is being called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionReason {
+  /// A new media group started, and this is the decision for it. The
+  /// mechanism runs this reason at most once per group: an algorithm may
+  /// walk its state on every call and must see exactly one call per group
+  /// boundary, or a duplicate boundary moves it twice for one group.
+  GroupBoundary,
+  /// The host is re-evaluating while the same group is being served, because
+  /// bandwidth moves faster than groups. `group_id` is the group in flight.
+  PeriodicSample,
+  /// A stream was reset for delivery timeout, which is evidence that the
+  /// current choice is not sustainable, and the host wants a decision on the
+  /// group in flight now rather than at the next boundary.
+  StreamTimeout,
 }
 
 impl AbrInput<'_> {
@@ -160,9 +388,83 @@ impl AbrInput<'_> {
     }
   }
 
-  /// Live forwarding streams on one set.
+  /// Live forwarding streams on one set, including one still draining its
+  /// last Object and any opened to re-send an overtaken group.
   pub fn open_streams(&self, set_id: u64) -> u64 {
-    self.open_streams_per_set.get(&set_id).copied().unwrap_or(0)
+    self
+      .streams
+      .iter()
+      .filter(|stream| stream.set_id == set_id)
+      .count() as u64
+  }
+
+  /// Live streams carrying `relay_track_id` on `set_id`: how much of the
+  /// pipeline is occupied at one particular quality. A stream opened to
+  /// re-send an overtaken group does not count, because that delivery is what
+  /// a decision caused, not what the network is doing.
+  pub fn open_streams_at_track(&self, set_id: u64, relay_track_id: u64) -> u64 {
+    self
+      .streams
+      .iter()
+      .filter(|stream| {
+        stream.set_id == set_id && stream.relay_track_id == relay_track_id && !stream.resent
+      })
+      .count() as u64
+  }
+
+  /// Age in ms of the oldest live stream of a set, 0 when it has none: how
+  /// far the set's delivery has fallen behind the moment it was asked for.
+  pub fn oldest_stream_age_ms(&self, set_id: u64) -> u64 {
+    self
+      .streams
+      .iter()
+      .filter(|stream| stream.set_id == set_id)
+      .map(|stream| stream.age_ms)
+      .max()
+      .unwrap_or(0)
+  }
+
+  /// Whether a re-send the previous decision ordered is still in flight.
+  ///
+  /// A repair is not congestion — [`open_streams_at_track`] leaves it out of
+  /// the depth so it cannot call for the next downshift — but it is also not
+  /// a clean read. The delivery it replaces has not resolved yet, so a
+  /// boundary that arrives while it is open has not proved that the pipeline
+  /// drained; an algorithm may read it, but should not climb on it.
+  ///
+  /// [`open_streams_at_track`]: AbrInput::open_streams_at_track
+  pub fn has_resent_in_flight(&self) -> bool {
+    self.streams.iter().any(|stream| stream.resent)
+  }
+
+  /// The groups of a set that have a live stream: the deliveries the
+  /// algorithm could decide to overtake.
+  pub fn open_groups(&self, set_id: u64) -> Vec<u64> {
+    let mut groups: Vec<u64> = self
+      .streams
+      .iter()
+      .filter(|stream| stream.set_id == set_id)
+      .map(|stream| stream.group_id)
+      .collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
+  }
+
+  /// Streams reset for delivery timeout on one set since the previous decision.
+  pub fn stream_timeouts(&self, set_id: u64) -> u64 {
+    self
+      .stream_timeouts_since_last_decision
+      .get(&set_id)
+      .copied()
+      .unwrap_or(0)
+  }
+
+  /// Every timeout this connection has taken since the previous decision,
+  /// whichever set it landed on: the evidence for an algorithm that holds one
+  /// tier for the whole connection.
+  pub fn total_stream_timeouts_since_last_decision(&self) -> u64 {
+    self.stream_timeouts_since_last_decision.values().sum()
   }
 
   /// Live forwarding streams across the sets that have a subscriber: the
@@ -198,6 +500,78 @@ pub trait AbrAlgorithm: Send {
   fn decide(&mut self, input: &AbrInput) -> Selection;
 }
 
+/// The tuning values a host passes to the algorithms it runs.
+///
+/// A flat map of namespaced keys rather than a field per knob: the crate must
+/// not know which algorithms a given relay runs, and a `Tuning` with a field
+/// for each algorithm would put that knowledge back into the contract. A
+/// parameter is therefore named by the algorithm that reads it
+/// (`"backpressure.reads"`) and read with the algorithm's own default, so a relay
+/// that sets nothing gets the behaviour the algorithm was written with.
+///
+/// The host decides where the values come from — command line, environment,
+/// a config file — and an algorithm never goes looking for them itself. That
+/// is what keeps a decision a function of [`AbrInput`] plus the parameters it
+/// was built with, and lets a test construct any parameter set it wants.
+#[derive(Debug, Clone, Default)]
+pub struct Tuning {
+  values: HashMap<String, String>,
+}
+
+impl Tuning {
+  /// The defaults every algorithm was written with.
+  pub fn empty() -> Self {
+    Self::default()
+  }
+
+  /// From `key=value` strings, as a command line flag or an environment
+  /// variable delivers them. An entry without `=` is dropped: it is a
+  /// mistyped flag, and the host that parsed it is the right place to complain.
+  pub fn from_pairs(pairs: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+    let mut values = HashMap::new();
+    for pair in pairs {
+      let pair = pair.as_ref();
+      if let Some((key, value)) = pair.split_once('=') {
+        let key = key.trim();
+        if !key.is_empty() {
+          values.insert(key.to_string(), value.trim().to_string());
+        }
+      }
+    }
+    Self { values }
+  }
+
+  /// A value read as `f64`, or `default` when unset or unparsable.
+  pub fn f64(&self, key: &str, default: f64) -> f64 {
+    self
+      .values
+      .get(key)
+      .and_then(|value| value.parse().ok())
+      .unwrap_or(default)
+  }
+
+  /// A value read as `usize`, or `default` when unset or unparsable.
+  pub fn usize(&self, key: &str, default: usize) -> usize {
+    self
+      .values
+      .get(key)
+      .and_then(|value| value.parse().ok())
+      .unwrap_or(default)
+  }
+
+  /// A value read as text, for an algorithm whose input is not a number: a
+  /// schedule the host resolved, a path the host chose. `None` when unset.
+  pub fn str(&self, key: &str) -> Option<&str> {
+    self.values.get(key).map(String::as_str)
+  }
+
+  /// Whether the host named this key at all, for an algorithm that wants to
+  /// report a knob it was handed but cannot use.
+  pub fn is_set(&self, key: &str) -> bool {
+    self.values.contains_key(key)
+  }
+}
+
 /// Creates the per-connection instances of one algorithm.
 ///
 /// The factory is the process-wide half (registered once, shared across
@@ -212,6 +586,145 @@ pub trait AbrAlgorithmFactory: Send + Sync {
   /// Name for logs and diagnostics.
   fn name(&self) -> &'static str;
 
-  /// A fresh instance with no history, for one connection.
-  fn create(&self) -> Box<dyn AbrAlgorithm>;
+  /// A fresh instance with no history, for one connection, tuned as the host
+  /// asked. An algorithm with no knobs ignores `tuning`.
+  fn create(&self, tuning: &Tuning) -> Box<dyn AbrAlgorithm>;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn stream(set_id: u64, relay_track_id: u64, group_id: u64, age_ms: u64) -> StreamSnapshot {
+    StreamSnapshot {
+      set_id,
+      relay_track_id,
+      group_id,
+      age_ms,
+      resent: false,
+    }
+  }
+
+  fn input_with<'a>(streams: &'a [StreamSnapshot], sets: &'a [SetSnapshot]) -> AbrInput<'a> {
+    AbrInput {
+      client_id: 1,
+      group_id: 9,
+      bandwidth_estimate_kbps: 0,
+      configured_cap_kbps: 0,
+      reason: DecisionReason::GroupBoundary,
+      now_ms: 1000,
+      now_unix_ms: 1000,
+      sets,
+      streams,
+      stream_timeouts_since_last_decision: no_timeouts(),
+    }
+  }
+
+  #[test]
+  fn tuning_falls_back_to_the_algorithm_default() {
+    let tuning = Tuning::from_pairs([
+      "backpressure.reads=4",
+      "asd.up_streak=7",
+      "asd.down_streak=three",
+    ]);
+    assert_eq!(tuning.usize("backpressure.reads", 2), 4);
+    assert_eq!(tuning.usize("asd.up_streak", 3), 7);
+    // Unset, and set-but-unparsable, both land on the value the algorithm was
+    // written with: a typo in a deployment must not silently become a
+    // different number than the one the algorithm was tested against.
+    assert_eq!(tuning.f64("asd.safe_factor", 0.2), 0.2);
+    assert_eq!(tuning.usize("asd.down_streak", 1), 1);
+    // Unparsable is still "set", which is what lets an algorithm report the
+    // knob it was handed and could not read.
+    assert!(tuning.is_set("asd.down_streak"));
+    assert!(!tuning.is_set("asd.safe_factor"));
+  }
+
+  #[test]
+  fn tuning_survives_a_malformed_entry_without_losing_the_others() {
+    let tuning = Tuning::from_pairs(["oops", " backpressure.reads = 3 ", "empty="]);
+    assert_eq!(tuning.usize("backpressure.reads", 2), 3);
+    assert_eq!(tuning.values.len(), 2, "the keyless entry is dropped");
+  }
+
+  /// An empty timeout map with a life long enough to hand to an `AbrInput`.
+  fn no_timeouts() -> &'static HashMap<u64, u64> {
+    static NONE: std::sync::OnceLock<HashMap<u64, u64>> = std::sync::OnceLock::new();
+    NONE.get_or_init(HashMap::new)
+  }
+
+  fn set(id: u64) -> SetSnapshot {
+    SetSnapshot {
+      id,
+      algorithm_id: 0,
+      rank: 0,
+      weight: 1,
+      active: true,
+      members: vec![(500, 10), (1000, 11)],
+      subscriber_buffer_ms: 0,
+      algorithm_params: vec![],
+    }
+  }
+
+  /// A re-sent stream still occupies the pipeline, so the raw depth counts it;
+  /// only the per-quality question leaves it out.
+  #[test]
+  fn depth_counts_every_live_stream_and_quality_counts_only_new_delivery() {
+    let resent = StreamSnapshot {
+      resent: true,
+      ..stream(1, 11, 7, 10)
+    };
+    let streams = [stream(1, 10, 8, 20), resent, stream(2, 20, 8, 5)];
+    let sets = [set(1), set(2)];
+    let input = input_with(&streams, &sets);
+
+    assert_eq!(input.open_streams(1), 2);
+    assert_eq!(input.open_streams(2), 1);
+    assert_eq!(input.open_streams(3), 0, "an unknown set has no streams");
+
+    assert_eq!(input.open_streams_at_track(1, 11), 0);
+    assert_eq!(input.open_streams_at_track(1, 10), 1);
+
+    assert!(
+      input.has_resent_in_flight(),
+      "the repair is invisible to the depth but not to the climb"
+    );
+    let no_repairs = [stream(1, 10, 8, 20), stream(2, 20, 8, 5)];
+    assert!(
+      !input_with(&no_repairs, &sets).has_resent_in_flight(),
+      "no repair in flight, nothing to wait for"
+    );
+  }
+
+  #[test]
+  fn the_oldest_stream_and_the_open_groups_of_a_set() {
+    let streams = [stream(1, 10, 8, 20), stream(1, 11, 9, 240)];
+    let sets = [set(1)];
+    let input = input_with(&streams, &sets);
+
+    assert_eq!(input.oldest_stream_age_ms(1), 240);
+    assert_eq!(input.oldest_stream_age_ms(2), 0, "no streams, no age");
+    assert_eq!(input.open_groups(1), vec![8, 9]);
+  }
+
+  #[test]
+  fn depth_over_the_active_sets_only() {
+    let streams = [
+      stream(1, 10, 8, 0),
+      stream(2, 20, 8, 0),
+      stream(3, 30, 8, 0),
+    ];
+    let paused = SetSnapshot {
+      active: false,
+      ..set(2)
+    };
+    let sets = [set(1), paused];
+    let input = input_with(&streams, &sets);
+
+    assert_eq!(
+      input.active_stream_depth(),
+      1,
+      "a set with no subscriber and a set nobody is watching are not congestion here"
+    );
+  }
 }

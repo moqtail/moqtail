@@ -1,7 +1,7 @@
 // Copyright 2026 The MOQtail Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
+// you may not use it except in compliance with the License.
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
@@ -12,197 +12,255 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The tier state machine behind the backpressure algorithm, with the
-//! constants that define its response.
+//! The tier state machine behind backpressure, and the reading that moves it.
 //!
-//! It is deliberately a pure function of `(state, observation)`: the whole
-//! point of the algorithm is that it needs no bandwidth estimate, so it has to
-//! be exhaustively testable by feeding it a depth sequence. Nothing in here
-//! touches the transport or the host.
+//! Pure again: `(state, sample) -> event`, no clock, no transport. There is
+//! one reading now — the depth at the tier being delivered — fed by every
+//! sample the host takes, at a group boundary or mid-group alike. What a
+//! sample is allowed to do depends on one fact the state itself tracks:
+//! whether it is the first reading of a new group, which is the only moment
+//! an upshift can land before the relay's forward gate records that group's
+//! track decision.
 
-/// Depth at or below which the connection is considered uncongested.
-const DEPTH_TARGET: u64 = 1;
+use crate::algorithms::asd::state::DEPTH_TARGET;
+use crate::algorithms::asd::state::DOWNSHIFT_DEPTH;
 
-/// Depth at or above which the connection is congested and the tier drops
-/// immediately, without waiting for a streak.
-const DOWNSHIFT_DEPTH: u64 = 2;
+/// Slow start: one uncongested group is enough to try the next tier.
+pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;
 
-/// Consecutive uncongested groups required before raising the tier. One group
-/// of slack is a fluctuation; five is a trend.
-const UPSHIFT_GOP_STREAK: u64 = 5;
+/// Consecutive mid-group depth samples, at the downshift depth or above,
+/// before the monitor acts. A single such reading is normal right after a new
+/// group's stream opens, while the previous group's FIN-ACK is still in
+/// flight; congestion shows it on every reading until it is dealt with. The
+/// streak re-arms when it fires, so one burst cannot chain.
+///
+/// Two is the default: one reading is the normal handoff overlap, and a
+/// second confirms the congestion without waiting for the next boundary.
+pub(crate) const DOWNSHIFT_SUBGROUP_READS: u32 = 2;
 
-/// Consecutive congested groups during cooldown, each deeper than the last,
-/// before dropping the tier again.
-const COOLDOWN_HIGH_STREAK: u64 = 2;
-
-/// One group's worth of congestion evidence.
+/// What one depth sample did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Observation {
-  /// Forwarding streams still open across the connection's active sets, plus
-  /// the streams reset for delivery timeout since the previous observation.
-  pub depth: u64,
-  /// Whether at least one stream was reset for delivery timeout since the
-  /// previous observation. Stronger than depth on its own: the transport
-  /// dropped objects it had already committed to.
-  pub timed_out: bool,
-}
-
-impl Observation {
-  pub(crate) fn new(depth: u64, timeouts_since_last: u64) -> Self {
-    Self {
-      depth: depth + timeouts_since_last,
-      timed_out: timeouts_since_last > 0,
-    }
-  }
-}
-
-/// Why the tier dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Cause {
-  /// Depth reached `DOWNSHIFT_DEPTH` outside cooldown.
-  Depth,
-  /// During cooldown, depth kept rising above the depth recorded at the last
-  /// downshift.
-  RisingDepth,
-  /// During cooldown, a stream timed out on the tier that was just tried.
-  Timeout,
-}
-
-/// What one observation did to the tier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Event {
-  /// Nothing: the tier stayed where it was.
+pub(crate) enum Step {
+  /// Nothing.
   Held,
-  /// Depth returned to the target and the settle-down period ended.
-  CooldownExit,
-  /// The tier rose after `UPSHIFT_GOP_STREAK` uncongested groups.
-  Upshift { from: usize, to: usize },
-  /// The tier fell.
+  Upshift {
+    from: usize,
+    to: usize,
+  },
   Downshift {
     from: usize,
     to: usize,
-    cause: Cause,
   },
 }
 
 /// The connection's position on the quality ladder.
 #[derive(Debug, Default)]
-pub(crate) struct TierState {
+pub(crate) struct LadderState {
   /// Index into the ascending tier ladder; `0` is the lowest quality.
   current_index: usize,
-  /// Consecutive groups seen at or below `DEPTH_TARGET`.
+  /// Consecutive uncongested group boundaries at or below `DEPTH_TARGET`.
   clear_streak: u64,
-  /// Depth recorded at the last downshift; `Some` means "in cooldown".
-  post_downshift_depth: Option<u64>,
-  /// Consecutive cooldown groups that were deeper than their predecessor.
-  cooldown_high_streak: u64,
+  /// Consecutive mid-group samples at or above `DOWNSHIFT_DEPTH`.
+  monitor_streak: u32,
+  /// How many consecutive congested mid-group samples the monitor waits for
+  /// before acting.
+  monitor_reads: u32,
+  /// Until the ladder's top or the first sustained congestion, whichever comes first.
+  exploring: bool,
+  /// The newest group_id any sample has named, strictly monotonic: a late
+  /// reading from a draining tail names an older group and must not open a
+  /// boundary or move this back.
+  last_group_id: Option<u64>,
 }
 
-impl TierState {
-  /// The tier to serve, as an index into a ladder sorted low to high.
+impl LadderState {
+  /// A connection at the bottom tier, exploring.
+  pub(crate) fn new() -> Self {
+    Self {
+      current_index: 0,
+      clear_streak: 0,
+      monitor_streak: 0,
+      monitor_reads: DOWNSHIFT_SUBGROUP_READS,
+      exploring: true,
+      last_group_id: None,
+    }
+  }
+
+  /// The same machine with a different patience in the monitor. Zero is clamped
+  /// to one: a monitor that fires on zero readings fires on every sample, which
+  /// is not a monitor but a reaction.
+  pub(crate) fn new_with_reads(reads: u32) -> Self {
+    let mut state = Self::new();
+    state.monitor_reads = reads.max(1);
+    state
+  }
+
+  /// The tier to serve.
   pub(crate) fn tier(&self) -> usize {
     self.current_index
   }
 
-  /// Whether the machine is in the settle-down period after a downshift.
-  #[cfg(test)]
-  pub(crate) fn in_cooldown(&self) -> bool {
-    self.post_downshift_depth.is_some()
+  /// Whether the connection is still exploring the ladder.
+  pub(crate) fn exploring(&self) -> bool {
+    self.exploring
   }
 
-  /// Cap the tier at the longest ladder the connection has. Without this the
-  /// index drifts above every set's ladder while all sets already serve their
-  /// top track, and a downshift then changes nothing for several groups.
+  /// Cap the tier at the longest ladder the connection has, so a downshift
+  /// lands on a track that exists the group after it was decided.
   pub(crate) fn clamp_to(&mut self, max_index: usize) {
     self.current_index = self.current_index.min(max_index);
   }
 
-  /// Feed one group's observation, advancing the tier.
-  pub(crate) fn observe(&mut self, observation: Observation) -> Event {
-    if observation.depth <= DEPTH_TARGET {
-      return self.observe_clear();
-    }
-    match self.post_downshift_depth {
-      Some(reference) => self.observe_cooldown(observation, reference),
-      None => self.observe_congested(observation.depth),
-    }
+  /// Move the tier directly, used when the ladder was rebuilt and the same
+  /// nominal rate lives at a different index. Membership is not a reading, so
+  /// this does not touch the streaks.
+  pub(crate) fn set_tier(&mut self, tier: usize) {
+    self.current_index = tier;
   }
 
-  /// An uncongested group: leave cooldown if we were in it, and count the
-  /// streak towards an upshift.
-  fn observe_clear(&mut self) -> Event {
-    let exited = self.post_downshift_depth.take().is_some();
-    if exited {
-      self.cooldown_high_streak = 0;
+  /// Evaluate one depth sample for `group_id`.
+  ///
+  /// The first sample for a group newer than any seen (`is_new_group`) arrives
+  /// when the forward gate requests a decision before opening the new group's
+  /// stream. Subsequent samples for the same or an older `group_id` arrive
+  /// while groups are in flight: a sample naming an older group is a draining
+  /// tail, judged as a mid-group reading, and the boundary clock never moves
+  /// back to it.
+  ///
+  /// `upshift_streak_needed` is the dynamic threshold `U(k)` the host
+  /// computed for this step - the subscriber's buffer-depth floored against
+  /// the step's relative bitrate jump - and the cautious climb counts on it
+  /// instead of a constant.
+  ///
+  /// `resent_in_flight` is whether a repair the previous decision ordered is
+  /// still open. It does not change the depth (the host leaves re-sent streams
+  /// out, so a repair is never congestion), but it decides whether a clean
+  /// boundary is *evidence*. A group was dumped from the rung above and has
+  /// not finished there yet; until it has, the pipeline has not proven it can
+  /// carry the tier being served, so the climb holds and the clean streak
+  /// breaks. Downshifts are unaffected: real depth still steps down at a
+  /// boundary, repair or no repair.
+  ///
+  /// `target_occupied` is whether the rung one step above still has an open
+  /// stream of its own. That stream is not depth at the current tier, so it
+  /// never calls for a downshift, but climbing while it is open puts the new
+  /// group's stream beside it, and the monitor reads the pair as congestion
+  /// one sample later. Classic, which never resets the streams a downshift
+  /// abandoned, hit this on every climb back to 1080p; the guard is common to
+  /// all versions and, like the repair veto, holds the climb and restarts the
+  /// clean streak until the rung above is clear.
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) fn on_sample(
+    &mut self,
+    depth: u64,
+    group_id: u64,
+    may_act: bool,
+    max_index: usize,
+    upshift_streak_needed: u64,
+    resent_in_flight: bool,
+    target_occupied: bool,
+  ) -> Step {
+    // Strictly monotonic boundary detection: only a group newer than the
+    // newest one seen opens a boundary. An older group's tail object is a
+    // mid-group reading, and it cannot rewind the clock so that a later
+    // sample of the newest group would masquerade as a second boundary.
+    let is_new_group = self.last_group_id.is_none_or(|last| group_id > last);
+    if is_new_group {
+      self.last_group_id = Some(group_id);
     }
-    self.clear_streak += 1;
-    if self.clear_streak < UPSHIFT_GOP_STREAK {
-      return if exited {
-        Event::CooldownExit
-      } else {
-        Event::Held
-      };
-    }
-    let from = self.current_index;
-    self.current_index = from + 1;
-    self.clear_streak = 0;
-    Event::Upshift {
-      from,
-      to: self.current_index,
-    }
-  }
 
-  /// A congested group outside cooldown: drop one tier and start settling down.
-  /// The index never goes below zero, because the lowest tier is all this
-  /// algorithm can offer.
-  fn observe_congested(&mut self, depth: u64) -> Event {
-    self.clear_streak = 0;
-    if depth < DOWNSHIFT_DEPTH || self.current_index == 0 {
-      return Event::Held;
-    }
-    let from = self.current_index;
-    self.current_index = from - 1;
-    self.post_downshift_depth = Some(depth);
-    self.cooldown_high_streak = 0;
-    Event::Downshift {
-      from,
-      to: self.current_index,
-      cause: Cause::Depth,
-    }
-  }
+    if is_new_group {
+      // At the group boundary (before the new group's stream opens), a depth
+      // <= DEPTH_TARGET means the previous group drained on time.
+      if depth <= DEPTH_TARGET {
+        // A clean boundary also clears any stale mid-group reading, so a lone
+        // deep sample before the boundary can never carry across it — or
+        // across the end of exploration — into a spurious monitor fire.
+        self.monitor_streak = 0;
+        // A repair is still open: the depth excludes it (so this is not
+        // congestion), but the boundary has not proved the delivery clean
+        // either. Climbing here can walk back onto a rung whose overtaken
+        // group is still being repaired, and the repair streams can push it
+        // back down a sample later. Hold, and restart the streak: a climb has
+        // to be bought after the repair is over, not across it.
+        //
+        // The rung above is the same question from the other side: an old
+        // stream still open there is not depth, but it is not a clear climb
+        // target either. On classic, old streams draining at that rung can
+        // make the new stream the next congestion sample; the climb waits
+        // until the rung is clear.
+        if resent_in_flight || target_occupied {
+          self.clear_streak = 0;
+          return Step::Held;
+        }
+        self.clear_streak += 1;
+        let needed = if self.exploring {
+          SLOW_START_UPSHIFT_STREAK
+        } else {
+          upshift_streak_needed.max(1)
+        };
+        if self.clear_streak >= needed {
+          let from = self.current_index;
+          let to = (from + 1).min(max_index);
+          self.current_index = to;
+          self.clear_streak = 0;
+          if self.exploring && self.current_index >= max_index {
+            self.exploring = false;
+          }
+          if to > from {
+            return Step::Upshift { from, to };
+          }
+        }
+        return Step::Held;
+      }
 
-  /// A congested group during cooldown: drop again if the tier just tried
-  /// already lost a stream, or if the depth keeps climbing.
-  fn observe_cooldown(&mut self, observation: Observation, reference: u64) -> Event {
-    let depth = observation.depth;
-    self.clear_streak = 0;
-    self.post_downshift_depth = Some(depth);
+      // Congested at the group boundary: reset streaks and end exploration.
+      // Two streams of the delivered tier still open when a group's first
+      // Object arrives means two groups behind — the handoff overlap cannot
+      // produce that, because the new group's stream has not opened yet — so
+      // the boundary needs no streak to be certain.
+      self.clear_streak = 0;
+      self.monitor_streak = 0;
+      if self.exploring && depth >= DOWNSHIFT_DEPTH {
+        self.exploring = false;
+      }
+      if depth >= DOWNSHIFT_DEPTH && self.current_index > 0 {
+        let from = self.current_index;
+        self.current_index -= 1;
+        return Step::Downshift {
+          from,
+          to: self.current_index,
+        };
+      }
+      return Step::Held;
+    }
 
-    if observation.timed_out && self.current_index > 0 {
+    // Intra-group sample (`!is_new_group`):
+    // A single reading of `depth >= DOWNSHIFT_DEPTH` is normal right after the
+    // new group's stream opens while the previous group's FIN-ACK is still in
+    // flight. Only sustained congestion across `monitor_reads` consecutive
+    // samples resets `clear_streak` and triggers a mid-group downshift.
+    self.monitor_streak = if depth >= DOWNSHIFT_DEPTH {
+      self.monitor_streak.saturating_add(1)
+    } else {
+      0
+    };
+
+    if !self.exploring
+      && self.current_index > 0
+      && self.monitor_streak >= self.monitor_reads
+      && may_act
+    {
+      let from = self.current_index;
       self.current_index -= 1;
-      self.cooldown_high_streak = 0;
-      return Event::Downshift {
-        from: self.current_index + 1,
+      self.monitor_streak = 0;
+      self.clear_streak = 0;
+      return Step::Downshift {
+        from,
         to: self.current_index,
-        cause: Cause::Timeout,
       };
     }
 
-    if depth <= reference {
-      self.cooldown_high_streak = 0;
-      return Event::Held;
-    }
-
-    self.cooldown_high_streak += 1;
-    if self.cooldown_high_streak < COOLDOWN_HIGH_STREAK || self.current_index == 0 {
-      return Event::Held;
-    }
-    self.current_index -= 1;
-    self.cooldown_high_streak = 0;
-    Event::Downshift {
-      from: self.current_index + 1,
-      to: self.current_index,
-      cause: Cause::RisingDepth,
-    }
+    Step::Held
   }
 }

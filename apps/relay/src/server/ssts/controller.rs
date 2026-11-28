@@ -23,21 +23,23 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
+use crate::server::stream_id::StreamId;
+
+use moqtail::model::error::StreamResetCode;
 use moqtail_ssts::registry::registry;
-use moqtail_ssts::{AbrAlgorithm, AbrInput, Selection, SetSnapshot};
+use moqtail_ssts::{
+  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Supersede, Tuning,
+};
 use tokio::select;
+use tokio::sync::RwLock;
 use tracing::warn;
 
 use crate::server::config::AppConfig;
 use crate::server::session::client::MOQTClient;
+use crate::server::subscription::Subscription;
 
 use super::AbrMessage;
-
-/// How often the decision is re-evaluated without a new group. The answer for
-/// the group in flight cannot change.
-const DECISION_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Number of groups of decisions to keep behind the live edge, so a publisher
 /// running behind still gets a decision instead of forwarding unselected.
@@ -61,13 +63,17 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
     };
 
     let client_id = client.connection_id as u64;
+    // The host's tuning, read once per connection: an algorithm is built with
+    // the values it will keep for its lifetime, and never goes looking for a
+    // value of its own while it decides.
+    let tuning = Tuning::from_pairs(&AppConfig::load().ssts_algorithm_params);
     let mut running: Vec<Running> = Vec::new();
     for id in &client.ssts.negotiated_algorithms {
       match registry().get(*id) {
         Some(factory) => running.push(Running {
           id: *id,
           name: factory.name(),
-          algorithm: factory.create(),
+          algorithm: factory.create(&tuning),
         }),
         None => warn!(
           client_id,
@@ -80,18 +86,18 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
       return;
     }
 
-    let mut ticker = tokio::time::interval(DECISION_INTERVAL);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // The group the periodic re-evaluation runs for.
+    // The group the mid-group re-evaluation runs for.
     let mut last_group: Option<u64> = None;
     // The largest group ever seen. Decisions are pruned against this rather
     // than against the group being decided, so an Object that arrives late on
     // an old group cannot prune the decisions of the live edge.
     let mut largest_group: u64 = 0;
-    // Streams reset for delivery timeout since the previous decision: the
-    // congestion evidence the algorithms ask for. It is read only by this
-    // connection's algorithms, so it lives here instead of in shared state.
-    let mut stream_timeouts: u64 = 0;
+    // Streams reset for delivery timeout since the previous decision, keyed by
+    // the set that lost them: the evidence belongs to the set whose delivery
+    // overran, and an algorithm that holds one tier for the connection adds the
+    // numbers up itself. Read only by this connection's algorithms, so it lives
+    // here instead of in shared state.
+    let mut stream_timeouts: HashMap<u64, u64> = HashMap::new();
 
     loop {
       select! {
@@ -100,27 +106,65 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
             Some(AbrMessage::NewGroup(group_id)) => {
               last_group = Some(group_id.max(last_group.unwrap_or(0)));
               largest_group = largest_group.max(group_id);
-              // One boundary per group.
+              // One boundary per group: every member of a set asks when the
+              // group's first Object reaches its gate, and a stateful
+              // algorithm must see one boundary per group, not one per ask.
+              // A pruned group falls through and decides again.
               if client.ssts.has_group_decision(group_id).await {
                 // The answer already exists; wake anyone waiting on it
                 client.ssts.decision_notify.notify_waiters();
                 continue;
               }
-              decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
+              decide(
+                &mut running,
+                &client,
+                group_id,
+                largest_group,
+                &mut stream_timeouts,
+                DecisionReason::GroupBoundary,
+              )
+              .await;
             }
-            Some(AbrMessage::StreamTimeout { group_id }) => {
+            Some(AbrMessage::StreamTimeout { set_id, group_id }) => {
               largest_group = largest_group.max(group_id);
-              stream_timeouts += 1;
+              if let Some(set_id) = set_id {
+                *stream_timeouts.entry(set_id).or_default() += 1;
+              }
               if let Some(group_id) = last_group {
-                decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
+                decide(
+                  &mut running,
+                  &client,
+                  group_id,
+                  largest_group,
+                  &mut stream_timeouts,
+                  DecisionReason::StreamTimeout,
+                )
+                .await;
+              }
+            }
+            Some(AbrMessage::ObjectSent { group_id, relay_track_id }) => {
+              // The mid-group sample clock is the delivery itself: one
+              // reading per Object the delivery starts, so samples thin out
+              // as the path slows and stop when it stops. Not every byte is
+              // progress though: tail Objects draining on a group the gate
+              // has already overtaken, and the replay of a re-sent group -
+              // whose ladder moved on when it was overtaken - tick for the
+              // newest group's fresh delivery only.
+              if last_group == Some(group_id)
+                && !client.ssts.is_resent_group(relay_track_id, group_id).await
+              {
+                decide(
+                  &mut running,
+                  &client,
+                  group_id,
+                  largest_group,
+                  &mut stream_timeouts,
+                  DecisionReason::PeriodicSample,
+                )
+                .await;
               }
             }
             None => return,
-          }
-        }
-        _ = ticker.tick() => {
-          if let Some(group_id) = last_group {
-            decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
           }
         }
         _ = client.connection.closed() => {
@@ -137,20 +181,41 @@ async fn decide(
   client: &Arc<MOQTClient>,
   group_id: u64,
   largest_group: u64,
-  stream_timeouts: &mut u64,
+  stream_timeouts: &mut HashMap<u64, u64>,
+  reason: DecisionReason,
 ) {
-  let (sets, open_streams_per_set) = client.ssts.decision_snapshot().await;
+  let now_ms = client.ssts.now_ms();
+  // The same instant on the Unix epoch, for an algorithm handed an external
+  // schedule in wall-clock terms (the oracle's trace t0): its own now_ms is
+  // monotonic and means nothing outside this process.
+  let now_unix_ms = client.ssts.now_unix_ms();
+  let (sets, streams): (Vec<SetSnapshot>, Vec<StreamSnapshot>) =
+    client.ssts.decision_snapshot(now_ms).await;
   if sets.is_empty() {
     return;
   }
 
   let bandwidth_estimate_kbps = client.connection.bandwidth_estimate_kbps();
   let configured_cap_kbps = AppConfig::load().write_kbps_limit;
+  // The estimate every algorithm is being handed, on one line, whether or not
+  // the algorithm reads it: an algorithm that switches on stream depth says
+  // nothing about the estimate, and the first question asked of a decision is
+  // still what the transport thought the path was worth at that moment. This
+  // is per Object on the mid-group clock, so it is `trace`, like the relay's
+  // other per-Object lines.
+  tracing::trace!(
+    client_id = client.connection_id,
+    group_id,
+    ?reason,
+    bandwidth_estimate_kbps,
+    configured_cap_kbps,
+    "SSTS: transport estimate for this decision"
+  );
   // Taken once and handed to every algorithm: they all decide at this moment,
   // so they all see the same evidence.
   let timeouts = std::mem::take(stream_timeouts);
 
-  let mut decisions: HashMap<u64, Option<u64>> = HashMap::new();
+  let mut decisions = Selection::with_capacity(sets.len());
   for algorithm in running.iter_mut() {
     let algorithm_sets: Vec<SetSnapshot> = sets
       .iter()
@@ -166,22 +231,28 @@ async fn decide(
       group_id,
       bandwidth_estimate_kbps,
       configured_cap_kbps,
+      reason,
+      now_ms,
+      now_unix_ms,
       sets: &algorithm_sets,
-      open_streams_per_set: &open_streams_per_set,
-      stream_timeouts_since_last_decision: timeouts,
+      streams: &streams,
+      stream_timeouts_since_last_decision: &timeouts,
     };
-    decisions.extend(validate(
-      algorithm.name,
-      algorithm.algorithm.decide(&input),
-      &algorithm_sets,
-    ));
+    merge(
+      &mut decisions,
+      validate(
+        algorithm.name,
+        algorithm.algorithm.decide(&input),
+        &algorithm_sets,
+      ),
+    );
   }
 
   // A set no running algorithm owns gets an explicit "forward nothing".
   // Leaving it out of the map would stall the gate on that group instead.
   let unowned: Vec<&SetSnapshot> = sets
     .iter()
-    .filter(|set| !decisions.contains_key(&set.id))
+    .filter(|set| !decisions.contains_key(set.id))
     .collect();
   for set in unowned {
     warn!(
@@ -192,12 +263,31 @@ async fn decide(
     decisions.insert(set.id, None);
   }
 
-  // A group already being delivered keeps its answer: recording is insert-if-absent
+  // A group already being delivered keeps its answer: recording is
+  // insert-if-absent. A changed answer for the group in flight is spent here;
+  // the algorithms have still run, and an algorithm that means to move the
+  // in-flight groups of a set says so through `Selection::supersede`.
+  //
+  // Resolve those requests before the selection moves into the record. They
+  // belong to this cycle only; the per-group map records what to forward,
+  // never what was overtaken.
+  let overtakes: Vec<(u64, u64, Supersede)> = decisions
+    .supersede
+    .iter()
+    .filter_map(|(set_id, request)| {
+      decisions
+        .tracks
+        .get(set_id)
+        .and_then(|track| *track)
+        .map(|track_id| (*set_id, track_id, *request))
+    })
+    .collect();
+
   let recorded = client
     .ssts
     .record_group_decision(
       group_id,
-      decisions,
+      decisions.tracks,
       largest_group.saturating_sub(DECISION_WINDOW),
     )
     .await;
@@ -206,6 +296,213 @@ async fn decide(
     // No epoch bump: answers are final, so recording one makes no cached
     // verdict stale; waiters wake on the notify.
     client.ssts.decision_notify.notify_waiters();
+  }
+
+  for (set_id, track_id, request) in &overtakes {
+    supersede_overtaken(client, *set_id, *track_id, request).await;
+  }
+}
+
+/// Deal with the groups a decision overtook.
+///
+/// Each one gets three changes at once: its decision is flipped to the member
+/// the algorithm asked for, so the objects of that group that have not arrived
+/// yet come from that member; its remaining old-member streams are reset, so
+/// the subscriber stops receiving a delivery the relay has already abandoned;
+/// and the group is marked as re-sent, so the streams the subscriber now causes
+/// to be opened are reported to the algorithms as a consequence of the decision
+/// rather than as new congestion.
+///
+/// How far back the request reaches is what the newest-only flag says. Without
+/// it every overtaken group is dealt with; with it, only the newest one is, and
+/// the older groups keep being delivered on the member they were already
+/// carrying — no flip, no reset, no re-send mark.
+///
+/// When the request stages the re-send by age — which only means anything for
+/// the reach that takes more than one group — the newest of the overtaken
+/// groups keeps the member the decision selected and every older one is
+/// re-sent one rung below it: the older a group is, the earlier it started,
+/// and the less of its delivery window the re-send has to finish inside. One
+/// rung below the ladder's bottom is the bottom itself.
+///
+/// The relay's own abandoned streams are deliberately not fed to the timeout
+/// evidence. They are the algorithm's doing, not the transport's, and reporting
+/// them would let every downshift manufacture the evidence for the next one.
+async fn supersede_overtaken(
+  client: &Arc<MOQTClient>,
+  set_id: u64,
+  track_id: u64,
+  request: &Supersede,
+) {
+  let overtaken = client.ssts.overtaken_streams(set_id, track_id).await;
+  if overtaken.is_empty() {
+    return;
+  }
+
+  let mut groups: Vec<u64> = overtaken.iter().map(|(group_id, _)| *group_id).collect();
+  groups.sort_unstable();
+  groups.dedup();
+  let newest = *groups.last().unwrap();
+  // A newest-only request reaches no further: every older group keeps the
+  // delivery it is on, and nothing below touches it.
+  if request.newest_only {
+    groups.retain(|group_id| *group_id == newest);
+  }
+
+  // The draft's supersede is all-or-nothing: without a cached beginning on
+  // the new track there is no replacement stream, so the old delivery must
+  // not be reset. Plan the repairs first; only the ones that can be replaced
+  // are allowed to flip the group decision.
+  let Some(target_subscription) = subscription_for(client, track_id).await else {
+    tracing::debug!(
+      client_id = client.connection_id,
+      set_id,
+      relay_track_id = track_id,
+      "SSTS: skipping supersede; the new track has no subscription"
+    );
+    return;
+  };
+
+  // (group, old stream, last Object written on it)
+  let mut repairs: Vec<(u64, StreamId, Option<u64>)> = Vec::new();
+  for (group_id, stream_id) in &overtaken {
+    if !groups.contains(group_id) {
+      // A group this request does not reach keeps its delivery; resetting
+      // its stream would cancel the very thing newest-only asked to leave
+      // alone.
+      continue;
+    }
+    let Some(old_subscription) = subscription_for(client, stream_id.relay_track_id).await else {
+      continue;
+    };
+    let last_sent = old_subscription
+      .read()
+      .await
+      .last_object_sent_on(stream_id)
+      .await;
+    if !target_subscription
+      .read()
+      .await
+      .can_repair_group_from_cache(*group_id, stream_id.subgroup_id, last_sent)
+      .await
+    {
+      tracing::debug!(
+        client_id = client.connection_id,
+        set_id,
+        relay_track_id = track_id,
+        group = group_id,
+        subgroup = ?stream_id.subgroup_id,
+        "SSTS: skipping supersede; the replacement cache head is unavailable"
+      );
+      continue;
+    }
+    repairs.push((*group_id, stream_id.clone(), last_sent));
+  }
+
+  if repairs.is_empty() {
+    return;
+  }
+
+  let repair_count = repairs.len();
+  let mut repaired_groups: Vec<u64> = repairs.iter().map(|(group_id, _, _)| *group_id).collect();
+  repaired_groups.sort_unstable();
+  repaired_groups.dedup();
+
+  let mut flipped = 0usize;
+  {
+    let mut group_decisions = client.ssts.group_decisions.write().await;
+    for group_id in &repaired_groups {
+      if let Some(decision) = group_decisions.get_mut(group_id) {
+        decision.insert(set_id, Some(track_id));
+        flipped += 1;
+      }
+    }
+  }
+
+  for group_id in &repaired_groups {
+    // One line per re-sent group, not just the set-level summary below, so
+    // the operator (and the run's dashboard) can see which groups a
+    // decision overtook and at which member they are re-sent: the summary
+    // only carries a count, and a group re-sent on this path never shows
+    // up anywhere else in the log.
+    tracing::debug!(
+      client_id = client.connection_id,
+      set_id,
+      relay_track_id = track_id,
+      group = group_id,
+      newest_only = request.newest_only,
+      deadline_ms = request.resend_deadline_ms,
+      "SSTS: re-sent an overtaken group"
+    );
+    client
+      .ssts
+      .mark_group_resent(set_id, *group_id, request.resend_deadline_ms)
+      .await;
+  }
+
+  for (group_id, stream_id, last_sent) in repairs {
+    // The delivery was cancelled by a decision, not by a failure or a timeout,
+    // and the code on the wire should say so.
+    if let Some(old_subscription) = subscription_for(client, stream_id.relay_track_id).await {
+      old_subscription
+        .read()
+        .await
+        .reset_stream(&stream_id, StreamResetCode::Cancelled.to_u64())
+        .await;
+    }
+
+    // The replay writes Objects on the wire; keep it off the decision loop,
+    // which must keep sampling the path while the repair drains.
+    let target_subscription = Arc::clone(&target_subscription);
+    let subgroup_id = stream_id.subgroup_id;
+    let client_id = client.connection_id;
+    tokio::spawn(async move {
+      let replayed = target_subscription
+        .read()
+        .await
+        .repair_group_from_cache(group_id, subgroup_id, last_sent)
+        .await;
+      if replayed > 0 {
+        tracing::debug!(
+          client_id,
+          set_id,
+          relay_track_id = track_id,
+          group = group_id,
+          subgroup = ?subgroup_id,
+          objects = replayed,
+          "SSTS: repaired an overtaken group from the cache"
+        );
+      }
+    });
+  }
+
+  tracing::debug!(
+    client_id = client.connection_id,
+    set_id,
+    relay_track_id = track_id,
+    groups = repaired_groups.len(),
+    newest_only = request.newest_only,
+    streams = repair_count,
+    decisions_flipped = flipped,
+    "SSTS: overtook the groups in flight for this set"
+  );
+
+  if flipped > 0 {
+    // The one writer allowed past `record_group_decision`: a flipped group
+    // must also move the epoch, or gates keep forwarding the old member from
+    // cache and the re-send never replaces the delivery it means to.
+    client.ssts.bump_epoch();
+    client.ssts.decision_notify.notify_waiters();
+  }
+}
+
+/// Fold one algorithm's validated answer into the connection's decision.
+fn merge(into: &mut Selection, from: Selection) {
+  for (set_id, track) in from.tracks {
+    into.insert(set_id, track);
+  }
+  for (set_id, request) in from.supersede {
+    into.supersede.insert(set_id, request);
   }
 }
 
@@ -218,7 +515,7 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
   let mut validated = Selection::with_capacity(sets.len());
 
   for set in sets {
-    match selection.get(&set.id) {
+    match selection.get(set.id) {
       Some(Some(track_id)) if set.has_track(*track_id) => {
         validated.insert(set.id, Some(*track_id));
       }
@@ -246,6 +543,7 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
   }
 
   let invented: Vec<u64> = selection
+    .tracks
     .keys()
     .filter(|set_id| !sets.iter().any(|set| set.id == **set_id))
     .copied()
@@ -258,5 +556,167 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
     );
   }
 
+  // A request to overtake a set is only meaningful for a set the algorithm was
+  // shown and gave a real answer to: overtaking while forwarding nothing would
+  // cancel a delivery in order to replace it with no delivery.
+  for (set_id, request) in &selection.supersede {
+    let owned = sets.iter().any(|set| set.id == *set_id);
+    let answered = matches!(selection.get(*set_id), Some(Some(_)));
+    if owned && answered {
+      validated.supersede.insert(*set_id, *request);
+    } else if owned {
+      warn!(
+        algorithm,
+        set_id, "SSTS: algorithm asked to overtake a set it forwarded nothing for; ignored"
+      );
+    }
+  }
+
   validated
+}
+
+/// The subscription that owns a relay track, when the track is in a switching
+/// set and the subscriber still has a live subscription for it.
+async fn subscription_for(
+  client: &Arc<MOQTClient>,
+  relay_track_id: u64,
+) -> Option<Arc<RwLock<Subscription>>> {
+  let name = client
+    .ssts
+    .full_track_name_of_relay_track(relay_track_id)
+    .await?;
+  for (_, subscription) in client.subscriptions.all().await {
+    let Some(subscription) = subscription.upgrade() else {
+      continue;
+    };
+    if subscription.read().await.full_track_name == name {
+      return Some(subscription);
+    }
+  }
+  None
+}
+
+#[cfg(test)]
+mod tests {
+  use super::merge;
+  use super::validate;
+  use moqtail_ssts::Selection;
+  use moqtail_ssts::SetSnapshot;
+
+  fn set(id: u64, tracks: &[u64]) -> SetSnapshot {
+    SetSnapshot {
+      id,
+      algorithm_id: 0,
+      rank: 0,
+      weight: 1,
+      active: true,
+      members: tracks.iter().map(|track| (500 + *track, *track)).collect(),
+      subscriber_buffer_ms: 0,
+      algorithm_params: vec![],
+    }
+  }
+
+  /// The gate waits for a decision per set, so an algorithm that answers some
+  /// sets and not others must not be able to stall a group.
+  #[test]
+  fn every_set_gets_an_answer() {
+    let sets = [set(1, &[10, 11]), set(2, &[20])];
+    let mut answered = Selection::new();
+    answered.insert(1, 11u64);
+
+    let validated = validate("test", answered, &sets);
+    assert_eq!(validated.tracks[&1], Some(11));
+    assert_eq!(
+      validated.tracks[&2], None,
+      "an unanswered set forwards nothing rather than blocking"
+    );
+  }
+
+  #[test]
+  fn a_track_from_the_wrong_set_is_not_forwarded() {
+    let sets = [set(1, &[10, 11]), set(2, &[20])];
+    let mut answered = Selection::new();
+    answered.insert(1, 20u64);
+    answered.insert(2, None);
+
+    let validated = validate("test", answered, &sets);
+    assert_eq!(
+      validated.tracks[&1], None,
+      "a track that is not a member cannot be forwarded"
+    );
+  }
+
+  #[test]
+  fn sets_the_algorithm_was_never_shown_are_dropped() {
+    let sets = [set(1, &[10])];
+    let mut answered = Selection::new();
+    answered.insert(1, 10u64);
+    answered.insert(99, 77u64);
+
+    let validated = validate("test", answered, &sets);
+    assert!(!validated.tracks.contains_key(&99));
+    assert!(!validated.supersede.contains_key(&99));
+  }
+
+  /// Overtaking a delivery is the one thing in a decision that destroys work in
+  /// progress, so it is honoured only where the algorithm has the standing for
+  /// it: a set it was shown, and one it is actually forwarding something.
+  #[test]
+  fn a_supersede_request_needs_a_set_and_a_track() {
+    let sets = [set(1, &[10, 11]), set(2, &[20, 21])];
+
+    let mut answered = Selection::new();
+    answered.insert(1, 10u64);
+    answered.supersede(1);
+    answered.insert(2, None);
+    answered.supersede(2);
+    answered.supersede(99);
+
+    let validated = validate("test", answered, &sets);
+    assert!(validated.supersede.contains_key(&1));
+    assert!(
+      !validated.supersede.contains_key(&2),
+      "overtaking in order to forward nothing is not a switching decision"
+    );
+    assert!(
+      !validated.supersede.contains_key(&99),
+      "a set the algorithm never saw cannot be overtaken"
+    );
+  }
+
+  /// The deadline is the part of the request the algorithm owns, so validation
+  /// carries it through untouched for the requests it honours, and drops it with
+  /// the ones it does not. Two algorithms answering for disjoint sets each bring
+  /// their own, and folding their answers together keeps both.
+  #[test]
+  fn a_deadline_travels_with_the_request_that_carries_it() {
+    let sets = [set(1, &[10, 11]), set(2, &[20, 21])];
+
+    let mut answered = Selection::new();
+    answered.insert(1, 10u64);
+    answered.supersede_with_deadline(1, 400);
+    answered.insert(2, None);
+    answered.supersede_with_deadline(2, 300);
+    answered.supersede_with_deadline(99, 200);
+
+    let validated = validate("test", answered, &sets);
+    assert_eq!(validated.resend_deadline_ms(1), Some(400));
+    assert_eq!(
+      validated.resend_deadline_ms(2),
+      None,
+      "a dropped request cannot keep its deadline either"
+    );
+    assert_eq!(validated.resend_deadline_ms(99), None);
+
+    let mut into = Selection::new();
+    into.insert(3, 30u64);
+    into.supersede_with_deadline(3, 120);
+    merge(&mut into, validated);
+    assert_eq!(
+      into.resend_deadline_ms(3),
+      Some(120),
+      "an answer that did not mention a set leaves that set alone"
+    );
+    assert_eq!(into.resend_deadline_ms(1), Some(400));
+  }
 }

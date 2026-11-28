@@ -148,6 +148,9 @@ pub struct Subscription {
   /// fill. Held so Forward State 0 and cancellation can stop them.
   fill_streams: Arc<RwLock<HashMap<u64, watch::Sender<FetchStop>>>>,
   ssts_gate: Arc<ForwardGate>,
+  /// Set once datagrams on a switching-set track have been dropped, so the
+  /// reason is logged once per subscription rather than once per datagram.
+  datagrams_blocked: Arc<AtomicBool>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -199,6 +202,7 @@ impl Subscription {
       alias_announced: Arc::new(AtomicBool::new(false)),
       alias_announced_notify: Arc::new(Notify::new()),
       fill_streams: Arc::new(RwLock::new(HashMap::new())),
+      datagrams_blocked: Arc::new(AtomicBool::new(false)),
     }
   }
 

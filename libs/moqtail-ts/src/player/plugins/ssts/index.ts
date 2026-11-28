@@ -22,13 +22,14 @@
 
 import { definePlugin } from '@/player/plugin'
 import { SSTS_ALGORITHMS, sstsAlgorithms } from './algorithms'
-import { sstsSource } from './source'
+import { sstsSource, type SstsAssignmentOptions } from './source'
 
 export { SstsSource } from './source'
+export type { SstsAssignmentOptions } from './source'
 export { SSTS_ALGORITHMS } from './algorithms'
 
 /** @public */
-export interface SstsConfig {
+export interface SstsConfig extends SstsAssignmentOptions {
   /** Offered at setup, most preferred first; the source starts on the first negotiated one. Default `SSTS_ALGORITHMS`. */
   algorithms?: readonly bigint[]
 }
@@ -36,10 +37,17 @@ export interface SstsConfig {
 /** @public The SSTS plugin, for `opts.plugins`. */
 export const ssts = definePlugin({
   name: 'ssts',
-  init: ({ algorithms = SSTS_ALGORITHMS }: SstsConfig = {}) => {
+  init: ({ algorithms = SSTS_ALGORITHMS, subscriberBufferMs, algorithmParams }: SstsConfig = {}) => {
     // Unknown ids are fine: only the relay knows what it runs
     if (new Set(algorithms).size !== algorithms.length) throw new TypeError('SSTS algorithms must not repeat')
-    return { algorithms }
+    if (subscriberBufferMs !== undefined && subscriberBufferMs < 0n) {
+      throw new TypeError('SSTS subscriberBufferMs must not be negative')
+    }
+    if (algorithmParams?.some((param) => param < 0n)) {
+      throw new TypeError('SSTS algorithmParams must not be negative')
+    }
+
+    return { algorithms, subscriberBufferMs, algorithmParams }
   },
   setup: ({ algorithms }, clientSetup) => {
     // An empty list offers nothing, which prohibits SSTS (SSTS 3)
@@ -48,7 +56,15 @@ export const ssts = definePlugin({
     return true
   },
   negotiated: ({ algorithms }, serverSetup) => sstsAlgorithms(serverSetup, algorithms).length > 0,
-  features: ({ algorithms }) => [{ type: 'switch-source', item: sstsSource(algorithms) }],
+  features: ({ algorithms, subscriberBufferMs, algorithmParams }) => [
+    {
+      type: 'switch-source',
+      item: sstsSource(algorithms, {
+        ...(subscriberBufferMs !== undefined && { subscriberBufferMs }),
+        ...(algorithmParams !== undefined && { algorithmParams }),
+      }),
+    },
+  ],
 })
 
 if (import.meta.vitest) {
@@ -80,5 +96,10 @@ if (import.meta.vitest) {
     expect([activePlugins(plugins, setup([0xff01n])).length, activePlugins(plugins, setup([0n])).length]).toEqual([
       1, 0,
     ])
+  })
+
+  test('ssts(): refuses a negative assignment extension', () => {
+    expect(() => initPlugins([ssts({ subscriberBufferMs: -1n })])).toThrow(TypeError)
+    expect(() => initPlugins([ssts({ algorithmParams: [-1n] })])).toThrow(TypeError)
   })
 }

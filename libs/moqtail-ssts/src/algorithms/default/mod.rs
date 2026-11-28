@@ -28,7 +28,7 @@
 
 mod allocate;
 
-use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, Selection};
+use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, Selection, Tuning};
 use allocate::allocate;
 
 #[cfg(test)]
@@ -57,7 +57,7 @@ impl AbrAlgorithmFactory for DefaultAlgorithmFactory {
     "default"
   }
 
-  fn create(&self) -> Box<dyn AbrAlgorithm> {
+  fn create(&self, _tuning: &Tuning) -> Box<dyn AbrAlgorithm> {
     Box::new(DefaultAlgorithm)
   }
 }

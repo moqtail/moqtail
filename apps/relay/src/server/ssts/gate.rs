@@ -157,9 +157,11 @@ mod tests {
     {
       let mut sets = ssts.switching_sets.write().await;
       sets
-        .assign(track("hi"), 10, 1, 7, 0, 3000, 5, 2, 0)
+        .assign(track("hi"), 10, 1, 7, 0, 3000, 5, 2, 0, 0, vec![])
         .unwrap();
-      sets.assign(track("lo"), 11, 2, 7, 0, 500, 5, 2, 1).unwrap();
+      sets
+        .assign(track("lo"), 11, 2, 7, 0, 500, 5, 2, 1, 0, vec![])
+        .unwrap();
     }
     ssts
       .record_group_decision(4, HashMap::from([(7, Some(11))]), 0)

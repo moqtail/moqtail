@@ -26,14 +26,16 @@ pub mod gate;
 pub mod switching_set;
 
 use moqtail::model::control::setup::Setup;
+use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
-use moqtail_ssts::SetSnapshot;
+use crate::server::stream_id::StreamId;
 use moqtail_ssts::registry::registry;
+use moqtail_ssts::{SetSnapshot, StreamSnapshot};
 use switching_set::SwitchingSetManager;
 
 /// SSTS per-group allocation decisions: group -> set -> selected relay
@@ -68,9 +70,26 @@ pub(crate) enum AbrMessage {
   /// largest one: the first Object of a group is not necessarily the one that
   /// triggers the decision.
   NewGroup(u64),
+  /// An Object was handed to one of this connection's send streams: the
+  /// delivery advanced, and the mid-group reading is taken again. The sample
+  /// clock is the delivery itself — objects sent pace it, thinning as the
+  /// path slows and stopping when it stops. The tick fires when the write
+  /// starts, not when it completes, so a sample is never held up by the
+  /// backpressure it exists to measure.
+  ///
+  /// The message names the group and track the Object went out on, because
+  /// not every byte is progress: tail Objects draining on a group the gate
+  /// has overtaken, and the replay of a re-sent group, are filtered by the
+  /// controller against the newest group and the re-send marks.
+  ObjectSent { group_id: u64, relay_track_id: u64 },
   /// A forwarding stream was reset for delivery timeout: congestion evidence
   /// for the next allocation.
-  StreamTimeout { group_id: u64 },
+  ///
+  /// `set_id` is the set that lost the stream, or `None` when the track belongs
+  /// to no set. The evidence is keyed by set because a timeout on one ladder is
+  /// not evidence about another; a timeout with no set has no switching
+  /// decision to inform and is dropped.
+  StreamTimeout { set_id: Option<u64>, group_id: u64 },
 }
 
 /// All the SSTS state a connection carries, behind one handle.
@@ -86,9 +105,19 @@ pub struct SstsState {
   /// SSTS decisions (see `GroupDecisions`).
   pub group_decisions: Arc<RwLock<GroupDecisions>>,
   pub decision_notify: Arc<tokio::sync::Notify>,
-  /// Bumped when set membership changes.
-  /// A deliberate supersede must bump it too when it lands.
+  /// Bumped when set membership changes. A deliberate supersede must bump it
+  /// too when it lands.
   epoch: Arc<AtomicU64>,
+  /// The moment this connection's SSTS state was created, on the monotonic
+  /// clock the algorithms are handed. Stream ages and the elapsed time between
+  /// decisions are differences against it, so the epoch itself never means
+  /// anything and a test can start one at zero.
+  started_at: std::time::Instant,
+  /// The same moment as a wall-clock timestamp in ms since the Unix epoch.
+  /// `now_ms` is monotonic and means nothing outside this process; an
+  /// algorithm handed an external schedule (the oracle's trace t0) needs the
+  /// two joined, and this is the join.
+  started_at_unix_ms: u64,
 }
 
 /// The SSTS algorithms the client's SETUP advertises; an empty list (or the
@@ -134,7 +163,27 @@ impl SstsState {
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
       decision_notify: Arc::new(tokio::sync::Notify::new()),
       epoch,
+      started_at: std::time::Instant::now(),
+      started_at_unix_ms: std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0),
     }
+  }
+
+  /// This connection's monotonic clock in ms, which is the only clock an
+  /// algorithm is allowed to know: it is passed in as a number, so a test can
+  /// move time forward instead of waiting for it.
+  pub fn now_ms(&self) -> u64 {
+    self.started_at.elapsed().as_millis() as u64
+  }
+
+  /// This connection's monotonic clock in ms, expressed on the Unix epoch:
+  /// `started_at_unix_ms + now_ms()`. An algorithm handed an external
+  /// schedule in wall-clock terms (the oracle's trace t0) converts it to this
+  /// process's monotonic clock with it.
+  pub fn now_unix_ms(&self) -> u64 {
+    self.started_at_unix_ms.saturating_add(self.now_ms())
   }
 
   /// SSTS was negotiated for this connection (see `negotiated_algorithms`).
@@ -150,6 +199,15 @@ impl SstsState {
   /// Whether a decision has already been recorded for `group_id`.
   pub async fn has_group_decision(&self, group_id: u64) -> bool {
     self.group_decisions.read().await.contains_key(&group_id)
+  }
+
+  /// Invalidate the gate's cached verdicts. Set membership moves this by
+  /// itself; this exists for the one other writer allowed past
+  /// `record_group_decision`: a deliberate supersede, which moves a decided
+  /// group's answer together with the reset and re-send choreography, and so
+  /// must invalidate what the gate cached about it.
+  pub fn bump_epoch(&self) {
+    self.epoch.fetch_add(1, Ordering::Release);
   }
 
   /// Record the allocation for `group_id`, only if the group has
@@ -191,17 +249,16 @@ impl SstsState {
   }
 
   /// The algorithms' view of this connection at decision time: every switching
-  /// set as a snapshot, plus how many forwarding streams are live on each.
+  /// set as a snapshot, plus the live forwarding streams of the whole
+  /// connection.
   ///
   /// Both come from one read of the manager, so a set cannot appear between the
-  /// two reads and show up without its counter. They are copies: no algorithm
+  /// two reads and show up without its streams. They are copies: no algorithm
   /// runs while a lock is held.
-  pub async fn decision_snapshot(&self) -> (Vec<SetSnapshot>, HashMap<u64, u64>) {
+  pub async fn decision_snapshot(&self, now_ms: u64) -> (Vec<SetSnapshot>, Vec<StreamSnapshot>) {
     let manager = self.switching_sets.read().await;
-    (
-      manager.sets.values().map(SetSnapshot::from).collect(),
-      manager.open_streams(),
-    )
+    let sets: Vec<SetSnapshot> = manager.sets.values().map(SetSnapshot::from).collect();
+    (sets, manager.stream_table(now_ms))
   }
 
   /// A forwarding stream started for this relay track. No-op when the track is
@@ -210,22 +267,110 @@ impl SstsState {
   /// Every path that drops a stream from the send-stream map must call
   /// `on_stream_closed` for it as well, or the set's depth never comes back
   /// down and the algorithms read a queue that no longer exists.
-  pub async fn on_stream_opened(&self, relay_track_id: u64) {
+  pub async fn on_stream_opened(&self, stream_id: &StreamId) {
+    let now_ms = self.now_ms();
     self
       .switching_sets
       .write()
       .await
-      .note_stream_opened(relay_track_id);
+      .note_stream_opened(stream_id, now_ms);
   }
 
   /// A forwarding stream of this relay track ended: finished, reset, or
   /// stopped by the peer.
-  pub async fn on_stream_closed(&self, relay_track_id: u64) {
+  pub async fn on_stream_closed(&self, stream_id: &StreamId) {
     self
       .switching_sets
       .write()
       .await
-      .note_stream_closed(relay_track_id);
+      .note_stream_closed(stream_id);
+  }
+
+  /// How long a forwarding stream of this relay track may linger after its
+  /// group ended, when the subscriber negotiated a buffer for its set.
+  ///
+  /// `None` means the track is not in a switching set, its set runs the
+  /// default algorithm, or no buffer was negotiated, and the caller's
+  /// configured timeout applies. Negotiating a buffer is how a subscriber says
+  /// it has somewhere to put late media; without that the operator's setting
+  /// stays the answer, so turning the feature on cannot silently start
+  /// discarding data for a subscriber that never asked for switching.
+  /// The live streams of `set_id` that carry a member other than `keep`, i.e.
+  /// the deliveries an algorithm overtook when it selected `keep`. Group id
+  /// first, ascending.
+  pub(crate) async fn overtaken_streams(
+    &self,
+    set_id: u64,
+    keep_track: u64,
+  ) -> Vec<(u64, StreamId)> {
+    let sets = self.switching_sets.read().await;
+    sets.streams_above(set_id, keep_track)
+  }
+
+  /// Record that a group's delivery was overtaken, so the streams opened for it
+  /// from now on are reported to the algorithms as re-sends rather than as new
+  /// congestion, and carry the deadline the decision asked the re-send to meet.
+  pub(crate) async fn mark_group_resent(
+    &self,
+    set_id: u64,
+    group_id: u64,
+    deadline_ms: Option<u64>,
+  ) {
+    self
+      .switching_sets
+      .write()
+      .await
+      .mark_group_resent(set_id, group_id, deadline_ms);
+  }
+
+  /// Whether this track's copy of `group_id` is a re-send of an overtaken
+  /// delivery, which is what entitles it to have its cached head replayed.
+  pub(crate) async fn is_resent_group(&self, relay_track_id: u64, group_id: u64) -> bool {
+    let sets = self.switching_sets.read().await;
+    match sets.set_of_relay_track(relay_track_id) {
+      Some(set) => sets.is_resent_group(set.id, group_id),
+      None => false,
+    }
+  }
+
+  /// The full track name carrying this relay track, when it is in a switching
+  /// set. Used to find the subscription that will own a replacement stream.
+  pub(crate) async fn full_track_name_of_relay_track(
+    &self,
+    relay_track_id: u64,
+  ) -> Option<FullTrackName> {
+    self
+      .switching_sets
+      .read()
+      .await
+      .full_track_name_of_relay_track(relay_track_id)
+  }
+
+  /// The switching set carrying this relay track, if any.
+  pub(crate) async fn set_id_of_relay_track(&self, relay_track_id: u64) -> Option<u64> {
+    let sets = self.switching_sets.read().await;
+    let set = sets.set_of_relay_track(relay_track_id)?;
+    Some(set.id)
+  }
+
+  /// How long closing one forwarding stream may wait for its FIN before the
+  /// stream is reset. `None` closes gracefully.
+  ///
+  /// The timer is a property of the switching set: no set means no timer, and
+  /// a set on the default algorithm has none either. A re-send deadline
+  /// replaces the set's buffer for the group it was ordered for; zero means
+  /// never discard there too. Nothing here reads a connection-wide setting.
+  pub(crate) async fn stream_close_timeout(
+    &self,
+    relay_track_id: u64,
+    group_id: u64,
+  ) -> Option<std::time::Duration> {
+    let sets = self.switching_sets.read().await;
+    let set = sets.set_of_relay_track(relay_track_id)?;
+    if let Some(ms) = sets.resent_deadline_ms(set.id, group_id) {
+      return (ms > 0).then(|| std::time::Duration::from_millis(ms));
+    }
+    set.discard_timeout()
   }
 }
 
@@ -296,11 +441,11 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn decision_snapshot_covers_every_set_with_its_stream_count() {
+  async fn decision_snapshot_covers_every_set_with_its_streams() {
     let client = setup_advertising(Some(&[0]));
     let state = SstsState::new(&client, &[0]);
 
-    let (sets, streams) = state.decision_snapshot().await;
+    let (sets, streams) = state.decision_snapshot(state.now_ms()).await;
     assert!(sets.is_empty() && streams.is_empty());
 
     let track = moqtail::model::data::full_track_name::FullTrackName::new(
@@ -312,19 +457,23 @@ mod tests {
       .switching_sets
       .write()
       .await
-      .assign(track, 42, 1, 7, 0, 1000, 5, 1, 0)
+      .assign(track, 42, 1, 7, 0, 1000, 5, 1, 0, 0, vec![])
       .unwrap();
-    state.on_stream_opened(42).await;
+    let stream = crate::server::stream_id::StreamId::new_subgroup(42, 3, Some(0));
+    state.on_stream_opened(&stream).await;
 
-    let (sets, streams) = state.decision_snapshot().await;
+    let (sets, streams) = state.decision_snapshot(state.now_ms()).await;
     assert_eq!(sets.len(), 1);
     assert_eq!(sets[0].id, 7);
     assert_eq!(sets[0].members, vec![(1000, 42)]);
     assert!(sets[0].active, "one member with activate = 1");
-    assert_eq!(streams.get(&7), Some(&1));
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].set_id, 7);
+    assert_eq!(streams[0].group_id, 3);
+    assert!(!streams[0].resent, "an ordinary delivery is not a re-send");
 
-    state.on_stream_closed(42).await;
-    let (_, streams) = state.decision_snapshot().await;
+    state.on_stream_closed(&stream).await;
+    let (_, streams) = state.decision_snapshot(state.now_ms()).await;
     assert!(streams.is_empty(), "a drained set reports no streams");
   }
 
@@ -366,5 +515,44 @@ mod tests {
     // It is pruned by the next decision, not by its own.
     assert!(state.record_group_decision(20, allocation(9), 18).await);
     assert!(!state.has_group_decision(10).await);
+  }
+
+  #[tokio::test]
+  async fn stream_close_timeout_comes_only_from_the_set() {
+    let private = moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE;
+    let state = SstsState::new(&setup_advertising(Some(&[private])), &[private]);
+    let track = moqtail::model::data::full_track_name::FullTrackName::new(
+      moqtail::model::common::tuple::Tuple::from_utf8_path("ns"),
+      moqtail::model::common::tuple::TupleField::from_utf8("t"),
+    )
+    .unwrap();
+    state
+      .switching_sets
+      .write()
+      .await
+      .assign(track, 42, 1, 7, private, 1000, 5, 1, 0, 250, vec![])
+      .unwrap();
+
+    assert_eq!(
+      state.stream_close_timeout(42, 3).await,
+      Some(std::time::Duration::from_millis(250))
+    );
+    assert_eq!(
+      state.stream_close_timeout(99, 3).await,
+      None,
+      "a track outside every set has no timer"
+    );
+
+    // A decision may put its own deadline on one group, and zero means never.
+    {
+      let mut sets = state.switching_sets.write().await;
+      sets.mark_group_resent(7, 4, Some(0));
+      sets.mark_group_resent(7, 5, Some(100));
+    }
+    assert_eq!(state.stream_close_timeout(42, 4).await, None);
+    assert_eq!(
+      state.stream_close_timeout(42, 5).await,
+      Some(std::time::Duration::from_millis(100))
+    );
   }
 }

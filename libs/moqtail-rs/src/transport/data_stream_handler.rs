@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::yield_now;
@@ -382,6 +383,12 @@ pub struct RecvDataStream {
   /// How the read task ended: `READ_RUNNING` until it does.
   read_outcome: Arc<AtomicU8>,
   notify: Arc<Notify>,
+  /// Set when the application is no longer interested in this stream. The read
+  /// task wakes on `stop_notify`, sends STOP_SENDING with the code recorded in
+  /// `stop_code`, and ends the stream.
+  stop_requested: Arc<AtomicBool>,
+  stop_code: Arc<StdMutex<Option<u64>>>,
+  stop_notify: Arc<Notify>,
   /// The connection qlog events of this stream belong to.
   qlog_conn: usize,
 }
@@ -405,6 +412,9 @@ impl RecvDataStream {
       started_read_task: Arc::new(AtomicBool::new(false)),
       read_outcome: Arc::new(AtomicU8::new(READ_RUNNING)),
       notify: Arc::new(Notify::new()),
+      stop_requested: Arc::new(AtomicBool::new(false)),
+      stop_code: Arc::new(StdMutex::new(None)),
+      stop_notify: Arc::new(Notify::new()),
       qlog_conn: 0,
     }
   }
@@ -426,6 +436,29 @@ impl RecvDataStream {
     self.read_outcome.load(Ordering::Acquire) == READ_ABORTED
   }
 
+  /// Asks the peer to stop sending on this data stream (QUIC STOP_SENDING,
+  /// draft-18 §11.4.3) with the given application error code. The stream then
+  /// ends locally as if the peer had closed it; objects already parsed remain
+  /// available. Safe to call from any task (for example while another task is
+  /// blocked in [`Self::next_object`]); it is idempotent, and returns `true`
+  /// when this call was the one that requested the cancellation.
+  pub fn stop_sending(&self, code: u64) -> bool {
+    {
+      let mut recorded = self.stop_code.lock().unwrap();
+      if recorded.is_some() {
+        return false;
+      }
+      *recorded = Some(code);
+    }
+    // Publish the code before the flag: a reader that observes the flag is
+    // guaranteed to observe the code it must send.
+    self.stop_requested.store(true, Ordering::Release);
+    // `notify_one` stores a permit when no reader is waiting, so a stop that
+    // lands between the reader's flag check and its select is not lost.
+    self.stop_notify.notify_one();
+    true
+  }
+
   pub async fn get_header_info(&self) -> Option<HeaderInfo> {
     debug!("RecvDataStream::get_header_info() called");
     let header_info = self.header_info.lock().await;
@@ -441,6 +474,9 @@ impl RecvDataStream {
     items: Arc<RwLock<VecDeque<DataStreamItem>>>,
     malformed_track: Arc<AtomicBool>,
     notify: Arc<Notify>,
+    stop_requested: Arc<AtomicBool>,
+    stop_code: Arc<StdMutex<Option<u64>>>,
+    stop_notify: Arc<Notify>,
     qlog_conn: usize,
   ) -> Result<(), RecvDataStreamReadError> {
     let mut header_info = None;
@@ -454,6 +490,24 @@ impl RecvDataStream {
     let mut padding = false;
 
     loop {
+      // A cancellation that landed before the read task got here, or between
+      // two select iterations, is handled before touching the transport.
+      if stop_requested.load(Ordering::Acquire) {
+        let code = stop_code.lock().unwrap().unwrap_or(0);
+        let mut stream = recv_stream.lock().await;
+        let stream_id = stream.id();
+        stream.stop_by_ref(code);
+        qlog::stream_end(
+          qlog_conn,
+          stream_id,
+          true,
+          qlog::StreamEnd::StopSending(code),
+        );
+        is_closed.store(true, Ordering::Relaxed);
+        notify.notify_waiters();
+        return Ok(());
+      }
+
       if !recv_bytes.is_empty() && header_info.is_none() && !padding {
         padding = recv_bytes.clone().freeze().get_vi().ok() == Some(PADDING_STREAM_TYPE);
       }
@@ -567,6 +621,18 @@ impl RecvDataStream {
             info!("Timeout while waiting for data");
             is_closed.store(true, Ordering::Relaxed);
             return Err(RecvDataStreamReadError::ParseError(ParseError::Timeout { context: "RecvDataStream::new(header_read)" }));
+          }
+
+          // The application no longer cares about this stream's remaining
+          // objects, so tell the peer to stop sending.
+          _ = stop_notify.notified() => {
+            let code = stop_code.lock().unwrap().unwrap_or(0);
+            let stream_id = stream.id();
+            stream.stop_by_ref(code);
+            qlog::stream_end(qlog_conn, stream_id, true, qlog::StreamEnd::StopSending(code));
+            is_closed.store(true, Ordering::Relaxed);
+            notify.notify_waiters();
+            return Ok(());
           }
 
           read_result = stream.read(&mut recv_buf[..]) => {
@@ -832,6 +898,9 @@ impl RecvDataStream {
       let header_info = self.header_info.clone();
       let notify = self.notify.clone();
       let read_outcome = self.read_outcome.clone();
+      let stop_requested = self.stop_requested.clone();
+      let stop_code = self.stop_code.clone();
+      let stop_notify = self.stop_notify.clone();
       let qlog_conn = self.qlog_conn;
 
       // Spawn the read task that will continuously read from the stream
@@ -845,6 +914,9 @@ impl RecvDataStream {
           items,
           malformed_track,
           notify.clone(),
+          stop_requested,
+          stop_code,
+          stop_notify,
           qlog_conn,
         )
         .await
@@ -1662,5 +1734,68 @@ mod tests {
     assert!(receiver.next_object().await.1.is_none());
     assert!(receiver.is_malformed_track());
     assert!(receiver.was_aborted());
+  }
+
+  /// STOP_SENDING must reach the peer with the cancellation code, and the local
+  /// reader must end (no further objects) once the request is made.
+  #[tokio::test]
+  async fn stop_sending_reaches_the_peer_with_its_code() {
+    use crate::model::error::StreamResetCode;
+
+    let (mut send, recv) = setup_stream_pair().await;
+    let receiver = Arc::new(RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    ));
+
+    let code = StreamResetCode::Cancelled.to_u64();
+    assert!(receiver.stop_sending(code), "first request must win");
+    assert!(
+      !receiver.stop_sending(StreamResetCode::TooFarBehind.to_u64()),
+      "a repeat request must not change the stream's fate"
+    );
+
+    // The read task starts in next_object; it sees the request and sends
+    // STOP_SENDING before waiting for any data.
+    let reader = receiver.clone();
+    let drain = tokio::spawn(async move { reader.next_object().await.1 });
+
+    match send.stopped().await {
+      wtransport::error::StreamWriteError::Stopped(vi) => {
+        assert_eq!(vi.into_inner(), code);
+      }
+      other => panic!("expected STOP_SENDING with the requested code, got {other:?}"),
+    }
+    assert!(drain.await.unwrap().is_none(), "reader must end on stop");
+  }
+
+  /// The stop must also wake a read task that is already blocked waiting for
+  /// bytes, not only one that has not started yet.
+  #[tokio::test]
+  async fn stop_sending_wakes_a_reader_already_waiting_for_data() {
+    use crate::model::error::StreamResetCode;
+
+    let (mut send, recv) = setup_stream_pair().await;
+    let receiver = Arc::new(RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    ));
+
+    let reader = receiver.clone();
+    let drain = tokio::spawn(async move { reader.next_object().await.1 });
+
+    // Let the read task enter its select and block on the empty stream.
+    sleep(Duration::from_millis(50)).await;
+
+    let code = StreamResetCode::Cancelled.to_u64();
+    assert!(receiver.stop_sending(code));
+
+    match send.stopped().await {
+      wtransport::error::StreamWriteError::Stopped(vi) => {
+        assert_eq!(vi.into_inner(), code);
+      }
+      other => panic!("expected STOP_SENDING with the requested code, got {other:?}"),
+    }
+    assert!(drain.await.unwrap().is_none(), "reader must end on stop");
   }
 }

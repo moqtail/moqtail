@@ -45,12 +45,22 @@ import { Forwarder, type Child } from './forward'
 /** The next switching set ID per client: players can share one, and equal IDs would merge their sets. */
 const nextSetId = new WeakMap<MOQtailClient, bigint>()
 
+/** @public The optional extension fields `ssts()` sends with every switching set assignment. */
+export interface SstsAssignmentOptions {
+  /** The subscriber's reorder buffer in ms; omitted leaves the extension off the wire. */
+  readonly subscriberBufferMs?: bigint
+  /** Algorithm-specific knobs, in wire order. */
+  readonly algorithmParams?: readonly bigint[]
+}
+
 /** @public The switching set source of the `ssts()` plugin. */
 export class SstsSource extends SourceElement implements MediaSourceElement {
   readonly options: SwitchingSetOptions
   readonly pad: Pad
   /** The negotiated algorithms (`sstsAlgorithms`), most preferred first, read at init. */
   readonly algorithms: readonly bigint[]
+  readonly #subscriberBufferMs: bigint | undefined
+  readonly #algorithmParams: readonly bigint[] | undefined
   #algorithm: bigint
   readonly #children = new Map<string, Child>()
   #tracks: readonly CatalogTrack[]
@@ -65,9 +75,16 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   #algorithmLock = Promise.resolve()
 
   /** `preferred` is the plugin's list, most preferred first; the source starts on the first negotiated one. */
-  constructor(context: ElementContext, options: SwitchingSetOptions, preferred: readonly bigint[]) {
+  constructor(
+    context: ElementContext,
+    options: SwitchingSetOptions,
+    preferred: readonly bigint[],
+    assignment: SstsAssignmentOptions = {},
+  ) {
     super(context)
     this.options = options
+    this.#subscriberBufferMs = assignment.subscriberBufferMs
+    this.#algorithmParams = assignment.algorithmParams
     const first = context.tracks[0]!
     this.#tracks = context.tracks
     this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
@@ -299,6 +316,8 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
       setThroughputWeight: 1n,
       activateSwitching: activate,
       setRank: 0,
+      ...(this.#subscriberBufferMs !== undefined && { subscriberBufferMs: this.#subscriberBufferMs }),
+      ...(this.#algorithmParams !== undefined && { algorithmParams: this.#algorithmParams }),
     }
   }
 
@@ -386,7 +405,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
  * for a set with `{ child }`, the definition the probe picked. Any media track is fine, since
  * nothing here is specific to a packaging. Pads carry their own capabilities, so it lists none.
  */
-export function sstsSource(algorithms: readonly bigint[]) {
+export function sstsSource(algorithms: readonly bigint[], assignment: SstsAssignmentOptions = {}) {
   return defineElement({
     type: 'source',
     name: 'ssts',
@@ -407,7 +426,7 @@ export function sstsSource(algorithms: readonly bigint[]) {
         throw new PlayerError('UNSUPPORTED_SOURCE', 'The session did not negotiate SSTS', { element: 'ssts' })
       }
 
-      const source = new SstsSource(context, options, algorithms)
+      const source = new SstsSource(context, options, algorithms, assignment)
       await source.start()
       return source
     },
@@ -437,6 +456,8 @@ if (import.meta.vitest) {
       preferred?: bigint[]
       child?: typeof Cmaf
       catalog?: ReturnType<typeof fakeCatalog>
+      subscriberBufferMs?: bigint
+      algorithmParams?: readonly bigint[]
     } = {},
   ) {
     const client = new FakeClient()
@@ -447,7 +468,10 @@ if (import.meta.vitest) {
       () => client,
     )
 
-    const ssts = sstsSource(options.preferred ?? SSTS_ALGORITHMS)
+    const ssts = sstsSource(options.preferred ?? SSTS_ALGORITHMS, {
+      ...(options.subscriberBufferMs !== undefined && { subscriberBufferMs: options.subscriberBufferMs }),
+      ...(options.algorithmParams !== undefined && { algorithmParams: options.algorithmParams }),
+    })
     const sources: SstsSource[] = []
     let sink!: Sink
 
@@ -513,6 +537,21 @@ if (import.meta.vitest) {
       probe({ role: 'video' }),
       probe({ role: 'subtitle', isLive: true }),
     ]).toEqual([true, true, false, false, false])
+  })
+
+  test('the configured budget and algorithm params reach every assignment', async () => {
+    const c = await sstsChain([[v('v1')]], {
+      algorithms: [0xff04n],
+      preferred: [0xff04n],
+      subscriberBufferMs: 400n,
+      algorithmParams: [25n, 2n, 0n],
+    })
+
+    expect(c.request('v1').options.parameters?.switchingSetAssignment).toMatchObject({
+      algorithmId: 0xff04n,
+      subscriberBufferMs: 400n,
+      algorithmParams: [25n, 2n, 0n],
+    })
   })
 
   test('every track subscribes into its set: negotiated algorithm, activate = set size, no FORWARD, IDs per client', async () => {

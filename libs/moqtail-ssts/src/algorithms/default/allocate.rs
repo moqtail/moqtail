@@ -96,7 +96,7 @@ pub(super) fn allocate(budget_kbps: u64, sets: &[SetSnapshot]) -> Selection {
   // A set with no subscriber forwards nothing, and would take its rank tier's
   // share of the budget with it if it were left in the split above.
   for set in sets {
-    decisions.entry(set.id).or_default();
+    decisions.tracks.entry(set.id).or_default();
   }
 
   decisions
